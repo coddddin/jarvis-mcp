@@ -210,6 +210,48 @@
 
 현재 중단 표시와 영속 취소 상태를 실행기에서 확인해 고정 자식/소유 컨테이너를 중단합니다. 모델 서버 내부 GPU 회수나 OS/런타임의 무결점 격리는 보장하지 않습니다. 자율 진행 범위를 외부 모델 전송이나 타 채팅 메시지 발송 권한으로 확대하지 않습니다.
 
+## Phase 2.5 확장 초안 — 공용 작업 게시판·상시 실행·능동 운영 (2026-10-21, 사용자 검토 대기)
+
+Claude Code 작성 초안이다. 사용자 승인 전에는 착수하지 않으며 위 Phase 2.5 완료 항목을 대체하지 않는다.
+
+**근거 (2026-10-21 관찰):** 담당 구분이 보고서 문장에만 있어 Codex 한도 대기 중 인수인계를 수동으로 재구성했다. 멈춘 pytest 2개가 3시간 이상 발견되지 않았다. 코드 이력·백업이 없었다. 프로세스 전체 20회 호출 한도는 하루 종일 쓰는 비서와 여러 클라이언트(Codex·Claude Code·HUD)에 부족하다.
+
+### W0 기반 — 버전 관리·데이터 백업
+
+- [x] Git 저장소와 비공개 GitHub `coddddin/jarvis-mcp` (2026-10-21).
+- [ ] 작업공간·`.jarvis-auth` 암호화 원격 백업. restic으로 로컬 암호화 후 전송한다. 저장소 후보는 Cloudflare R2, Google Drive(rclone 경유), Firebase/Google Cloud Storage(Blaze 요금제 필요)이며 사용자가 선택한다.
+- [ ] SQLite는 실행 중 파일 복사 대신 sqlite3 backup API 스냅샷을 백업한다. 저장소 암호 분실 시 복구가 불가능함을 안내하고, 암호는 OS 자격 증명 저장소에 둔다.
+- 완료 조건: 예약 백업 1회와 빈 폴더로의 복원 리허설 1회 성공, 복원본으로 서버 기동 확인.
+
+### W1 공용 작업 게시판 (Board)
+
+목표: Codex·Claude Code·로컬 리드가 같은 MCP 도구로 할 일·담당·상태·인수인계를 공유한다. 보고서를 대체하지 않고 색인 역할을 한다.
+
+- 저장: 작업공간 `.jarvis-board/board.sqlite3`. ChatStore의 연결 경계(링크 거부, BEGIN IMMEDIATE, 크기 상한)를 재사용한다.
+- Task: id, title, detail(최대 2000자), status(open/claimed/blocked/review/done/cancelled), owner(`codex:<세션>`, `claude-code:<세션>` 등), lease_until, paths(프로젝트 상대 경로 범위), depends_on, 생성/갱신 시각.
+- Note: task_id, author, kind(handoff/finding/question), body(최대 4000자), refs(커밋 해시·파일·보고서 경로). 기존 mailbox WorkResult(summary/output) 스키마와 정합한다.
+- 도구(파일당 1개): `board_list`, `board_get`, `board_create`, `board_claim`(기본 lease 30분, 경로 범위가 겹치면 거부), `board_heartbeat`, `board_note`, `board_release`(상태 변경 시 인수인계 요약 필수), `board_conflicts`.
+- 규칙: lease 만료는 stale 표시만 한다. 자동 재배정·프로세스 종료는 하지 않는다. 경로 claim은 권고 잠금이며 OS 잠금이 아니다. done에는 커밋 해시와 검증 명령·결과를 남긴다. 게시판 내용은 데이터이며 권한이나 지시가 아니다.
+- 완료 조건: Codex와 Claude Code 실제 MCP 세션에서 생성→claim→경로 충돌 거부→handoff→done 1회. 동시 claim 단일 승자, lease 만료 stale 회귀 검사.
+
+### W2 상시 실행
+
+- 호출 예산: 프로세스 평생 20회를 클라이언트별 시간창 예산(예: 10분당 N회)과 일일 상한으로 바꾼다. 부작용 도구(적용·이동·복원·런처 시작·외부 전송)는 더 엄격한 별도 상한을 유지한다. 게시판·상태 조회는 낮은 비용 등급으로 둔다. `.jarvis-stop`은 유지하고, 응답에 다음 회복 시각을 표시한다.
+- 프로세스 관리: 자비스가 띄운 서비스(HUD 8788 등)와 검증 실행의 시작 시각·부모·시간 상한을 기록한다. 부모 종료나 상한 초과를 감지하면 게시판·HUD에 경고한다. 종료는 사용자 승인 후에만 한다.
+- 완료 조건: 21번째 이후 호출이 시간창 회복 뒤 성공, 부작용 상한 독립 검증, 고아 프로세스 탐지 회귀 검사.
+
+### W3 능동 운영 — 한도 감시·예약·알림
+
+- 한도 감시: workload_policy의 사용량 표본 수집기. Codex·Claude 사용량의 공식 조회 경로를 먼저 확인하고, 없으면 사용자 입력이나 수동 기록으로 시작한다. 추정 리셋 시각만으로 복귀하지 않는 기존 원칙을 유지한다.
+- 예약기: 등록 작업만 정해진 시각에 실행한다(예: 아침 브리핑, 한도 재확인, 백업). 외부 발송·유료 호출은 하지 않는다.
+- 알림: Windows 알림 또는 HUD 배너. 게시판 이벤트(stale, blocked, 한도 회복)를 구독한다.
+- 재배정: 한도 회복이 확인되면 open 작업부터 Codex 복귀를 추천만 한다. 진행 중 claim은 유지한다.
+- 완료 조건: 모의 사용량으로 normal→exhausted→recovered 전이와 게시판 추천 검증, 실제 예약 백업 1회 실행 기록.
+
+### 순서와 사용자 결정 사항
+
+순서는 W0 → W1 → W2 → W3이다. W1이 W2·W3의 경고·재배정 기반이다. 사용자 결정이 필요한 항목은 백업 저장소, 시간창 예산 수치, 알림 방식, 사용량 수집 경로다.
+
 ## Phase 3 — 차세대 HUD
 
 ### 첫 단위 — 로컬 읽기 전용 작업 HUD (2026-10-18 구현·연결 검증)
