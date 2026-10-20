@@ -18,7 +18,9 @@ PLAN = """# PLAN
 - [ ] 하루 요약 보고서 초안
 """
 ROSTER = load_roster()
-FRESH = {'primary': {'usedPercent': 10, 'resetsAt': NOW + 3600}}
+FRESH = {'usage': {'primary': {'usedPercent': 10, 'resetsAt': NOW + 3600}}, 'sampled_at': NOW}
+LOW = {'usage': {'primary': {'usedPercent': 70, 'resetsAt': NOW + 3600}}, 'sampled_at': NOW}
+EXHAUSTED = {'usage': {'primary': {'usedPercent': 100, 'resetsAt': NOW + 3600}}, 'sampled_at': NOW}
 
 
 class FakeBoard:
@@ -78,7 +80,7 @@ def test_candidates_are_unchecked_items_deduplicated_by_normalized_text():
 
 
 def test_idle_board_creates_one_tagged_task_and_assigns_it():
-    result, board = run(usage=FRESH, sampled_at=NOW)
+    result, board = run(usage_sample=FRESH)
     assert result['action'] == 'task_created' and result['employee'] == 'codex'
     task = board.tasks[0]
     key = item_key('HUD 상태 표시 개선')
@@ -161,23 +163,39 @@ def test_roster_eligibility_respects_status_capability_and_tier():
     assert eligible_employees(ROSTER, 'review', 'sensitive') == ['codex', 'claude-code']
 
 
-def test_workload_policy_moves_work_off_codex():
+def test_workload_gate_matches_dispatch_service():
     names = ['codex', 'claude-code']
-    low = {'profile': 'delegate', 'bulk_owner': 'claude', 'codex_role': 'coordination_and_validation'}
-    paused = {'profile': 'exhausted', 'bulk_owner': None, 'codex_role': 'paused'}
-    assert choose_employee(names, low) == 'claude-code'
-    assert choose_employee(names, paused) == 'claude-code'
-    assert choose_employee(['codex'], paused) is None
-    # Unknown usage is conservative: Claude takes bulk work.
+    assert choose_employee(names, FRESH, NOW) == ('codex', 'normal')
+    assert choose_employee(names, LOW, NOW) == ('claude-code', 'delegate')
+    assert choose_employee(names, EXHAUSTED, NOW) == ('claude-code', 'exhausted')
+    assert choose_employee(['codex'], EXHAUSTED, NOW) == (None, 'exhausted')
+    # Missing or stale samples never shut Codex out (same as codex_workload_gate).
+    assert choose_employee(names, None, NOW) == ('codex', 'no_usage_sample')
+    assert choose_employee(names, {**EXHAUSTED, 'sampled_at': NOW - 3600}, NOW) == ('codex', 'stale_usage_sample')
     result, _ = run()
-    assert result['employee'] == 'claude-code' and result['workload'] == 'unknown'
+    assert result['employee'] == 'codex' and result['workload'] == 'no_usage_sample'
+
+
+@pytest.mark.parametrize('capability,paths,tier', [
+    ('summary', ['docs/PLAN.md'], 'light'),           # docs-only backup wording stays allowed
+    ('summary', [], 'sensitive'),                       # no paths: may change anything
+    ('summary', ['docs/PLAN.md', 'scripts/backup/run.ps1'], 'sensitive'),
+    ('coding', ['docs/guides/backup.md'], 'sensitive'),
+])
+def test_backup_restore_words_block_only_code_or_config_changes(capability, paths, tier):
+    candidates = plan_candidates('- [ ] 백업 안내 문서 정리\n- [ ] 토큰 발급 설명 문서\n')
+    judged = validate_judgment({'index': 0, 'capability': capability, 'tier': 'light', 'paths': paths}, candidates)
+    assert judged is not None and judged[2] == tier
+    strong = validate_judgment({'index': 1, 'capability': 'summary', 'tier': 'light', 'paths': ['docs/a.md']},
+                               candidates)
+    assert strong is not None and strong[2] == 'sensitive'
 
 
 def test_real_board_and_ledger_round_trip(tmp_path):
     guard = Guardrails(tmp_path)
     board, ledger = BoardStore(guard, clock=lambda: NOW, roster=ROSTER), LeadLedger(guard)
     first = plan_next(board, ROSTER, PLAN, judge=judge_returning(paths=['jarvis/hud.py']), ledger=ledger,
-                      now=NOW, usage=FRESH, sampled_at=NOW)
+                      now=NOW, usage_sample=FRESH)
     assert first['action'] == 'task_created'
     task = board.get(first['task_id'])
     assert task['creator'] == 'local:lead' and task['paths'] == ['jarvis/hud.py']

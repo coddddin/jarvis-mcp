@@ -12,6 +12,7 @@ import re
 import sqlite3
 import time
 
+from jarvis.agents.dispatch_service import codex_workload_gate
 from jarvis.agents.workload_policy import plan_workload
 from jarvis.core.guardrails import GuardrailError
 
@@ -26,8 +27,10 @@ UNCHECKED = re.compile(r'^\s*[-*] \[ \]\s+(.+?)\s*$')
 HEADING = re.compile(r'^(#{2,4})\s+(.+?)\s*$')
 # Text that always forces approval, whatever the model says. The model may raise a tier, never lower it.
 SENSITIVE_WORDS = re.compile(
-    r'토큰|인증|권한|암호|자격 증명|삭제|복원|백업|외부 전송|머지|배포|token|credential|secret|password|'
-    r'\bmerge\b|\bpush\b|deploy|delete|restore|backup', re.I)
+    r'토큰|인증|권한|암호|자격 증명|삭제|외부 전송|머지|배포|token|credential|secret|password|'
+    r'\bmerge\b|\bpush\b|deploy|delete', re.I)
+# Forces approval only when the work may change code or config; Markdown-only work stays allowed.
+CHANGE_SENSITIVE_WORDS = re.compile(r'복원|백업|restore|backup', re.I)
 # Roster employee ID -> name used by workload_policy.
 WORKLOAD_NAMES = {'codex': 'codex', 'claude-code': 'claude'}
 
@@ -107,13 +110,16 @@ def validate_judgment(raw, candidates):
     if capability not in CAPABILITIES or tier not in TIERS:
         return None
     candidate = candidates[index]
-    if SENSITIVE_WORDS.search(candidate.text):
+    paths = _safe_paths(raw.get('paths', []))
+    # Docs-only means explicit paths, all Markdown, and no coding; anything vaguer counts as a change.
+    docs_only = capability != 'coding' and bool(paths) and all(p.lower().endswith('.md') for p in paths)
+    if SENSITIVE_WORDS.search(candidate.text) or (CHANGE_SENSITIVE_WORDS.search(candidate.text) and not docs_only):
         tier = 'sensitive'
     title = raw.get('title')
     if not isinstance(title, str) or not title.strip():
         title = candidate.text
     title = _normalize(title)[:170]
-    return candidate, capability, tier, title, _safe_paths(raw.get('paths', []))
+    return candidate, capability, tier, title, paths
 
 
 def eligible_employees(roster, capability, tier):
@@ -131,15 +137,22 @@ def eligible_employees(roster, capability, tier):
     return names
 
 
-def choose_employee(names, workload):
-    """Prefer workload_policy's bulk owner; never pick Codex while its role is paused."""
-    if workload['codex_role'] == 'paused':
+def choose_employee(names, usage_sample, now):
+    """(employee or None, workload label).
+
+    Codex is excluded only by dispatch_service.codex_workload_gate (a fresh sample saying 'paused'), so a
+    missing or stale sample never shuts Codex out. With a fresh sample, workload_policy's bulk owner wins."""
+    allowed, gate = codex_workload_gate(usage_sample, now)
+    if not allowed:
         names = [name for name in names if name != 'codex']
-    owner = workload['bulk_owner']
+    if gate in ('no_usage_sample', 'stale_usage_sample'):
+        return (names[0] if names else None), gate
+    workload = plan_workload(usage_sample.get('usage'), [WORKLOAD_NAMES.get(n, n) for n in names],
+                             usage_sample.get('sampled_at'), now)
     for name in names:
-        if WORKLOAD_NAMES.get(name) == owner:
-            return name
-    return names[0] if names else None
+        if WORKLOAD_NAMES.get(name) == workload['bulk_owner']:
+            return name, workload['profile']
+    return (names[0] if names else None), workload['profile']
 
 
 def assignment_message(task, candidate, capability):
@@ -158,9 +171,10 @@ def approval_message(candidate, capability):
             '\n- 필요한 것: 진행하려면 사용자가 직접 작업을 만들거나 지시해 주세요.')[:1000]
 
 
-def plan_next(board, roster, plan_text, *, judge, ledger, now, usage=None, sampled_at=None,
-              daily_cap=3, agent=LEAD_AGENT):
-    """One lead tick. Returns {'action': ..., 'reason': ..., ...}; at most one task or approval request."""
+def plan_next(board, roster, plan_text, *, judge, ledger, now, usage_sample=None, daily_cap=3, agent=LEAD_AGENT):
+    """One lead tick. Returns {'action': ..., 'reason': ..., ...}; at most one task or approval request.
+
+    usage_sample has the dispatch_service shape: {'usage': {...}, 'sampled_at': epoch} or None."""
     if ledger.count_since(_day_start(now)) >= daily_cap:
         return {'action': 'none', 'reason': 'daily_cap'}
     if not board_is_idle(board):
@@ -187,20 +201,17 @@ def plan_next(board, roster, plan_text, *, judge, ledger, now, usage=None, sampl
         ledger.add(candidate.key, 'approval_requested', now, str(sent.get('id', '')))
         return {'action': 'approval_requested', 'reason': 'sensitive', 'plan': candidate.key}
 
-    names = eligible_employees(roster, capability, tier)
-    workload = plan_workload(usage, [WORKLOAD_NAMES.get(n, n) for n in names], sampled_at, now)
-    employee = choose_employee(names, workload)
+    employee, workload = choose_employee(eligible_employees(roster, capability, tier), usage_sample, now)
     if employee is None:
-        return {'action': 'none', 'reason': 'no_eligible_employee', 'plan': candidate.key,
-                'workload': workload['profile']}
+        return {'action': 'none', 'reason': 'no_eligible_employee', 'plan': candidate.key, 'workload': workload}
 
     detail = (f'plan_item_hash: {candidate.key}\nsection: {candidate.section}\ncapability: {capability}\n'
-              f'tier: {tier}\nassigned: {employee} (workload {workload["profile"]})\n\n{candidate.text}')[:2000]
+              f'tier: {tier}\nassigned: {employee} (workload {workload})\n\n{candidate.text}')[:2000]
     task = board.create(agent, f'[PLAN:{candidate.key}] {title}', detail, paths)
     ledger.add(candidate.key, 'task_created', now, task['id'])
     board.send(agent, employee, assignment_message(task, candidate, capability), task_id=task['id'])
     return {'action': 'task_created', 'reason': 'assigned', 'plan': candidate.key, 'task_id': task['id'],
-            'employee': employee, 'workload': workload['profile']}
+            'employee': employee, 'workload': workload}
 
 
 class LeadLedger:
