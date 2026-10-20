@@ -17,7 +17,9 @@ import time
 import psutil
 
 from jarvis.agents.dispatch_policy import (DispatchLedger, DispatcherConfig, EmployeeState, build_command, build_env,
-                                           detect_eligibility, detect_limit, due, parse_usage, wake_prompt)
+                                           build_digest, detect_eligibility, detect_limit, digest_due, due, parse_usage,
+                                           should_run_lead, wake_prompt)
+from jarvis.agents.lead_planner import LeadLedger, plan_next
 from jarvis.agents.dispatch_service import DispatchService, KillOnCloseJob, codex_workload_gate, read_pause, read_usage_sample
 from jarvis.agents.process_registry import ProcessRegistry, observe_spawned
 from jarvis.agents.dispatch_policy import Decision
@@ -169,6 +171,47 @@ def _write_service_log(exc):
         stream.write(line + '\n')
 
 
+def load_judge():
+    """The lead's local-model judge (claude-code:second, jarvis/agents/lead_judge.py). Absent: lead stays idle."""
+    try:
+        from jarvis.agents.lead_judge import ollama_judge
+    except ImportError:
+        return None
+    return ollama_judge
+
+
+def run_lead(guard, board, roster, config, now):
+    judge = load_judge()
+    if judge is None:
+        return {'action': 'none', 'reason': 'no_judge'}
+    try:
+        plan_text = (PROJECT_ROOT / 'docs' / 'PLAN.md').read_text(encoding='utf-8')
+        return plan_next(board, roster, plan_text, judge=judge, ledger=LeadLedger(guard), now=now,
+                         usage_sample=read_usage_sample(guard, 'codex'), daily_cap=config.lead.daily_tasks)
+    except Exception as exc:  # the lead never blocks waking employees
+        log_service_error(exc)
+        return {'action': 'none', 'reason': 'lead_error', 'error': type(exc).__name__}
+
+
+def send_digest_if_due(guard, board, ledger, config, now):
+    if not digest_due(now, hour=config.digest_hour, last_sent_day=ledger.last_digest_day()):
+        return False
+    day = time.strftime('%Y-%m-%d', time.localtime(now))
+    day_start = time.mktime(time.localtime(now)[:3] + (0, 0, 0, 0, 0, -1))
+    try:
+        done = [t for t in board.list(status='done', limit=100)['tasks'] if t['updated'] >= day_start]
+        review = board.list(status='review', limit=50)['tasks']
+        stale = [t for t in board.list(status='claimed', limit=50)['tasks'] if t['stale']]
+        text = build_digest(day=day, done=done, review=review, stale=stale, runs=ledger.runs_today_by_status(),
+                            exhausted=ledger.exhausted_all(), pause=read_pause(guard))
+        board.send(DISPATCHER_ID, 'user:heejun', text)
+        ledger.mark_digest(day)
+        return True
+    except Exception as exc:
+        log_service_error(exc)
+        return False
+
+
 def tick(dry_run=False):
     guard = load_guardrails()
     guard.check_running()
@@ -178,22 +221,33 @@ def tick(dry_run=False):
     roster = load_roster(workspace=guard.workspace)
     ledger, board = DispatchLedger(guard), BoardStore(guard)
     now = time.time()
-    states = []
-    for employee, settings in config.employees.items():
-        agent = roster.agents.get(employee)
-        states.append(EmployeeState(
-            employee=employee, enabled=settings.enabled, roster_status=agent.status if agent else 'missing',
-            pending=board.pending_for_employee(employee) if agent else 0,
-            runs_today=ledger.runs_today(employee), running=ledger.running(employee) is not None,
-            exhausted_until=ledger.exhausted_until(employee)))
+
+    def collect():
+        states = []
+        for employee, settings in config.employees.items():
+            agent = roster.agents.get(employee)
+            states.append(EmployeeState(
+                employee=employee, enabled=settings.enabled, roster_status=agent.status if agent else 'missing',
+                pending=board.pending_for_employee(employee) if agent else 0,
+                runs_today=ledger.runs_today(employee), running=ledger.running(employee) is not None,
+                exhausted_until=ledger.exhausted_until(employee)))
+        return states
+
+    states = collect()
+    lead = {'action': 'skipped', 'reason': 'employees_busy_or_disabled'}
+    if not dry_run and should_run_lead(states, lead_enabled=config.lead.enabled):
+        lead = run_lead(guard, board, roster, config, now)
+        if lead.get('action') not in ('none', 'skipped'):
+            states = collect()  # the lead just assigned work; wake that employee in this tick
     decisions = due(states, now, daily_runs=config.daily_runs)
     # JARVIS workload policy decides whether Codex may take new work (no sample: ledger backoff only).
     allowed, workload = codex_workload_gate(read_usage_sample(guard, 'codex'), now)
     decisions = [Decision(d.employee, False, workload) if d.employee == 'codex' and d.wake and not allowed else d
                  for d in decisions]
-    report = {'decisions': [d.__dict__ for d in decisions], 'launched': {}, 'codex_workload': workload}
+    report = {'decisions': [d.__dict__ for d in decisions], 'launched': {}, 'codex_workload': workload, 'lead': lead}
     if dry_run:
         return report
+    send_digest_if_due(guard, board, ledger, config, now)
     threads = []
     for decision in decisions:
         if not decision.wake:

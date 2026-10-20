@@ -31,6 +31,12 @@ class EmployeeSettings(BaseModel):
     model: str = Field(default='', max_length=120, pattern=r'^[A-Za-z0-9._/:#-]*$')
 
 
+class LeadSettings(BaseModel):
+    model_config = ConfigDict(strict=True, extra='forbid')
+    enabled: bool = True
+    daily_tasks: int = Field(default=3, ge=1, le=10)
+
+
 class DispatcherConfig(BaseModel):
     model_config = ConfigDict(strict=True, extra='forbid')
     version: Literal[1]
@@ -39,6 +45,8 @@ class DispatcherConfig(BaseModel):
     daily_runs: int = Field(ge=1, le=100)
     run_timeout_minutes: int = Field(ge=5, le=120)
     employees: dict[Literal['codex', 'claude-code', 'cursor', 'opencode'], EmployeeSettings]
+    lead: LeadSettings = Field(default_factory=LeadSettings)
+    digest_hour: int = Field(default=21, ge=0, le=23)
 
 
 @dataclass(frozen=True)
@@ -78,6 +86,38 @@ def due(states, now, *, daily_runs):
             reason = 'pending_work'
         decisions.append(Decision(item.employee, reason == 'pending_work', reason))
     return decisions
+
+
+def should_run_lead(states, *, lead_enabled):
+    """The JARVIS lead plans new work only when no employee has addressed work or a live run."""
+    return lead_enabled and all(item.pending <= 0 and not item.running for item in states)
+
+
+def digest_due(now, *, hour, last_sent_day):
+    local = time.localtime(now)
+    return local.tm_hour >= hour and time.strftime('%Y-%m-%d', local) != last_sent_day
+
+
+def build_digest(*, day, done, review, stale, runs, exhausted, pause):
+    """Short Korean daily report for user:heejun (board message, max 1000 chars, no double quotes)."""
+    def names(items, limit):
+        shown = [f"{i['title'][:60]}({(i.get('owner') or '-').split(':')[0]})" for i in items[:limit]]
+        more = f' 외 {len(items) - limit}건' if len(items) > limit else ''
+        return ', '.join(shown) + more if shown else '없음'
+    lines = [f'[알림] 자비스 하루 요약 {day}',
+             f'- 완료 {len(done)}건: ' + names(done, 10),
+             f'- 머지·검토 대기 {len(review)}건: ' + names(review, 5),
+             f'- 멈춘 담당 {len(stale)}건: ' + names(stale, 5)]
+    if runs:
+        lines.append('- 오늘 깨운 횟수: ' + ', '.join(
+            f"{who} " + '/'.join(f'{status} {count}' for status, count in sorted(counts.items()))
+            for who, counts in sorted(runs.items())))
+    if exhausted:
+        lines.append('- 한도 대기: ' + ', '.join(
+            f"{who} {time.strftime('%H:%M', time.localtime(until))}까지" for who, until in sorted(exhausted.items())))
+    if pause.get('paused'):
+        lines.append('- 디스패처 일시정지 중' + (f": {pause['reason']}" if pause.get('reason') else ''))
+    return '\n'.join(lines).replace('"', "'")[:1000]
 
 
 def next_backoff(previous):
@@ -212,6 +252,7 @@ class DispatchLedger:
                        'input_tokens INTEGER, output_tokens INTEGER, note TEXT NOT NULL DEFAULT "")')
             db.execute('CREATE TABLE IF NOT EXISTS exhaustion (employee TEXT PRIMARY KEY, until REAL NOT NULL, '
                        'backoff REAL NOT NULL)')
+            db.execute('CREATE TABLE IF NOT EXISTS digests (day TEXT PRIMARY KEY, sent REAL NOT NULL)')
             yield db
             db.commit()
         finally:
@@ -273,6 +314,29 @@ class DispatchLedger:
         with self.connection() as db:
             row = db.execute('SELECT until FROM exhaustion WHERE employee=?', (employee,)).fetchone()
             return row['until'] if row else None
+
+    def runs_today_by_status(self):
+        start = time.mktime(time.localtime(self.clock())[:3] + (0, 0, 0, 0, 0, -1))
+        result = {}
+        with self.connection() as db:
+            for row in db.execute('SELECT employee, status, COUNT(*) n FROM runs WHERE started>=? GROUP BY employee, status',
+                                  (start,)):
+                result.setdefault(row['employee'], {})[row['status']] = row['n']
+        return result
+
+    def exhausted_all(self):
+        with self.connection() as db:
+            return {row['employee']: row['until'] for row in db.execute('SELECT employee, until FROM exhaustion')
+                    if row['until'] > self.clock()}
+
+    def last_digest_day(self):
+        with self.connection() as db:
+            row = db.execute('SELECT day FROM digests ORDER BY day DESC LIMIT 1').fetchone()
+            return row['day'] if row else None
+
+    def mark_digest(self, day):
+        with self.connection() as db:
+            db.execute('INSERT OR REPLACE INTO digests VALUES (?,?)', (day, self.clock()))
 
     def summary(self, *, recent=10):
         with self.connection() as db:

@@ -36,6 +36,11 @@
 - 한도 판단: Codex는 깨우기 전에 자비스 `workload_policy`를 거친다. 사용량 표본(`작업공간/.jarvis-dispatch/usage/codex.json`, W3 수집기 몫)이 10분 이내로 신선하면 정책이 `paused`일 때만 `workload_paused:<상태>`로 건너뛴다(delegate는 조율 역할로 깨움). 표본이 없거나 오래됐으면 `no_usage_sample`/`stale_usage_sample`로 기록하고 장부의 한도 대기만 적용한다(수집기가 멈췄다고 영구 정지하지 않음).
 - 사용자가 한 번 켠다: `powershell -ExecutionPolicy Bypass -File scripts\dispatcher\register-service.ps1 -StartNow`. 로그인할 때마다 자동으로 뜬다. 예약 작업은 PowerShell을 거치지 않고 프로젝트의 `pythonw.exe`를 직접 실행하므로 작업을 끝내면 서비스와 그 직원들이 함께 끝난다. 끄기는 `.jarvis-stop` 또는 `enabled: false`, 등록 해제는 `Unregister-ScheduledTask -TaskName 'JARVIS Dispatcher'`.
 
+## 순환 닫기: 로컬 팀장과 하루 요약
+
+- 로컬 팀장: 모든 직원에게 처리할 메시지도 실행 중인 일도 없을 때만 tick이 `lead_planner.plan_next`를 부른다. 팀장은 `docs/PLAN.md`의 미체크 항목 하나를 작업으로 만들고 담당 직원에게 메시지로 배정한다. 같은 tick에서 그 직원을 바로 깨운다. 판단은 로컬 Ollama(`lead_judge.ollama_judge`)가 하고, Ollama가 꺼져 있거나 판단 함수가 없으면 팀장만 쉬고 직원 깨우기는 계속한다. 하루 생성 상한은 `lead.daily_tasks`(기본 3). 민감 작업은 작업을 만들지 않고 사용자에게 승인 요청만 보낸다.
+- 하루 요약: `digest_hour`(기본 21시) 이후 첫 tick에서 하루 한 번 `user:heejun`에게 게시판 메시지를 보낸다. 내용은 오늘 완료한 작업, 머지·검토 대기, 멈춘 담당, 직원별 깨운 횟수와 결과, 한도 대기, 일시정지 여부(최대 1000자).
+
 ## 명령
 
 ```powershell

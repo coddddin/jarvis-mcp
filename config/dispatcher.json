@@ -4,6 +4,8 @@
   "interval_minutes": 10,
   "daily_runs": 10,
   "run_timeout_minutes": 30,
+  "digest_hour": 21,
+  "lead": {"enabled": true, "daily_tasks": 3},
   "employees": {
     "codex": {"enabled": true},
     "claude-code": {"enabled": true, "max_turns": 60},

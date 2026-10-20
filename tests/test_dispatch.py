@@ -162,3 +162,59 @@ def test_free_tier_refusal_is_an_eligibility_backoff(tmp_path):
     run = ledger.start('opencode', pid=1)
     ledger.finish(run, status='eligibility', exit_code=1, input_tokens=None, output_tokens=None, note='403')
     assert ledger.exhausted_until('opencode') == pytest.approx(NOW + 3600)
+
+
+# --- Loop closure: lead planner wiring and the daily digest ---
+
+def test_lead_runs_only_when_no_employee_has_work():
+    from jarvis.agents.dispatch_policy import should_run_lead
+    idle = [state(pending=0), state(employee='cursor', roster_status='probation', pending=0)]
+    assert should_run_lead(idle, lead_enabled=True)
+    assert not should_run_lead(idle, lead_enabled=False)
+    assert not should_run_lead([state(pending=1)], lead_enabled=True)
+    assert not should_run_lead([state(pending=0, running=True)], lead_enabled=True)
+
+
+def test_digest_is_due_once_per_local_day_after_the_hour():
+    import time as _time
+    from jarvis.agents.dispatch_policy import digest_due
+    base = _time.mktime((2026, 10, 21, 20, 59, 0, 0, 0, -1))
+    assert not digest_due(base, hour=21, last_sent_day=None)
+    assert digest_due(base + 120, hour=21, last_sent_day=None)
+    assert not digest_due(base + 120, hour=21, last_sent_day='2026-10-21')
+    assert digest_due(base + 24 * 3600 + 120, hour=21, last_sent_day='2026-10-21')
+
+
+def test_digest_text_is_short_korean_and_complete():
+    from jarvis.agents.dispatch_policy import build_digest
+    text = build_digest(
+        day='2026-10-21',
+        done=[{'title': f'작업 {i}', 'owner': 'codex:main'} for i in range(14)],
+        review=[{'title': '머지 대기 A', 'owner': 'claude-code:main'}],
+        stale=[{'title': '멈춘 작업', 'owner': 'cursor:main'}],
+        runs={'codex': {'ok': 3, 'limit': 1}, 'opencode': {'eligibility': 1}},
+        exhausted={'codex': 1_800_000_000.0},
+        pause={'paused': False})
+    assert text.startswith('[알림] 자비스 하루 요약 2026-10-21')
+    assert '완료 14건' in text and '외 4건' in text            # at most 10 titles listed
+    assert '머지 대기 A' in text and '멈춘 작업' in text
+    assert 'codex' in text and 'opencode' in text and len(text) <= 1000
+    assert '"' not in text
+
+
+def test_config_lead_and_digest_defaults():
+    config = DispatcherConfig.model_validate(json.loads(Path('config/dispatcher.json').read_text(encoding='utf-8')))
+    assert config.lead.enabled and 1 <= config.lead.daily_tasks <= 10
+    assert 0 <= config.digest_hour <= 23
+
+
+def test_ledger_reports_runs_today_by_status_and_tracks_digest(tmp_path):
+    clock = [NOW]
+    ledger = DispatchLedger(Guardrails(tmp_path), clock=lambda: clock[0], alive=lambda pid: True)
+    for status in ('ok', 'ok', 'limit'):
+        run = ledger.start('codex', pid=1)
+        ledger.finish(run, status=status, exit_code=0, input_tokens=1, output_tokens=1, note='')
+    assert ledger.runs_today_by_status() == {'codex': {'ok': 2, 'limit': 1}}
+    assert ledger.last_digest_day() is None
+    ledger.mark_digest('2026-10-21')
+    assert ledger.last_digest_day() == '2026-10-21'
