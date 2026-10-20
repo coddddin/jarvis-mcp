@@ -8,6 +8,7 @@ import json
 import re
 import sqlite3
 import time
+import unicodedata
 from uuid import uuid4
 
 from jarvis.core.guardrails import GuardrailError
@@ -293,6 +294,90 @@ class BoardStore:
                        (MAX_MESSAGES,))
             db.execute('DELETE FROM reads WHERE message_id NOT IN (SELECT id FROM messages)')
             return {'id': cursor.lastrowid, 'to': to, 'task_id': task_id or None}
+
+    def activity_snapshot(self):
+        """Read-only HUD projection. Board declarations never imply a live process."""
+        self.guard.check_running()
+        self._prefixes()  # Load trusted roster; never expose its executable/configuration fields.
+        now = self.clock()
+        agents = {name: {'id': name, 'label': agent.label, 'roster_status': agent.status,
+                        'connection_status': 'unknown', 'last_activity': None,
+                        'claimed_count': 0, 'stale_count': 0}
+                  for name, agent in self._roster.agents.items()}
+        result = {'schema_version': 1, 'observed_at': int(now), 'read_only': True,
+                  'source': 'self_reported', 'board_available': False, 'agents': list(agents.values()),
+                  'tasks': [], 'timeline': [], 'has_more': {'tasks': False, 'timeline': False}}
+        path = self.guard.validate_path(self.DATABASE, must_exist=False)
+        if not path.exists():
+            return result
+        for suffix in ('', '-journal', '-wal', '-shm'):
+            sibling = path.with_name(path.name + suffix)
+            self.guard.validate_path(str(sibling), must_exist=False)
+            if sibling.exists() and (not sibling.is_file() or sibling.stat().st_nlink != 1):
+                raise GuardrailError('Linked board storage is forbidden.')
+
+        def text(value, limit):
+            value = redact(value)
+            return ''.join(c for c in value if c in '\n\t' or not unicodedata.category(c).startswith('C'))[:limit]
+
+        db = None
+        try:
+            db = sqlite3.connect(path.as_uri() + '?mode=ro', uri=True, timeout=2, isolation_level=None)
+            db.row_factory = sqlite3.Row
+            db.execute('PRAGMA query_only=ON')
+            db.execute('BEGIN')
+            rows = db.execute('SELECT id,title,status,owner,creator,lease_until,updated FROM tasks '
+                              'ORDER BY CASE WHEN status="claimed" THEN 0 WHEN status IN ("blocked","review","open") '
+                              'THEN 1 ELSE 2 END, updated DESC, id DESC').fetchall()
+            result['has_more']['tasks'] = len(rows) > 50
+            for row in rows:
+                stale = row['status'] == 'claimed' and (row['lease_until'] or 0) <= now
+                owner = agents.get((row['owner'] or '').split(':', 1)[0])
+                if owner is not None and row['status'] == 'claimed':
+                    owner['claimed_count'] += 1
+                    owner['stale_count'] += int(stale)
+            result['tasks'] = [{'id': row['id'], 'title': text(row['title'], 200),
+                'status': row['status'], 'owner': row['owner'], 'stale':
+                    row['status'] == 'claimed' and (row['lease_until'] or 0) <= now,
+                'lease_until': row['lease_until'], 'updated': int(row['updated']), 'source': 'self_reported'}
+                for row in rows[:50]]
+            # Aggregate by employee, not by unbounded session IDs. Incoming mail is not activity.
+            for table, column, timestamp in [('tasks', 'creator', 'updated'), ('tasks', 'owner', 'updated'),
+                                              ('messages', 'sender', 'created'), ('notes', 'author', 'created')]:
+                query = (f'SELECT substr({column},1,instr({column},":")-1) AS employee, '
+                         f'MAX({timestamp}) AS latest FROM {table} GROUP BY employee')
+                for row in db.execute(query):
+                    agent = agents.get(row['employee'])
+                    if agent is not None and row['latest'] is not None:
+                        agent['last_activity'] = max(agent['last_activity'] or 0, int(row['latest']))
+            messages = db.execute('SELECT * FROM messages ORDER BY id DESC LIMIT 41').fetchall()
+            notes = db.execute('SELECT * FROM notes ORDER BY id DESC LIMIT 41').fetchall()
+            timeline = []
+            for row in messages:
+                readers = [item['reader'] for item in db.execute(
+                    'SELECT reader FROM reads WHERE message_id=? ORDER BY reader LIMIT 10', (row['id'],))]
+                timeline.append({'id': 'message:' + str(row['id']), 'kind': 'message',
+                    'from': row['sender'], 'to': row['recipient'], 'task_id': row['task_id'],
+                    'text': text(row['body'], 600), 'created': int(row['created']),
+                    'source': 'self_reported', 'readers': readers, '_order': row['created']})
+            for row in notes:
+                timeline.append({'id': 'note:' + str(row['id']), 'kind': 'note', 'from': row['author'],
+                    'to': None, 'task_id': row['task_id'], 'text': text(row['body'], 600),
+                    'created': int(row['created']), 'source': 'self_reported', 'readers': [], '_order': row['created']})
+            timeline.sort(key=lambda item: (item['_order'], item['id']), reverse=True)
+            result['timeline'] = timeline[:40]
+            for item in result['timeline']:
+                item.pop('_order')
+            result['has_more']['timeline'] = len(timeline) > 40
+            result['board_available'] = True
+            self.guard.check_running()
+            return result
+        except sqlite3.Error as exc:
+            raise BoardError('Board activity unavailable.') from exc
+        finally:
+            if db is not None:
+                db.close()
+
 
     def inbox(self, agent, *, limit=20, mark_read=True):
         """Unread messages for this agent, oldest first. Reading marks them read unless mark_read is False."""
