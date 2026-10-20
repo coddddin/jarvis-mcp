@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "node": "C:/Program Files/nodejs/node.exe",
+  "rea_entry": ".integrations/rea/node_modules/rea-agents/scripts/rea.mjs",
+  "agent_python": ".integrations/agent-reach/venv/Scripts/python.exe",
+  "ghidra": ".integrations/ghidra_12.1.4_PUBLIC",
+  "java_home": "C:/Program Files/Amazon Corretto/jdk25.0.4_8"
+}

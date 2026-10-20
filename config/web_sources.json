@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "allowed_hosts": ["blog.python.org", "feeds.bbci.co.uk", "docs.python.org", "api.open-meteo.com"],
+  "sources": {
+    "python-news": {
+      "label": "Python 공식 블로그의 최근 게시물",
+      "kind": "feed",
+      "url": "https://blog.python.org/feeds/posts/default?alt=rss&max-results=5",
+      "link_hosts": ["blog.python.org"]
+    },
+    "bbc-world": {
+      "label": "BBC 세계 뉴스 RSS",
+      "kind": "feed",
+      "url": "https://feeds.bbci.co.uk/news/world/rss.xml",
+      "link_hosts": ["www.bbc.com", "www.bbc.co.uk", "feeds.bbci.co.uk"]
+    },
+    "python-docs": {
+      "label": "Python 3.13 공식 변경 안내 (버전 고정 문서)",
+      "kind": "html",
+      "url": "https://docs.python.org/3.13/whatsnew/3.13.html",
+      "link_hosts": ["docs.python.org"]
+    },
+    "seoul-weather": {
+      "label": "서울 날씨 — 고정 도시, 사용자 위치 아님 (Open-Meteo)",
+      "kind": "weather",
+      "url": "https://api.open-meteo.com/v1/forecast?latitude=37.5665&longitude=126.978&current=temperature_2m,relative_humidity_2m,weather_code&timezone=Asia%2FSeoul",
+      "link_hosts": ["api.open-meteo.com"]
+    }
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "programs": {"status_server": "@status-server", "python": "@python", "vscode": "C:/Users/heejun/AppData/Local/Programs/Microsoft VS Code/Code.exe"},
+  "allowed_hosts": ["127.0.0.1"],
+  "profiles": {
+    "local-status": {
+      "description": "Run a file-free loopback status demo on port 8765 and open one browser tab.",
+      "enabled": true,
+      "max_runtime_seconds": 3600,
+      "actions": [
+        {"kind": "service", "program": "status_server", "args": ["--port", "8765"], "cwd": ".", "port": 8765},
+        {"kind": "web", "url": "http://127.0.0.1:8765/"}
+      ]
+    },
+    "jarvis-development": {
+      "description": "Open the current JARVIS code project in VS Code and a file-free loopback status endpoint. MCP remains stdio.",
+      "enabled": true,
+      "max_runtime_seconds": 3600,
+      "actions": [
+        {"kind": "app", "program": "vscode", "args": ["C:/Users/heejun/.codex/.chatgpt-projects/g-p-6ad2539377bc81919203ed5c098402f1"], "cwd": "."},
+        {"kind": "service", "program": "status_server", "args": ["--port", "8766"], "cwd": ".", "port": 8766},
+        {"kind": "web", "url": "http://127.0.0.1:8766/"}
+      ]
+    }
+  }
+}
