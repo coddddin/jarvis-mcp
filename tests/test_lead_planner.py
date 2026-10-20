@@ -46,7 +46,8 @@ class judge_returning:
     """Fake Ollama judgment: records payloads, returns a fixed answer."""
 
     def __init__(self, **answer):
-        self.answer, self.calls = {'index': 0, 'capability': 'coding', 'tier': 'standard', **answer}, []
+        self.answer = {'index': 0, 'capability': 'coding', 'tier': 'standard', 'paths': ['jarvis/hud.py'], **answer}
+        self.calls = []
 
     def __call__(self, payload):
         self.calls.append(payload)
@@ -140,7 +141,7 @@ def test_concurrent_tick_is_refused_while_one_is_in_flight(ledger):
     def judge_that_races(payload):
         # A second tick starts while the first is waiting on the model.
         inner['result'] = plan_next(board, ROSTER, PLAN, judge=judge_returning(), ledger=ledger, now=NOW)
-        return {'index': 0, 'capability': 'coding', 'tier': 'standard'}
+        return {'index': 0, 'capability': 'coding', 'tier': 'standard', 'paths': ['jarvis/hud.py']}
 
     outer, _ = run(ledger, board=board, judge=judge_that_races)
     assert inner['result'] == {'action': 'none', 'reason': 'tick_in_progress'}
@@ -154,7 +155,7 @@ def test_cap_holds_under_racing_ticks(ledger):
     def judge_that_races(payload):
         inner['result'] = plan_next(board, ROSTER, PLAN, judge=judge_returning(), ledger=ledger, now=NOW,
                                     daily_cap=2)
-        return {'index': 0, 'capability': 'coding', 'tier': 'standard'}
+        return {'index': 0, 'capability': 'coding', 'tier': 'standard', 'paths': ['jarvis/hud.py']}
 
     run(ledger, board=board, judge=judge_that_races, daily_cap=2)
     assert inner['result']['reason'] == 'tick_in_progress' and len(board.tasks) == 1
@@ -189,8 +190,13 @@ def test_section_title_and_paths_are_checked_too():
     assert judged(plain)[2] == 'light'
     assert judged(plain, section_line='## W0 백업·복원', paths=['scripts/backup/run.ps1'])[2] == 'sensitive'
     assert judged(plain, title='then merge to main')[2] == 'sensitive'
-    for path in ('config/agents.json', '.env', './config/x.json', 'jarvis/core/guardrails.py', 'AGENTS.md'):
+    for path in ('config/agents.json', '.env', './config/x.json', 'jarvis/core/guardrails.py', 'AGENTS.md',
+                 'jarvis/core/', 'jarvis', '.', './', 'scripts'):  # parent folders cover sensitive files
         assert judged(plain, paths=[path])[2] == 'sensitive', path
+    assert judged(plain, paths=['jarvis/agents/', 'tests/test_hud.py'])[2] == 'light'
+    # No declared scope: coding may touch anything, read-only work may not change files.
+    assert judged(plain, capability='coding')[2] == 'sensitive'
+    assert judged(plain, capability='review')[2] == 'light'
 
 
 @pytest.mark.parametrize('capability,paths,tier', [

@@ -115,12 +115,20 @@ def _safe_paths(values):
     return paths
 
 
+def _covers_sensitive(path):
+    """True if the path is inside a sensitive path or is a folder containing one ('.' is the whole repo)."""
+    path = str(PurePosixPath(path)).lower()  # './x' -> 'x', 'a/b/' -> 'a/b'
+    if path == '.':
+        return True
+    return path.startswith(SENSITIVE_PATHS) or any(item.startswith(path + '/') for item in SENSITIVE_PATHS)
+
+
 def is_sensitive(candidate, capability, title, paths):
     words = ' '.join((candidate.text, candidate.section, title))
     if SENSITIVE_WORDS.search(words):
         return True
-    if any(str(PurePosixPath(p)).lower().startswith(SENSITIVE_PATHS) for p in paths):  # './x' -> 'x'
-        return True
+    if any(_covers_sensitive(p) for p in paths) or (capability == 'coding' and not paths):
+        return True  # coding with no declared scope may touch anything
     # Docs-only means explicit paths, all Markdown, and no coding; anything vaguer counts as a change.
     docs_only = capability != 'coding' and bool(paths) and all(p.lower().endswith('.md') for p in paths)
     return bool(CHANGE_SENSITIVE_WORDS.search(words)) and not docs_only
