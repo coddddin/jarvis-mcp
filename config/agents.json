@@ -32,7 +32,7 @@
       "status": "probation",
       "max_tier": "standard",
       "instructions": ["AGENTS.md", "AGENTS_CONTEXT.md", ".cursor/rules/jarvis.mdc"],
-      "notes": "Joined 2026-10-21 on probation: proposals and reviews, no sensitive tools. IDE installed; CLI (agent) not installed yet."
+      "notes": "Joined 2026-10-21 on probation: proposals and reviews, no sensitive tools. CLI (agent) 2026.10.19 installed and authenticated; first board task completed."
     },
     "opencode": {
       "label": "OpenCode",
