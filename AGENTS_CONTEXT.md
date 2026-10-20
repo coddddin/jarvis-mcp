@@ -43,6 +43,7 @@
 10. Token reduction is a goal, not a measured 90% guarantee. Codex Google connector auth is not server auth.
 11. Follow docs/architecture.md; run scripts/check_architecture.py for layout/import changes; no new root implementation modules.
 12. Session start: board_inbox, then board_list; board_claim paths before editing; board_release with summary+verification+commit. One commit per finished task, pushed to coddddin/jarvis-mcp; never commit just to communicate.
+13. Agent web research/browsing/UI tests: use ego-lite via ego-browser. Read its skill and run `ego-browser skill` first. If unavailable, report the blocker; never silently substitute another browser (user instruction, 2026-10-21).
 ## 5. Active integration handoff (2026-10-20)
 - REA 6.7.0 + Agent Reach 1.5.0 + Ghidra 12.1.4 installed; static JS/PE + registered RSS verified via MCP (29 tools); Android/additional channels next. See [report](docs/reports/rea-agent-reach.md).
 - Removing/uninstalling/disabling redundant MCPs or tools requires explicit user consent after presenting scope/reason/impact.
