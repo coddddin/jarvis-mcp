@@ -40,6 +40,49 @@ def test_api_only_selected_summaries_no_proposals_or_context(setup):
     assert response.headers['cache-control'] == 'no-store'
 
 
+def test_process_observations_require_auth_and_minimize_data(setup):
+    store, selected, _, _ = setup
+    class Monitor:
+        calls = 0
+        def inspect(self, *, limit):
+            self.calls += 1
+            assert limit == 100
+            return {'processes': [{'id': 'test', 'pid': 123, 'kind': 'verification',
+                'label': '검증', 'process_state': 'running', 'warnings': ['runtime_exceeded'],
+                'observed_at': 1000, 'parent_pid': 789, 'created': 1,
+                'command_line': 'private-command'}], 'has_more': True}
+    monitor = Monitor()
+    client = TestClient(create_event_app(store, token='x' * 43, task_ids=[selected.task_id],
+        origins=['http://127.0.0.1:8787'], processes=monitor))
+    assert client.get('/api/processes').status_code == 401
+    headers = {'Authorization': 'Bearer ' + 'x' * 43}
+    assert client.get('/api/processes', headers={**headers, 'Origin': 'https://example.org'}).status_code == 403
+    assert monitor.calls == 0
+    response = client.get('/api/processes', headers=headers)
+    assert response.status_code == 200
+    data = response.json()
+    assert data['has_more'] and data['termination_supported'] is False
+    assert data['processes'][0]['warnings'] == ['runtime_exceeded']
+    assert not {'command_line', 'parent_pid', 'created'} & data['processes'][0].keys()
+    assert response.headers['cache-control'] == 'no-store'
+    assert client.post('/api/processes', headers=headers).status_code == 405
+
+
+def test_process_monitor_failure_is_not_healthy_empty_list(setup):
+    store, selected, _, client = setup
+    headers = {'Authorization': 'Bearer ' + 'x' * 43}
+    assert client.get('/api/processes', headers=headers).status_code == 503
+    class BrokenMonitor:
+        def inspect(self, **kwargs):
+            raise RuntimeError('private-failure-detail')
+    client = TestClient(create_event_app(store, token='x' * 43, task_ids=[selected.task_id],
+        origins=['http://127.0.0.1:8787'], processes=BrokenMonitor()))
+    response = client.get('/api/processes', headers=headers)
+    assert response.status_code == 503
+    assert response.json() == {'error': 'status_unavailable'}
+    assert 'private-failure-detail' not in response.text
+
+
 def test_forgotten_omitted_but_stop_not_hidden_as_empty_success(setup):
     store, selected, _, client = setup
     store.interrupt(selected.task_id, 'Cancel', cancelled=True)

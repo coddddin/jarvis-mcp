@@ -9,6 +9,28 @@ const stamp = seconds => new Intl.DateTimeFormat('ko-KR',{timeZone:'Asia/Seoul',
 const number = value => new Intl.NumberFormat('ko-KR').format(value);
 function element(tag, className, text){const node=document.createElement(tag); if(className)node.className=className; if(text!==undefined)node.textContent=text; return node;}
 function notice(message=''){ $('notice').textContent=message; $('notice').hidden=!message; }
+let processPollBusy=false;
+function processNotice(message=''){ $('processNotice').textContent=message; $('processNotice').hidden=!message; }
+async function loadProcesses(){
+  if(!state.token||state.demo||document.hidden||processPollBusy)return;
+  const token=state.token; processPollBusy=true;
+  try{
+    const response=await fetch('/api/processes',{headers:{Authorization:'Bearer '+token},cache:'no-store',credentials:'omit',signal:AbortSignal.timeout(10000)});
+    if(state.token!==token||state.demo)return;
+    if(response.status===401){disconnect();return;}
+    if(!response.ok)throw new Error('monitor_unavailable');
+    const data=await response.json();
+    if(state.token!==token||state.demo)return;
+    if(!Array.isArray(data.processes)||data.termination_supported!==false)throw new Error('invalid_monitor');
+    const descriptions={parent_exited:'실행한 부모 프로그램 종료',parent_unverifiable:'부모 상태 확인 불가',runtime_exceeded:'설정된 실행 시간 초과',clock_regressed:'시각 확인 필요',process_unverifiable:'실행 상태 확인 불가',process_pid_reused:'프로세스 번호 재사용'};
+    const warnings=data.processes.filter(item=>Array.isArray(item.warnings)&&item.warnings.length);
+    const message=warnings.slice(0,3).map(item=>item.label+' (PID '+item.pid+'): '+item.warnings.map(code=>descriptions[code]||'상태 확인 필요').join(', ')).join(' · ');
+    processNotice(warnings.length||data.has_more?'프로세스 확인: '+message+(warnings.length>3?' · 추가 경고 '+(warnings.length-3)+'개':'')+(data.has_more?' · 등록 목록 일부만 확인':'')+' · 자동 종료하지 않습니다.':'');
+  }catch(error){if(state.token===token&&!state.demo)processNotice('프로세스 감시 상태를 가져오지 못했어요. 정상 여부는 확인되지 않았습니다.');}
+  finally{processPollBusy=false;}
+}
+window.addEventListener('jarvis-connection',event=>{if(event.detail.token)loadProcesses();else processNotice();});
+setInterval(loadProcesses,30000);
 function connection(text, mode=''){ $('connectionLabel').textContent=text; $('connectionDot').className='dot '+mode; }
 function stopStream(){state.generation++;stream.stop();}
 function resetTimings(){state.timings=new JarvisDisplayTimings();$('latencyMetric').textContent='새 기록이 도착하면 갱신 속도를 측정합니다. 과거 기록은 제외해요.';}

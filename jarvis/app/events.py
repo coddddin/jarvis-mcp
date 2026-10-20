@@ -43,7 +43,7 @@ def load_event_token(root=AUTH_ROOT):
     return token
 
 
-def create_event_app(tasks, *, token, task_ids, origins, chat=None):
+def create_event_app(tasks, *, token, task_ids, origins, chat=None, processes=None):
     if not isinstance(token, str) or not re.fullmatch(r'[A-Za-z0-9_-]{43}', token):
         raise ValueError('A strong local event token is required.')
     task_ids, origins = frozenset(task_ids), frozenset(origins)
@@ -102,6 +102,15 @@ def create_event_app(tasks, *, token, task_ids, origins, chat=None):
         if not header.startswith('Bearer ') or not valid(header[7:]):
             return JSONResponse({'error': 'connection_required'}, status_code=401, headers=response_headers)
         try:
+            if request.url.path == '/api/processes':
+                if processes is None:
+                    return JSONResponse({'error': 'monitor_unavailable'}, status_code=503, headers=response_headers)
+                observed = await asyncio.to_thread(processes.inspect, limit=100)
+                # Expose observations, never command lines, paths or parent identities.
+                items = [{key: item[key] for key in ('id', 'pid', 'kind', 'label', 'process_state', 'warnings', 'observed_at')}
+                         for item in observed['processes']]
+                return JSONResponse({'processes': items, 'has_more': observed['has_more'],
+                    'termination_supported': False}, headers=response_headers)
             jobs = await asyncio.to_thread(summaries)
             return JSONResponse({'tasks': jobs, 'read_only': True, 'local_only': True}, headers=response_headers)
         except Exception:
@@ -204,4 +213,4 @@ def create_event_app(tasks, *, token, task_ids, origins, chat=None):
         Route('/api/chat/conversations', chat_api, methods=['GET', 'POST']),
         Route('/api/chat/conversations/{conversation_id}', chat_api, methods=['GET']),
         Route('/api/chat/conversations/{conversation_id}/messages', chat_api, methods=['POST']),
-        Route('/api/tasks', listing), WebSocketRoute('/tasks/{task_id}/events', watch)])
+        Route('/api/tasks', listing), Route('/api/processes', listing), WebSocketRoute('/tasks/{task_id}/events', watch)])
