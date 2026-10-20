@@ -15,6 +15,7 @@ from jarvis.features.workflows.service import WorkflowLauncher, WorkflowError
 from jarvis.features.development.service import DebugAssistant, DebugError
 from jarvis.features.web.service import WebCollector, WebError
 from jarvis.features.integrations.service import IntegrationHub, IntegrationError
+from jarvis.features.board.service import BoardStore, BoardError
 
 
 @dataclass(frozen=True)
@@ -28,6 +29,7 @@ class ToolContext:
     debug: DebugAssistant
     web: WebCollector
     integrations: IntegrationHub
+    board: BoardStore
 
     @classmethod
     def create(cls, guard):
@@ -43,6 +45,7 @@ class ToolContext:
             debug=DebugAssistant(snapshots),
             web=web,
             integrations=IntegrationHub(guard, web),
+            board=BoardStore(guard),
         )
 
 
@@ -54,7 +57,7 @@ def guarded_tool(function, context):
             return function(*args, **kwargs)
         except ToolError:
             raise
-        except (GuardrailError, KnowledgeError, GoogleIntegrationError, SnapshotError, OrganizationError, WorkflowError, DebugError, WebError, IntegrationError) as exc:
+        except (GuardrailError, KnowledgeError, GoogleIntegrationError, SnapshotError, OrganizationError, WorkflowError, DebugError, WebError, IntegrationError, BoardError) as exc:
             raise ToolError(str(exc)) from exc
         except Exception as exc:
             logging.getLogger('jarvis').error('Tool %s failed (%s)', function.__name__, type(exc).__name__)

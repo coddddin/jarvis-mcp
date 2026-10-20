@@ -8,7 +8,7 @@
 - jarvis/app/: server.py, runtime.py (shared context/admission), plugins.py (feature tool discovery).
 - jarvis/core/: guardrails.py (20-call budget/stop), paths.py (stable roots), redaction.py.
 - jarvis/features/<feature>/service.py + tools/: co-located service and one-file-per-tool adapters.
-- Features: system(3), knowledge(3), google(2), snapshots(4), files(6), workflows(6), development(1), web(4), integrations(2); 31 tools (27 original contracts preserved).
+- Features: system(3), knowledge(3), google(2), snapshots(4), files(6), workflows(6), development(1), web(4), integrations(2), board(7); 38 tools (27 original contracts preserved).
 - jarvis/workers/: web_https.py and workflow_status.py; standalone subprocess implementations.
 - jarvis/cli/: OAuth + agents preview/apply; agents/: task control/runner; development service: preview-bound single-file apply.
 - config/: trusted workflow/web source registrations; location unchanged.
@@ -42,6 +42,7 @@
 9. Select changed-feature tests first; retry failures first; full suite only with impact justification (docs/DEVELOPMENT.md). Run: `.\.venv\Scripts\python.exe server.py`.
 10. Token reduction is a goal, not a measured 90% guarantee. Codex Google connector auth is not server auth.
 11. Follow docs/architecture.md; run scripts/check_architecture.py for layout/import changes; no new root implementation modules.
+12. Coordinate on the shared board ([guide](docs/guides/board.md)): board_list first, board_claim your paths before editing, board_release with summary+verification+commit; commit and push to GitHub coddddin/jarvis-mcp.
 ## 5. Active integration handoff (2026-10-20)
 - REA 6.7.0 + Agent Reach 1.5.0 + Ghidra 12.1.4 installed; static JS/PE + registered RSS verified via MCP (29 tools); Android/additional channels next. See [report](docs/reports/rea-agent-reach.md).
 - Removing/uninstalling/disabling redundant MCPs or tools requires explicit user consent after presenting scope/reason/impact.

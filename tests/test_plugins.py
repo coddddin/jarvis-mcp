@@ -50,7 +50,9 @@ def test_existing_tool_contract_unchanged(tmp_path):
     original_names = {tool['name'] for tool in original}
     existing = [tool for tool in actual if tool['name'] in original_names]
     assert sorted(existing, key=lambda x: x['name']) == sorted(original, key=lambda x: x['name'])
-    assert len(actual) == 31
+    assert len(actual) == 38
+    assert {'board_list', 'board_get', 'board_create', 'board_claim', 'board_heartbeat',
+            'board_note', 'board_release'} <= {tool['name'] for tool in actual}
     assert 'read_public_web_page' in {tool['name'] for tool in actual}
     assert 'search_public_web' in {tool['name'] for tool in actual}
     assert {'analyze_program_static', 'read_registered_feed_with_agent_reach'} <= {tool['name'] for tool in actual}

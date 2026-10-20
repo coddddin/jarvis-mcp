@@ -67,7 +67,7 @@ def test_stable_entry_from_unrelated_cwd_and_package_entry(tmp_path):
         async with stdio_client(params) as (read, write):
             async with ClientSession(read, write) as session:
                 await session.initialize()
-                assert len((await session.list_tools()).tools) == 31
+                assert len((await session.list_tools()).tools) == 38
                 assert not (await session.call_tool('get_system_status', {})).isError
     asyncio.run(exercise([str(PROJECT_ROOT / 'server.py')], tmp_path))
     asyncio.run(exercise(['-m', 'jarvis'], PROJECT_ROOT))

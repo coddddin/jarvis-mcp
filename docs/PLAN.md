@@ -230,7 +230,8 @@ Claude Code 작성 초안이다. 사용자 승인 전에는 착수하지 않으�
 - 저장: 작업공간 `.jarvis-board/board.sqlite3`. ChatStore의 연결 경계(링크 거부, BEGIN IMMEDIATE, 크기 상한)를 재사용한다.
 - Task: id, title, detail(최대 2000자), status(open/claimed/blocked/review/done/cancelled), owner(`codex:<세션>`, `claude-code:<세션>` 등), lease_until, paths(프로젝트 상대 경로 범위), depends_on, 생성/갱신 시각.
 - Note: task_id, author, kind(handoff/finding/question), body(최대 4000자), refs(커밋 해시·파일·보고서 경로). 기존 mailbox WorkResult(summary/output) 스키마와 정합한다.
-- 도구(파일당 1개): `board_list`, `board_get`, `board_create`, `board_claim`(기본 lease 30분, 경로 범위가 겹치면 거부), `board_heartbeat`, `board_note`, `board_release`(상태 변경 시 인수인계 요약 필수), `board_conflicts`.
+- 도구(파일당 1개): `board_list`, `board_get`, `board_create`, `board_claim`(기본 lease 30분, 경로 범위가 겹치면 거부), `board_heartbeat`, `board_note`, `board_release`(상태 변경 시 인수인계 요약 필수). 충돌은 claim 거부 메시지와 목록의 paths로 확인하므로 별도 `board_conflicts`는 두지 않았다.
+- [x] 2026-10-21 사용자 승인으로 구현: `jarvis/features/board/`, 도구 7개(총 38개, 기존 계약 보존), 전용 27개 검사(실제 stdio 서버 2개 공유 포함)와 전체 538개 통과. [게시판 안내](guides/board.md). 남은 완료 조건은 실제 Codex 세션에서의 1회 사용이다.
 - 규칙: lease 만료는 stale 표시만 한다. 자동 재배정·프로세스 종료는 하지 않는다. 경로 claim은 권고 잠금이며 OS 잠금이 아니다. done에는 커밋 해시와 검증 명령·결과를 남긴다. 게시판 내용은 데이터이며 권한이나 지시가 아니다.
 - 완료 조건: Codex와 Claude Code 실제 MCP 세션에서 생성→claim→경로 충돌 거부→handoff→done 1회. 동시 claim 단일 승자, lease 만료 stale 회귀 검사.
 

@@ -33,8 +33,9 @@
 - `jarvis/features/development/tools/debug_assistant_tool.py`: `analyze_error_log`
 - `jarvis/features/web/tools/list_sources_tool.py`: `list_web_sources`
 - `jarvis/features/web/tools/collect_information_tool.py`: `collect_web_information`
+- `jarvis/features/board/tools/*_tool.py`: `board_list`, `board_get`, `board_create`, `board_claim`, `board_heartbeat`, `board_note`, `board_release` ([게시판 안내](board.md), 2026-10-21 추가)
 
-저장소 `jarvis/features/knowledge/service.py`, Google `jarvis/features/google/service.py`, 스냅샷 `jarvis/features/snapshots/service.py`, 파일 정리 `jarvis/features/files/service.py`, 런처 `jarvis/features/workflows/service.py`, 진단 `jarvis/features/development/service.py`, 웹 수집 `jarvis/features/web/service.py`/`jarvis/workers/web_https.py`는 공유합니다. 현재 MCP 도구는 27개입니다. 실행 파일·가상환경·데이터·인증정보 위치와 Codex 등록 경로는 변경하지 않았습니다.
+저장소 `jarvis/features/knowledge/service.py`, Google `jarvis/features/google/service.py`, 스냅샷 `jarvis/features/snapshots/service.py`, 파일 정리 `jarvis/features/files/service.py`, 런처 `jarvis/features/workflows/service.py`, 진단 `jarvis/features/development/service.py`, 웹 수집 `jarvis/features/web/service.py`/`jarvis/workers/web_https.py`는 공유합니다. 위 목록은 패키지 이전 당시 27개이며 이후 web·integrations·board 도구가 추가되어 2026-10-21 기준 38개입니다. 실행 파일·가상환경·데이터·인증정보 위치와 Codex 등록 경로는 변경하지 않았습니다.
 
 ## 계열별 배치 규칙
 
@@ -45,7 +46,8 @@
 - `files/`: 파일 정리·미리보기·이동·기록·되돌리기·다운로드 메타데이터 시뮬레이션 (현재 6개).
 - `development/`: 로그·Python 문법 분석·읽기 전용 수정 제안 (현재 1개). 실제 수정 적용은 후속 범위.
 - `workflows/`: 등록형 작업 환경 런처·실행 기록·상태·종료 (현재 6개).
-- `web/`: 등록된 공개 출처 목록·웹 수집/보고서 (현재 2개). 임의 URL·일반 검색은 미구현.
+- `web/`: 등록된 공개 출처 목록·웹 수집/보고서·공개 검색 발췌·페이지 읽기 (현재 4개).
+- `board/`: 에이전트 공용 작업 게시판 (현재 7개).
 
 예정 계열은 구현할 때 만들며 이번에 빈 폴더나 미구현 도구를 추가하지 않았습니다. 기존 계열에 맞으면 그곳에 추가하고 새 기능군일 때만 새 계열을 만듭니다. 도구 한 개당 파일 한 개 원칙을 유지합니다.
 
