@@ -303,3 +303,15 @@ def test_get_returns_latest_notes_up_to_limit(board):
     notes = board.get(task)['notes']
     assert len(notes) == 10 and notes[-1]['body'] == 'n14'
     assert len(board.get(task, notes=50)['notes']) == 15
+
+
+def test_pending_for_employee_ignores_broadcasts_and_messages_any_session_read(board):
+    board.send(CLAUDE, 'codex', 'employee-wide task')
+    board.send(CLAUDE, 'codex:auto', 'for the auto session')
+    board.send(CLAUDE, 'codex:main', 'for the interactive session only')
+    board.send(CLAUDE, '*', 'broadcast')
+    assert board.pending_for_employee('codex') == 2
+    board.inbox('codex:main')             # an interactive session handled the employee-wide message
+    assert board.pending_for_employee('codex') == 1
+    board.inbox('codex:auto')
+    assert board.pending_for_employee('codex') == 0

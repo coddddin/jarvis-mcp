@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "enabled": true,
+  "interval_minutes": 10,
+  "daily_runs": 10,
+  "run_timeout_minutes": 30,
+  "employees": {
+    "codex": {"enabled": true},
+    "claude-code": {"enabled": true, "max_turns": 60},
+    "cursor": {"enabled": true}
+  }
+}
