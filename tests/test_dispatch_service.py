@@ -200,3 +200,9 @@ def test_child_processes_die_with_the_job(tmp_path):
     while child.poll() is None and time.time() < deadline:
         time.sleep(0.1)
     assert child.poll() is not None
+
+
+def test_unparseable_fresh_sample_does_not_pause_codex():
+    broken = {'usage': {'primary': {'usedPercent': 30, 'resetsAt': NOW - 10}}, 'sampled_at': NOW - 30}
+    assert codex_workload_gate(broken, NOW) == (True, 'unparsed_usage_sample')
+    assert codex_workload_gate({'usage': {}, 'sampled_at': NOW - 30}, NOW) == (True, 'unparsed_usage_sample')

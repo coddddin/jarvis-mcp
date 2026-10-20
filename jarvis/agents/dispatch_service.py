@@ -49,6 +49,8 @@ def codex_workload_gate(sample, now):
             or not 0 <= now - sampled_at <= MAX_SAMPLE_AGE_SECONDS):
         return True, 'stale_usage_sample'
     plan = plan_workload(sample.get('usage'), ['codex'], sampled_at, now)
+    if plan['profile'] == 'unknown':  # unparseable windows: a broken collector must not pause Codex
+        return True, 'unparsed_usage_sample'
     if plan['codex_role'] == 'paused':
         return False, 'workload_paused:' + plan['profile']
     return True, plan['profile']

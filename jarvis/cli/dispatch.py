@@ -112,8 +112,9 @@ def run_employee(employee, run_id, config, guard, ledger, board):
     with log_path.open('w', encoding='utf-8', errors='replace') as log:
         process = subprocess.Popen(argv, cwd=worktree, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
                                    creationflags=NO_WINDOW)
+        if not job().assign(process) and os.name == 'nt':  # bind before anything else can spawn
+            log_service_error(RuntimeError(f'{employee} run {run_id} not bound to kill-on-close job'))
         ledger.set_pid(run_id, process.pid)
-        job().assign(process)
         observe_spawned(guard, process, kind='worker', label=f'dispatch {employee}', timeout_seconds=timeout)
         deadline, status = time.monotonic() + timeout, None
         while process.poll() is None:
@@ -146,6 +147,13 @@ def run_employee(employee, run_id, config, guard, ledger, board):
 
 def log_service_error(exc):
     """The service runs windowless (pythonw), so errors go to a log file instead of stderr."""
+    try:
+        _write_service_log(exc)
+    except Exception:  # logging must never stop the service
+        pass
+
+
+def _write_service_log(exc):
     LOGS.mkdir(parents=True, exist_ok=True)
     line = json.dumps({'at': time.strftime('%Y-%m-%d %H:%M:%S'), 'error': type(exc).__name__,
                        'detail': str(exc)[:300]}, ensure_ascii=False)
