@@ -34,6 +34,8 @@
 
 ## 단계별 보고서
 
+- [계획 이력](reports/plan-history.md): 2026-10-21 PLAN.md에서 옮긴 지난 상태·단계 세부·설계 결정 D01~·REA 체크포인트 원문.
+
 - [협업 엔진 검증](reports/hybrid-team.md): 로컬 리드→Codex 실연결·검수 보류·담당 경계와 제한.
 
 - [Phase 1](reports/phase-01.md): 초기 34개 테스트·실제 캡처와 구조 정비 후 71개 회귀 테스트 기록.
