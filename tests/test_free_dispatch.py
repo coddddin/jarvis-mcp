@@ -7,7 +7,7 @@ from jarvis.agents.chat import ChatBusy
 from jarvis.agents.provider_routing import ProviderCandidate
 from jarvis.app.chat import ChatService
 from jarvis.app.dispatch import FreeDispatcher, ProviderFailure
-from jarvis.core.guardrails import Guardrails
+from jarvis.core.guardrails import GuardrailError, Guardrails
 
 
 @pytest.fixture
@@ -50,6 +50,19 @@ def test_reservation_is_durable_before_executor_and_result_is_preserved(setup):
     with pytest.raises(ChatBusy):
         FreeDispatcher(service.store, candidates=[candidate()], executors={'free-a': execute}).run(identity, request, 'Write an add function proposal')
     assert len(calls) == 1
+
+
+def test_exhausted_call_budget_records_no_running_attempt(setup):
+    # The guard refuses before any provider call, so no reservation may be left looking in-flight.
+    service, identity, request = setup
+    calls = []
+    dispatcher = FreeDispatcher(service.store, candidates=[candidate()],
+        executors={'free-a': lambda **kwargs: calls.append(kwargs) or {'reply': 'x'}})
+    service.store.guard._calls = service.store.guard.MAX_CALLS
+    with pytest.raises(GuardrailError):
+        dispatcher.run(identity, request, 'Write an add function proposal')
+    assert calls == []
+    assert service.store.get(identity)['turns'][0]['dispatch'] == {}
 
 
 def test_only_confirmed_quota_failure_switches_to_another_free_provider(setup):

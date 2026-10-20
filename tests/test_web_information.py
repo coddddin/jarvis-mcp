@@ -89,6 +89,18 @@ def test_page_reader_extracts_visible_text_and_marks_truncation(collector, monke
     assert not (collector.guard.workspace / 'reports').exists()
 
 
+def test_page_reader_keeps_escaped_markup_as_text(collector, monkeypatch):
+    # Escaped tags are page text; re-parsing them as HTML used to drop everything after them.
+    html = ('<title>A &lt;form&gt; guide</title><p>Put a &lt;form&gt; tag in the page.</p>'
+            '<p>Example: &lt;script&gt;alert(1)&lt;/script&gt;</p><p>Step 2: IMPORTANT.</p>')
+    monkeypatch.setattr(collector, '_fetch', lambda *args: ('text/html', html))
+    result = collector.read_page('https://example.com/article')
+    assert result['title'] == 'A <form> guide'
+    assert 'Put a <form> tag in the page.' in result['excerpt']
+    assert '<script>alert(1)</script>' in result['excerpt']
+    assert 'Step 2: IMPORTANT.' in result['excerpt']
+
+
 @pytest.mark.parametrize('url', ['http://example.com/', 'https://127.0.0.1/',
     'https://localhost/', 'https://user:secret@example.com/', 'https://example.com/?token=secret'])
 def test_page_reader_rejects_unsafe_urls_before_fetch(collector, monkeypatch, url):

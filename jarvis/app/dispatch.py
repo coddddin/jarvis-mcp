@@ -70,9 +70,10 @@ class FreeDispatcher:
             selected = choice['selected']
             budget = reserve_attempt(candidates, budget, capability=capability,
                 input_tokens=input_tokens, output_tokens=1024)
+            # Spend the guard budget first: a refusal here must not leave a reservation that looks in-flight.
+            self.guard.enter_call()
             state.update(status='running', budget=budget.model_dump(mode='json'))
             self.store.update_dispatch(identity, request_id, previous, state)
-            self.guard.enter_call()
             try:
                 result = DispatchResult.model_validate(self.executors[selected](message=message, deadline=deadline))
                 if not result.reply.strip():

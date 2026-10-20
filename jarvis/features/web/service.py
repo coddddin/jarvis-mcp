@@ -131,10 +131,15 @@ class VisibleText(HTMLParser):
                 self.parts.append(data)
 
 
+def normalize(parts, limit):
+    """Join already-parsed text; never feed it back to the HTML parser."""
+    return re.sub(r'\s+', ' ', redact(' '.join(parts))).strip()[:limit]
+
+
 def plain(text, limit):
     parser = VisibleText()
     parser.feed(text)
-    return re.sub(r'\s+', ' ', redact(' '.join(parser.parts))).strip()[:limit]
+    return normalize(parser.parts, limit)
 
 
 def child_text(element, names):
@@ -215,10 +220,10 @@ class WebCollector:
             raise WebError('Page requires verification; no page content was confirmed.')
         parser = VisibleText()
         parser.feed(text)
-        excerpt = plain(' '.join(parser.parts), 3001)
+        excerpt = normalize(parser.parts, 3001)
         if not excerpt.strip():
             raise WebError('No visible page text was returned.')
-        return {'status': 'ok', 'url': source.url, 'title': plain(' '.join(parser.title), 300) or host,
+        return {'status': 'ok', 'url': source.url, 'title': normalize(parser.title, 300) or host,
                 'excerpt': excerpt[:3000], 'truncated': len(excerpt) > 3000,
                 'retrieved_at': datetime.now(timezone.utc).isoformat(), 'untrusted_content': True,
                 'scope': 'Visible page excerpt only; no script execution, whole-document review or independent fact checking.'}
