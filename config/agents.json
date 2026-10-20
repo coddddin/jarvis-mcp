@@ -38,11 +38,12 @@
       "label": "OpenCode",
       "kind": "cli",
       "command": "opencode",
-      "capabilities": ["coding", "review"],
+      "capabilities": ["coding", "review", "summary"],
       "cost": "free",
-      "status": "candidate",
+      "status": "probation",
       "max_tier": "light",
-      "notes": "Free-model candidate for dispatch; CLI free model returned 403 on 2026-10-20."
+      "instructions": ["AGENTS.md", "AGENTS_CONTEXT.md"],
+      "notes": "Joined 2026-10-21 on probation via the bundled OpenCode Desktop CLI (opencode-cli v2.0.32), free models, standalone server. Proposals and reviews only; board tools only (no other jarvis tools, no personal data). The 2026-10-20 403 came from a custom restricted agent."
     },
     "gemini": {
       "label": "Gemini CLI",

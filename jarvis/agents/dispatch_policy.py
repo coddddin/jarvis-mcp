@@ -6,6 +6,7 @@ No model is invoked here. The CLI in jarvis/cli/dispatch.py performs launches.
 from contextlib import contextmanager
 from dataclasses import dataclass
 import json
+from pathlib import Path
 import re
 import sqlite3
 import time
@@ -17,13 +18,17 @@ from jarvis.core.guardrails import GuardrailError
 
 BACKOFF_START, BACKOFF_MAX = 3600, 6 * 3600
 LIMIT_PATTERN = re.compile(r'usage limit|rate limit|quota|\b429\b|limit reached|exceeded your|out of (?:credits|usage)', re.I)
-EMPLOYEES = ('codex', 'claude-code', 'cursor')
+EMPLOYEES = ('codex', 'claude-code', 'cursor', 'opencode')
+PROBATION_PROMPT = ('cursor', 'opencode')
+ELIGIBILITY_PATTERN = re.compile(r'FreeTierError|free tier can only be used', re.I)
+OPENCODE_DEFAULT_MODEL = 'opencode/glm-5.3-flash-free'
 
 
 class EmployeeSettings(BaseModel):
     model_config = ConfigDict(strict=True, extra='forbid')
     enabled: bool = True
     max_turns: int = Field(default=60, ge=1, le=200)
+    model: str = Field(default='', max_length=120, pattern=r'^[A-Za-z0-9._/:#-]*$')
 
 
 class DispatcherConfig(BaseModel):
@@ -33,7 +38,7 @@ class DispatcherConfig(BaseModel):
     interval_minutes: int = Field(ge=5, le=240)
     daily_runs: int = Field(ge=1, le=100)
     run_timeout_minutes: int = Field(ge=5, le=120)
-    employees: dict[Literal['codex', 'claude-code', 'cursor'], EmployeeSettings]
+    employees: dict[Literal['codex', 'claude-code', 'cursor', 'opencode'], EmployeeSettings]
 
 
 @dataclass(frozen=True)
@@ -83,6 +88,11 @@ def detect_limit(text):
     return bool(LIMIT_PATTERN.search(text or ''))
 
 
+def detect_eligibility(text):
+    """OpenCode's free tier refusing the request (HTTP 403 FreeTierError): not a quota, but backed off the same way."""
+    return bool(ELIGIBILITY_PATTERN.search(text or ''))
+
+
 def _usage_from(obj):
     usage = obj.get('usage') if isinstance(obj, dict) else None
     if not isinstance(usage, dict) or 'output_tokens' not in usage:
@@ -125,8 +135,10 @@ def wake_prompt(employee, python='.venv/Scripts/python.exe'):
         "5. 다른 직원의 도움이 필요하면 board_send(to='codex' 또는 'claude-code' 또는 'cursor')로 요청한다.",
         '6. 한국어로 쓰고, 큰 문서는 필요한 부분만 읽는다. 30분 안에 끝낸다.',
     ]
-    if employee == 'cursor':
+    if employee in PROBATION_PROMPT:
         lines.append('수습 직원이므로 파일을 고치거나 커밋하지 않는다. 검토 의견과 제안만 board_note·board_send로 남긴다.')
+    if employee == 'opencode':
+        lines.append('무료 모델 직원이므로 개인정보(메일·일정·화면·개인 문서)는 다루지 않는다. 코드와 공개 문서만 본다.')
     return '\n'.join(lines)
 
 
@@ -152,7 +164,28 @@ def build_command(employee, config, worktree, prompt, mcp_json, *, executable, g
         # Probation: no --force, so Cursor proposes and reviews but cannot apply edits.
         return [executable, '-p', '--approve-mcps', '--trust', '--output-format', 'json',
                 '--workspace', worktree, prompt]
+    if employee == 'opencode':
+        # Standalone server so the project config (MCP, permissions) applies; default agent, because a custom
+        # restricted agent made the free tier answer 403 FreeTierError.
+        model = config.employees[employee].model or OPENCODE_DEFAULT_MODEL
+        return [executable, 'run', '--standalone', '-m', model, '--format', 'json', prompt]
     raise ValueError(f'No headless command for {employee}')
+
+
+def build_env(employee, *, project_root, workspace):
+    """Extra environment for an employee run. OpenCode gets its whole probation config inline."""
+    if employee != 'opencode':
+        return {}
+    python = Path(project_root) / '.venv' / 'Scripts' / 'python.exe'
+    config = {
+        'permission': {'edit': 'deny', 'webfetch': 'deny',
+                       'bash': {'*': 'deny', 'git status *': 'allow', 'git diff *': 'allow', 'git log *': 'allow'}},
+        'mcp': {'jarvis': {'type': 'local', 'command': [str(python), str(Path(project_root) / 'server.py')],
+                           'environment': {'JARVIS_WORKSPACE': str(workspace)}, 'enabled': True}},
+        # Verified 2026-10-21: the underscore glob hides every other jarvis tool (privacy), the dot glob does not.
+        'tools': {'jarvis_*': False, 'jarvis_board_*': True},
+    }
+    return {'OPENCODE_CONFIG_CONTENT': json.dumps(config)}
 
 
 class DispatchLedger:
@@ -213,7 +246,7 @@ class DispatchLedger:
             row = db.execute('SELECT employee FROM runs WHERE id=?', (run_id,)).fetchone()
             db.execute('UPDATE runs SET ended=?, status=?, exit_code=?, input_tokens=?, output_tokens=?, note=? WHERE id=?',
                        (now, status, exit_code, input_tokens, output_tokens, note[:500], run_id))
-            if status == 'limit':
+            if status in ('limit', 'eligibility'):
                 prior = db.execute('SELECT backoff FROM exhaustion WHERE employee=?', (row['employee'],)).fetchone()
                 backoff = next_backoff(prior['backoff'] if prior else None)
                 db.execute('INSERT OR REPLACE INTO exhaustion VALUES (?,?,?)', (row['employee'], now + backoff, backoff))

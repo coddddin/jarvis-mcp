@@ -128,3 +128,37 @@ def test_try_start_refuses_a_second_live_run_and_the_daily_cap(tmp_path):
     ledger.finish(second, status='ok', exit_code=0, input_tokens=1, output_tokens=1, note='')
     assert ledger.try_start('codex', daily_runs=2) is None        # cap: lost + ok = 2 today
     assert ledger.try_start('cursor', daily_runs=2) is not None   # other employees unaffected
+
+
+# --- OpenCode employee (free models, probation) ---
+
+def test_opencode_command_is_standalone_free_model_and_cannot_edit(tmp_path):
+    from jarvis.agents.dispatch_policy import build_env
+    config = DispatcherConfig.model_validate(json.loads(Path('config/dispatcher.json').read_text(encoding='utf-8')))
+    argv = build_command('opencode', config, tmp_path, 'P', '{}', executable='opencode-cli.exe')
+    assert argv[:3] == ['opencode-cli.exe', 'run', '--standalone']
+    model = argv[argv.index('-m') + 1]
+    assert model.startswith('opencode/') and model.endswith('-free') and argv[-1] == 'P'
+    assert '--agent' not in argv            # a custom restricted agent triggered FreeTierError 403
+    settings = json.loads(build_env('opencode', project_root=tmp_path, workspace=tmp_path / 'ws')['OPENCODE_CONFIG_CONTENT'])
+    assert settings['permission']['edit'] == 'deny' and settings['permission']['webfetch'] == 'deny'
+    assert settings['permission']['bash']['*'] == 'deny'
+    assert settings['tools'] == {'jarvis_*': False, 'jarvis_board_*': True}   # privacy: board tools only
+    assert settings['mcp']['jarvis']['environment']['JARVIS_WORKSPACE'] == str(tmp_path / 'ws')
+    assert build_env('codex', project_root=tmp_path, workspace=tmp_path) == {}
+
+
+def test_opencode_prompt_is_proposal_only_and_privacy_scoped():
+    prompt = wake_prompt('opencode')
+    assert 'opencode:auto' in prompt and '수습' in prompt and '개인정보' in prompt and '"' not in prompt
+
+
+def test_free_tier_refusal_is_an_eligibility_backoff(tmp_path):
+    from jarvis.agents.dispatch_policy import detect_eligibility
+    assert detect_eligibility('{"name":"FreeTierError","message":"free tier can only be used from within OpenCode"}')
+    assert not detect_eligibility('pytest: 1 failed')
+    clock = [NOW]
+    ledger = DispatchLedger(Guardrails(tmp_path), clock=lambda: clock[0], alive=lambda pid: True)
+    run = ledger.start('opencode', pid=1)
+    ledger.finish(run, status='eligibility', exit_code=1, input_tokens=None, output_tokens=None, note='403')
+    assert ledger.exhausted_until('opencode') == pytest.approx(NOW + 3600)

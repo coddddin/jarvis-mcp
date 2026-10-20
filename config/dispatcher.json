@@ -7,6 +7,7 @@
   "employees": {
     "codex": {"enabled": true},
     "claude-code": {"enabled": true, "max_turns": 60},
-    "cursor": {"enabled": true}
+    "cursor": {"enabled": true},
+    "opencode": {"enabled": true, "model": "opencode/glm-5.3-flash-free"}
   }
 }
