@@ -80,6 +80,8 @@
 
 ### W4 AI 직원 체계 (2026-10-21 사용자 승인)
 
+- [x] 직원 협업 상황판: 인증된 HUD에서 직원별 담당·최근 메시지·인수인계를 5초마다 읽기 조회한다. 게시판 자기 보고와 우편함 조회 사실을 구분하며 모델 온라인 상태는 추정하지 않는다. 실행별 heartbeat 수집기는 후속 범위다. [명부·상황판 안내](guides/agents-roster.md).
+
 목표: Codex·Claude Code 외 AI 도구를 "AI 직원"으로 코드 수정 없이 들이고, 신뢰 수준에 따라 권한을 나눈다. 순서는 명부 → 안내서 → 신원·권한 → 수습·승진 → 업무 평가.
 
 - [x] W4-1 명부: `config/agents.json`, `jarvis/core/roster.py`. 게시판 agent ID와 무료 배정 runtime이 명부를 읽는다. 첫 신규 직원 Cursor(probation, standard), 후보 opencode·gemini. 명부 20개·게시판·배정 검사, 전체 571개 통과. [명부 안내](guides/agents-roster.md).
@@ -90,6 +92,14 @@
 - [x] 소통 규약 (2026-10-21): 게시판 우편함 `board_send`/`board_inbox`(직접·직원 전체·전체 공지, 읽음 처리), 간결한 `board_list`, `board_get` 노트 기본 10개. 규칙을 "소통은 게시판, PLAN은 단계 체크만, 보고서는 단계 완료 때만, 소통용 커밋 금지"로 바꿨다. 도구 40개, 전체 578개 통과. [소통 규약](guides/communication.md).
 - [ ] 공통 작업자 어댑터: `team.py` 실행 파일 탐색과 `workload_policy.py` 직원 목록을 명부로 통합.
 - [x] Cursor 실사용 (2026-10-21): CLI `agent` 2026.10.19 설치(설치 스크립트 검토 후), 사용자 계정 로그인, `.cursor/cli.json`으로 게시판 도구만 허용·민감 도구 금지. 헤드리스 실행으로 첫 작업 claim→finding→review, Claude Code가 검토 후 done. 첫 시도는 MCP 허용 목록이 없어 거부됐다. 관찰: 한국어 요약 지시에도 영어로 작성.
+
+### W5 자동 순환 (2026-10-21 사용자 승인)
+
+목표: 직원들이 게시판으로 일을 주고받으며 사람 없이도 개발이 이어진다. 사용자 결정: 커밋은 중요할 때만 직원 브랜치에, main 머지는 사용자 승인, 24시간·일 있을 때만, 직원당 하루 10회.
+
+- [x] v1 디스패처 코드: `jarvis/agents/dispatch_policy.py`, `jarvis/cli/dispatch.py`, `config/dispatcher.json`. 검사 22개, 전체 642개 통과, dry-run 판단 확인. [디스패처 안내](guides/dispatcher.md).
+- [ ] 실제 tick과 10분 주기 예약 등록(사용자 승인 필요: Claude Code 안전 검사가 무인 에이전트 실행을 차단).
+- [ ] v2: 다음 할 일 자동 생성(팀장 역할), 하루 요약 보고, 직원별 실측 토큰 기반 상한.
 
 ### 순서와 사용자 결정 사항
 
