@@ -18,7 +18,7 @@ import psutil
 
 from jarvis.agents.dispatch_policy import (DispatchLedger, DispatcherConfig, EmployeeState, build_command, build_env,
                                            detect_eligibility, detect_limit, due, parse_usage, wake_prompt)
-from jarvis.agents.dispatch_service import DispatchService, KillOnCloseJob, codex_workload_gate, read_usage_sample
+from jarvis.agents.dispatch_service import DispatchService, KillOnCloseJob, codex_workload_gate, read_pause, read_usage_sample
 from jarvis.agents.process_registry import ProcessRegistry, observe_spawned
 from jarvis.agents.dispatch_policy import Decision
 from jarvis.app.runtime import load_guardrails
@@ -232,7 +232,8 @@ def main():
                 on_error=log_service_error)
             result = service.run()
         elif args.action == 'status':
-            result = DispatchLedger(load_guardrails()).summary()
+            guard = load_guardrails()
+            result = {**DispatchLedger(guard).summary(), 'pause': read_pause(guard)}
         else:
             result = tick(dry_run=args.action == 'dry-run')
         print(json.dumps(result, ensure_ascii=False, indent=2, default=str))

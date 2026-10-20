@@ -16,6 +16,7 @@ from jarvis.core.guardrails import GuardrailError
 
 USAGE_DIR = '.jarvis-dispatch/usage'
 LOCK = '.jarvis-dispatch/service.lock'
+PAUSE = '.jarvis-dispatch/paused.json'
 POLL_SECONDS = 5
 DEFAULT_INTERVAL_MINUTES = 10
 LOGGER = logging.getLogger(__name__)
@@ -35,6 +36,29 @@ def read_usage_sample(guard, employee):
     except (OSError, ValueError):
         return None
     return data if isinstance(data, dict) and isinstance(data.get('usage'), dict) else None
+
+
+def read_pause(guard):
+    """Pause switch written by the HUD backend. Missing file: running. Unreadable or malformed: paused
+    (conservative). Contract agreed with claude-code:third on 2026-10-21."""
+    path = guard.validate_path(PAUSE, must_exist=False)
+    if not path.exists():
+        return {'paused': False}
+    try:
+        if path.is_symlink() or not path.is_file() or path.stat().st_size > 16384:
+            raise ValueError('unsafe pause file')
+        data = json.loads(path.read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return {'paused': True, 'reason': 'unreadable_pause_file'}
+    if not isinstance(data, dict) or not isinstance(data.get('paused'), bool):
+        return {'paused': True, 'reason': 'malformed_pause_file'}
+    result = {'paused': data['paused']}
+    for key, kind, limit in (('by', str, 80), ('reason', str, 200)):
+        if isinstance(data.get(key), kind):
+            result[key] = data[key][:limit]
+    if isinstance(data.get('at'), (int, float)) and not isinstance(data.get('at'), bool):
+        result['at'] = data['at']
+    return result
 
 
 def codex_workload_gate(sample, now):
@@ -188,6 +212,10 @@ class DispatchService:
             while not self._stopped():
                 if self.clock() >= next_tick:
                     settings = self._current_settings()
+                    if read_pause(self.guard)['paused']:
+                        # Stay due: the first poll after resume ticks immediately.
+                        self.sleep(POLL_SECONDS)
+                        continue
                     if settings['enabled']:
                         try:
                             self.tick()

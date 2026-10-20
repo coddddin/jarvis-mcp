@@ -206,3 +206,45 @@ def test_unparseable_fresh_sample_does_not_pause_codex():
     broken = {'usage': {'primary': {'usedPercent': 30, 'resetsAt': NOW - 10}}, 'sampled_at': NOW - 30}
     assert codex_workload_gate(broken, NOW) == (True, 'unparsed_usage_sample')
     assert codex_workload_gate({'usage': {}, 'sampled_at': NOW - 30}, NOW) == (True, 'unparsed_usage_sample')
+
+
+# --- Pause contract with the HUD backend (claude-code:third) ---
+
+def write_pause(tmp_path, payload):
+    folder = tmp_path / '.jarvis-dispatch'
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / 'paused.json').write_text(payload if isinstance(payload, str) else json.dumps(payload), encoding='utf-8')
+
+
+def test_read_pause_states(tmp_path):
+    from jarvis.agents.dispatch_service import read_pause
+    guard = Guardrails(tmp_path)
+    assert read_pause(guard) == {'paused': False}
+    write_pause(tmp_path, {'paused': True, 'by': 'user:heejun', 'at': NOW, 'reason': '점검'})
+    assert read_pause(guard) == {'paused': True, 'by': 'user:heejun', 'at': NOW, 'reason': '점검'}
+    write_pause(tmp_path, {'paused': False, 'by': 'user:heejun', 'at': NOW})
+    assert read_pause(guard)['paused'] is False
+    write_pause(tmp_path, 'not json')                        # broken file is treated as paused (conservative)
+    assert read_pause(guard)['paused'] is True and read_pause(guard)['reason'] == 'unreadable_pause_file'
+    write_pause(tmp_path, {'paused': 'yes'})
+    assert read_pause(guard)['paused'] is True
+
+
+def test_paused_service_skips_ticks_and_resumes_quickly(tmp_path):
+    guard = Guardrails(tmp_path)
+    fake = Fake(guard, stop_after_minutes=25)
+    original_sleep = fake.sleep
+
+    def sleep(seconds):
+        original_sleep(seconds)
+        elapsed = fake.now - NOW
+        if 60 <= elapsed < 65:
+            write_pause(tmp_path, {'paused': True, 'by': 'user:heejun', 'at': fake.now})
+        if 15 * 60 <= elapsed < 15 * 60 + 5:
+            write_pause(tmp_path, {'paused': False, 'by': 'user:heejun', 'at': fake.now})
+
+    service = DispatchService(guard, tick=fake.tick, config=fake.config, sleep=sleep, clock=lambda: fake.now,
+                              register=lambda: None)
+    service.run()
+    # t=0 tick, paused from 1 to 15 min (the t=10 tick is skipped), resume ticks within one poll at ~15 min.
+    assert fake.ticks == 2
