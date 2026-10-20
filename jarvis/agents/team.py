@@ -198,7 +198,7 @@ class HybridTeam:
                 '--setting-sources', '', '--no-session-persistence', '--max-turns', '1']
 
     def _external(self, runtime, context, folder, name, deadline):
-        self.guard.enter_call()
+        self.guard.enter_call('sensitive')  # external model transmission
         schema_path = self.guard.validate_path(str(folder / (name + '-schema.json')), must_exist=False)
         result_path = self.guard.validate_path(str(folder / (name + '-answer.json')), must_exist=False)
         with schema_path.open('x', encoding='utf-8') as stream:

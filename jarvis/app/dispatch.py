@@ -71,7 +71,7 @@ class FreeDispatcher:
             budget = reserve_attempt(candidates, budget, capability=capability,
                 input_tokens=input_tokens, output_tokens=1024)
             # Spend the guard budget first: a refusal here must not leave a reservation that looks in-flight.
-            self.guard.enter_call()
+            self.guard.enter_call('sensitive')  # external model transmission
             state.update(status='running', budget=budget.model_dump(mode='json'))
             self.store.update_dispatch(identity, request_id, previous, state)
             try:

@@ -322,6 +322,9 @@ def test_mcp_tools_share_stop_and_budget(collector):
         for _ in range(20):
             result = await mcp.call_tool('list_web_sources', {})
             assert not result[0].text == ''
+        # Listing is a light-tier call and leaves the standard window untouched.
+        assert collector.guard._calls == 0 and collector.guard._light == 20
+        collector.guard._calls = Guardrails.MAX_CALLS
         with pytest.raises(ToolError, match='budget'):
             await mcp.call_tool('collect_web_information', {'source_ids': ['python-news']})
         with pytest.raises(ToolError, match='budget'):

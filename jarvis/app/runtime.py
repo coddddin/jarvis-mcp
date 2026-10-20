@@ -49,11 +49,25 @@ class ToolContext:
         )
 
 
+# Budget tier per tool; unlisted tools are 'standard'. See Guardrails for the limits.
+TOOL_TIERS = {
+    **{name: 'light' for name in (
+        'board_list', 'board_get', 'board_create', 'board_claim', 'board_heartbeat', 'board_note', 'board_release',
+        'list_web_sources', 'list_workflows', 'list_workflow_runs', 'get_workflow_status',
+        'list_project_snapshots', 'list_file_organization_operations')},
+    **{name: 'sensitive' for name in (
+        'apply_file_organization', 'undo_file_organization', 'restore_project_snapshot',
+        'start_workflow', 'stop_workflow', 'clear_local_index', 'take_screenshot', 'get_daily_briefing')},
+}
+
+
 def guarded_tool(function, context):
+    tier = TOOL_TIERS.get(function.__name__, 'standard')
+
     @wraps(function)
     def invoke(*args, **kwargs):
         try:
-            context.guard.enter_call()
+            context.guard.enter_call(tier)
             return function(*args, **kwargs)
         except ToolError:
             raise

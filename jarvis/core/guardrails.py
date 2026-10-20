@@ -5,6 +5,7 @@ from pathlib import Path
 import re
 import shlex
 import threading
+import time
 
 
 class GuardrailError(ValueError):
@@ -18,9 +19,16 @@ class SafeCommand:
 
 
 class Guardrails:
-    MAX_CALLS = 20
+    # Process-wide budgets in fixed windows; they recover with time instead of needing a restart.
+    WINDOW_SECONDS = 600
+    MAX_CALLS = 20          # standard + sensitive calls per window
+    MAX_SENSITIVE = 5       # state-changing, privacy or external-model calls per window
+    MAX_LIGHT = 60          # coordination/listing calls per window, outside MAX_CALLS
+    DAILY_MAX = 600         # all tiers per local calendar day
+    DAILY_SENSITIVE = 40
+    TIERS = ('light', 'standard', 'sensitive')
 
-    def __init__(self, workspace: Path):
+    def __init__(self, workspace: Path, *, clock=time.time):
         if not workspace.is_absolute():
             raise GuardrailError("Workspace must be an absolute path.")
         try:
@@ -29,16 +37,60 @@ class Guardrails:
             raise GuardrailError("Workspace must already exist.") from exc
         if not self.workspace.is_dir():
             raise GuardrailError("Workspace must be a directory.")
-        self._calls = 0
+        self._clock = clock
         self._lock = threading.Lock()
+        self._window_start = clock()
+        self._calls = self._sensitive = self._light = 0
+        self._day = self._day_key(self._window_start)
+        self._daily = self._daily_sensitive = 0
 
-    def enter_call(self) -> None:
-        # Process-wide limit is intentionally stricter than a caller-selected task ID.
+    @staticmethod
+    def _day_key(now):
+        return time.localtime(now)[:3]
+
+    def _roll(self, now):
+        if now - self._window_start >= self.WINDOW_SECONDS:
+            self._window_start = now
+            self._calls = self._sensitive = self._light = 0
+        if self._day_key(now) != self._day:
+            self._day = self._day_key(now)
+            self._daily = self._daily_sensitive = 0
+
+    def _retry(self):
+        return time.strftime('%H:%M:%S', time.localtime(self._window_start + self.WINDOW_SECONDS))
+
+    def enter_call(self, tier: str = 'standard') -> None:
+        if tier not in self.TIERS:
+            raise GuardrailError("Unknown tool tier.")
         with self._lock:
             self.check_running()
-            if self._calls >= self.MAX_CALLS:
-                raise GuardrailError("Server tool-call budget exhausted; operator restart required.")
-            self._calls += 1
+            self._roll(self._clock())
+            if self._daily >= self.DAILY_MAX or (tier == 'sensitive' and self._daily_sensitive >= self.DAILY_SENSITIVE):
+                raise GuardrailError("Server daily tool-call budget exhausted; it resets at local midnight.")
+            if tier == 'light':
+                if self._light >= self.MAX_LIGHT:
+                    raise GuardrailError(f"Server light tool-call budget exhausted; retry after {self._retry()}.")
+                self._light += 1
+            else:
+                if self._calls >= self.MAX_CALLS:
+                    raise GuardrailError(f"Server tool-call budget exhausted for this window; retry after {self._retry()}.")
+                if tier == 'sensitive':
+                    if self._sensitive >= self.MAX_SENSITIVE:
+                        raise GuardrailError(f"Server sensitive tool-call budget exhausted; retry after {self._retry()}.")
+                    self._sensitive += 1
+                    self._daily_sensitive += 1
+                self._calls += 1
+            self._daily += 1
+
+    def budget_status(self) -> dict:
+        with self._lock:
+            self._roll(self._clock())
+            return {'window': {'seconds': self.WINDOW_SECONDS, 'used': self._calls, 'limit': self.MAX_CALLS,
+                               'sensitive_used': self._sensitive, 'sensitive_limit': self.MAX_SENSITIVE,
+                               'light_used': self._light, 'light_limit': self.MAX_LIGHT,
+                               'resets_at': self._window_start + self.WINDOW_SECONDS},
+                    'daily': {'used': self._daily, 'limit': self.DAILY_MAX,
+                              'sensitive_used': self._daily_sensitive, 'sensitive_limit': self.DAILY_SENSITIVE}}
 
     def check_running(self) -> None:
         """Poll cancellation inside long operations without spending another tool call."""

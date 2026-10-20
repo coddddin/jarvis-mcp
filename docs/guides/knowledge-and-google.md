@@ -64,7 +64,7 @@ Codex의 Google 커넥터와 독립 자비스 서버의 인증은 별개입니�
 
 ## 공통 실행 제한 및 검증
 
-새 도구도 기존 20회 프로세스 호출 예산과 `.jarvis-stop` 정책을 따릅니다. 인덱싱 작업은 원문을 변경하지 않습니다. 기존 명령·상태·스크린샷 도구는 유지했습니다.
+새 도구도 공통 시간창 호출 예산([시스템 도구](system-tools.md))과 `.jarvis-stop` 정책을 따릅니다. 인덱싱 작업은 원문을 변경하지 않습니다. 기존 명령·상태·스크린샷 도구는 유지했습니다.
 
 ```powershell
 .\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
