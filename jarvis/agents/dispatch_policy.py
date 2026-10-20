@@ -48,7 +48,7 @@ class EmployeeState:
 
 
 @dataclass(frozen=True)
-class Decision:
+class Decision:  # reason may also carry a JARVIS workload_policy verdict
     employee: str
     wake: bool
     reason: str

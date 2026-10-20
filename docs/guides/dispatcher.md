@@ -25,12 +25,21 @@
 7. 브랜치에 새 커밋이 있으면 `origin`에 push. 실패·시간 초과·한도는 `user:heejun`에게 게시판 메시지로 알린다.
 8. 실행 중 `.jarvis-stop`이 생기면 실행을 종료한다. `config/dispatcher.json`의 `enabled: false`면 아무것도 하지 않는다.
 
+## 자비스 상시 서비스 (W5 통합-3)
+
+직원을 깨우는 주체는 자비스다. Claude·Codex·Cursor는 깨워지는 직원일 뿐 디스패처를 돌리지 않는다.
+
+- `python -m jarvis.cli.dispatch serve`: 작업공간당 하나만 실행된다(잠금 `작업공간/.jarvis-dispatch/service.json`, 살아 있는 다른 서비스가 있으면 거부). 프로세스 감시(process_registry)에 `service`로 등록한다. 설정의 `interval_minutes`마다 tick을 돌리고, 5초마다 `.jarvis-stop`을 확인해 멈춘다. `enabled: false`면 켜져 있어도 깨우지 않는다. tick 실패는 기록만 하고 서비스는 계속 돈다.
+- 한도 판단: Codex는 깨우기 전에 자비스 `workload_policy`를 거친다. 사용량 표본(`작업공간/.jarvis-dispatch/usage/codex.json`, W3 수집기 몫)이 있으면 `normal`일 때만 깨우고 그 외(delegate·conserve·critical·exhausted·unknown)는 `workload_paused:<상태>`로 건너뛴다. 표본이 없으면 `no_usage_sample`로 기록하고 장부의 한도 대기만 적용한다(표본이 없다는 이유로 영구 정지하지 않음).
+- 사용자가 한 번 켠다: `powershell -ExecutionPolicy Bypass -File scripts\dispatcher\register-service.ps1 -StartNow`. 로그인할 때마다 자동으로 뜨고, 실패하면 5분 간격으로 3번 다시 시작한다. 끄기는 `.jarvis-stop` 또는 `enabled: false`, 등록 해제는 `Unregister-ScheduledTask -TaskName 'JARVIS Dispatcher'`.
+
 ## 명령
 
 ```powershell
 .\.venv\Scripts\python.exe -m jarvis.cli.dispatch dry-run   # 판단만, 실행 없음
 .\.venv\Scripts\python.exe -m jarvis.cli.dispatch tick      # 한 번 실행 (직원을 실제로 깨움)
 .\.venv\Scripts\python.exe -m jarvis.cli.dispatch status    # 장부 요약: 직원별 실행 수·토큰·소진 상태
+.\.venv\Scripts\python.exe -m jarvis.cli.dispatch serve     # 상시 서비스 (보통은 예약 작업으로 실행)
 ```
 
 ## 머지 승인

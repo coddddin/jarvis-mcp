@@ -18,7 +18,9 @@ import psutil
 
 from jarvis.agents.dispatch_policy import (DispatchLedger, DispatcherConfig, EmployeeState, build_command,
                                            detect_limit, due, parse_usage, wake_prompt)
-from jarvis.agents.process_registry import observe_spawned
+from jarvis.agents.dispatch_service import DispatchService, codex_workload_gate, read_usage_sample
+from jarvis.agents.process_registry import ProcessRegistry, observe_spawned
+from jarvis.agents.dispatch_policy import Decision
 from jarvis.app.runtime import load_guardrails
 from jarvis.core.paths import CONFIG_ROOT, PROJECT_ROOT
 from jarvis.core.roster import load_roster
@@ -150,7 +152,11 @@ def tick(dry_run=False):
             runs_today=ledger.runs_today(employee), running=ledger.running(employee) is not None,
             exhausted_until=ledger.exhausted_until(employee)))
     decisions = due(states, now, daily_runs=config.daily_runs)
-    report = {'decisions': [d.__dict__ for d in decisions], 'launched': {}}
+    # JARVIS workload policy decides whether Codex may take new work (no sample: ledger backoff only).
+    allowed, workload = codex_workload_gate(read_usage_sample(guard, 'codex'), now)
+    decisions = [Decision(d.employee, False, workload) if d.employee == 'codex' and d.wake and not allowed else d
+                 for d in decisions]
+    report = {'decisions': [d.__dict__ for d in decisions], 'launched': {}, 'codex_workload': workload}
     if dry_run:
         return report
     threads = []
@@ -177,10 +183,21 @@ def tick(dry_run=False):
 
 def main():
     parser = argparse.ArgumentParser(description='자비스 W5 디스패처: 게시판에 일이 온 AI 직원을 깨운다. main 머지는 하지 않는다.')
-    parser.add_argument('action', choices=['tick', 'dry-run', 'status'])
+    parser.add_argument('action', choices=['serve', 'tick', 'dry-run', 'status'])
     args = parser.parse_args()
     try:
-        if args.action == 'status':
+        if args.action == 'serve':
+            guard = load_guardrails()
+            def config():
+                return json.loads((CONFIG_ROOT / 'dispatcher.json').read_text(encoding='utf-8'))
+            service = DispatchService(
+                guard, tick=tick, config=config,
+                register=lambda: ProcessRegistry(guard).register_current(
+                    kind='service', label='JARVIS dispatcher', max_runtime_seconds=604800),
+                on_error=lambda exc: print(json.dumps({'tick_error': type(exc).__name__, 'detail': str(exc)[:200]},
+                                                      ensure_ascii=False), file=sys.stderr, flush=True))
+            result = service.run()
+        elif args.action == 'status':
             result = DispatchLedger(load_guardrails()).summary()
         else:
             result = tick(dry_run=args.action == 'dry-run')
