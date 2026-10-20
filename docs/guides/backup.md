@@ -34,4 +34,5 @@ restic을 설치하고 `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_DEFAUL
 
 - 이 PC의 백업 시점까지만 보존된다. 실행 중 DB는 backup API로 일관성 있게 복사하지만 서버 동작 전체를 멈춘 시점 복사는 아니다.
 - `.integrations/`(외부 도구, 약 1.6GB)와 `artifacts/`는 백업하지 않는다. 다시 설치·생성할 수 있다.
-- 2026-10-21 로컬 저장소 시험: 29개 파일 백업→복원 일치, SQLite 3개 무결성 ok. R2 실제 연결은 사용자 설정 후 확인한다.
+- 2026-10-21 실제 R2 첫 백업과 복원 확인 성공: 29개 파일, SQLite 3개 무결성 ok. 매일 23:00 예약 등록. 복원 확인은 복호화된 사본을 검증 직후 삭제한다.
+- `restore-check.ps1`의 `restic check`는 저장소 구조만 확인한다. 전체 데이터 재검증이 필요하면 `restic check --read-data`를 따로 실행한다.

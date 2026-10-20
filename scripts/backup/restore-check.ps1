@@ -25,7 +25,9 @@ foreach ($db in $dbs) {
     if ($r -ne 'ok') { $bad++; Write-Host "BAD  $($db.FullName): $r" }
 }
 $files = (Get-ChildItem $target -Recurse -File).Count
-$msg = "restore-check files=$files sqlite=$($dbs.Count) bad=$bad target=$target"
+$msg = "restore-check files=$files sqlite=$($dbs.Count) bad=$bad"
+# The restored copy holds decrypted credentials; never leave it on disk.
+Remove-Item -Recurse -Force $target
 Write-BackupLog $msg
 Write-Host $msg
 if ($bad -gt 0) { exit 1 }
