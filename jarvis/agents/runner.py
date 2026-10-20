@@ -10,6 +10,7 @@ from pydantic import Field, model_validator
 from jarvis.agents.models import Contract, QAEvidence, StepResult, TERMINAL
 from jarvis.agents.store import TaskError, TaskStore
 from jarvis.agents.memory import MemoryScope, MemoryStore
+from jarvis.agents.process_registry import observe_spawned
 from jarvis.agents.sandbox import DockerRuntimeConfig, SandboxRunner
 from jarvis.core.paths import WORKERS_ROOT
 from jarvis.core.guardrails import GuardrailError
@@ -50,6 +51,9 @@ class LocalRunner:
         stop_at = time.monotonic() + (10 if mode == 'qa' else 120)
         first = True
         try:
+            observe_spawned(self.store.guard, process, kind='verification' if mode == 'qa' else 'worker',
+                label='local-' + mode, timeout_seconds=min(10 if mode == 'qa' else 120,
+                                                          max(1, deadline - time.time())))
             while True:
                 self.store.guard.check_running()
                 if '_task_id' in payload:

@@ -1,6 +1,7 @@
 """Owned-process observations only. No termination, command lines or process discovery."""
 from contextlib import contextmanager
 import math
+import logging
 import os
 import sqlite3
 import time
@@ -178,3 +179,24 @@ class ProcessRegistry:
         return {'processes': observations[:limit], 'has_more': len(rows) > limit, 'scanned_count': len(rows),
                 'warning_count': sum(bool(item['warnings']) for item in observations),
                 'termination_supported': False, 'scope': 'registered_process_observations_only'}
+
+
+def observe_spawned(guard, process, *, kind, label, timeout_seconds):
+    """Best-effort monitoring, never a new process lifetime/termination policy."""
+    guard.check_running()
+    if process.poll() is not None:
+        return {'status': 'already_exited'}
+    try:
+        if (isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, (int, float))
+                or not math.isfinite(timeout_seconds)):
+            raise ProcessRegistryError('Invalid observation duration.')
+        duration = min(604800, max(1, math.ceil(timeout_seconds)))
+        record = ProcessRegistry(guard).register_child(getattr(process, 'pid', None), kind=kind, label=label,
+                                                       max_runtime_seconds=duration)
+        return {'status': 'registered', 'id': record['id']}
+    except (ProcessRegistryError, GuardrailError, OSError):
+        guard.check_running()  # Cancellation still wins over a diagnostic fallback.
+        if process.poll() is not None:
+            return {'status': 'already_exited'}
+        logging.getLogger(__name__).warning('Owned-process monitoring unavailable; worker execution unchanged.')
+        return {'status': 'unavailable'}

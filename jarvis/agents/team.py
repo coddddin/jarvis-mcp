@@ -13,6 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from jarvis.agents.chat import ChatError
 from jarvis.agents.team_routing import select_role_seat
+from jarvis.agents.process_registry import observe_spawned
 from jarvis.core.redaction import redact
 
 
@@ -217,6 +218,8 @@ class HybridTeam:
         try:
             pending = prompt.encode('utf-8')
             stop_at = min(deadline, time.monotonic() + 180)
+            observe_spawned(self.guard, process, kind='worker', label='native-' + runtime,
+                            timeout_seconds=max(1, stop_at - time.monotonic()))
             while True:
                 self.guard.check_running()
                 if time.monotonic() >= stop_at:

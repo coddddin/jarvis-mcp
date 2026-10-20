@@ -527,3 +527,22 @@ def test_claude_command_disables_tools_mcp_settings_and_session_persistence(setu
     assert '--strict-mcp-config' in argv and '--no-session-persistence' in argv
     assert argv[argv.index('--max-turns') + 1] == '1'
     assert not any('skip-permissions' in part or 'bypass' in part for part in argv)
+
+
+def test_native_worker_registers_spawn_before_collecting_output(setup, monkeypatch):
+    from types import SimpleNamespace
+    store, team, _, _, _ = setup
+    observed = []
+    def communicate(*args, **kwargs):
+        assert observed
+        return json.dumps({'structured_output': {'summary':'proposal','output':'bounded proposal'}}).encode(), None
+    process = SimpleNamespace(returncode=0,communicate=communicate,poll=lambda:0)
+    monkeypatch.setattr(team, '_external_command', lambda *args:['native-fixture'])
+    monkeypatch.setattr('jarvis.agents.team.subprocess.Popen', lambda *args,**kwargs:process)
+    monkeypatch.setattr('jarvis.agents.team.observe_spawned', lambda guard,child,**kwargs:observed.append(kwargs))
+    folder = store.guard.workspace / 'native-observation'
+    folder.mkdir()
+    result = team._external('claude-code', {'request':'synthetic'},folder,'once',time.monotonic()+30)
+    assert result.output == 'bounded proposal'
+    assert observed[0]['kind'] == 'worker' and observed[0]['label'] == 'native-claude-code'
+    assert 0 < observed[0]['timeout_seconds'] <= 30

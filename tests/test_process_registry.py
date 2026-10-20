@@ -1,8 +1,11 @@
 import os
+import json
+import time
+from types import SimpleNamespace
 import psutil
 import pytest
 
-from jarvis.agents.process_registry import ProcessRegistry, ProcessRegistryError
+from jarvis.agents.process_registry import ProcessRegistry, ProcessRegistryError, observe_spawned
 from jarvis.core.guardrails import GuardrailError, Guardrails
 
 
@@ -179,3 +182,58 @@ def test_old_overdue_process_is_not_hidden_by_newer_healthy_registrations(regist
     assert report['has_more'] and report['scanned_count'] == 2 and report['warning_count'] == 1
     assert report['processes'][0]['id'] == original['id']
     assert report['processes'][0]['warnings'] == ['runtime_exceeded']
+
+
+def test_spawn_observer_registers_bounded_duration_and_skips_finished_workers(registry, monkeypatch):
+    store, _, _ = registry
+    captured = []
+    def registered(self, pid, **kwargs):
+        captured.append((pid, kwargs))
+        return {'id':'recorded'}
+    monkeypatch.setattr(ProcessRegistry, 'register_child', registered)
+    child = SimpleNamespace(pid=123, poll=lambda: None)
+    result = observe_spawned(store.guard, child, kind='worker', label='local', timeout_seconds=1.2)
+    assert result == {'status':'registered','id':'recorded'}
+    assert captured[0][1]['max_runtime_seconds'] == 2
+    child.poll = lambda: 0
+    assert observe_spawned(store.guard, child, kind='worker', label='local', timeout_seconds=1)['status'] == 'already_exited'
+    assert len(captured) == 1
+
+
+def test_monitor_storage_failure_logs_fixed_warning_without_leaking_or_killing(registry, monkeypatch, caplog):
+    store, _, _ = registry
+    def unavailable(*args, **kwargs):
+        raise ProcessRegistryError('secret private diagnostic')
+    monkeypatch.setattr(ProcessRegistry, 'register_child', unavailable)
+    child = SimpleNamespace(pid=123, poll=lambda: None)
+    assert observe_spawned(store.guard, child, kind='worker', label='local', timeout_seconds=1)['status'] == 'unavailable'
+    assert 'monitoring unavailable' in caplog.text and 'secret' not in caplog.text
+
+
+def test_stop_during_spawn_registration_propagates_instead_of_fallback(registry, monkeypatch):
+    store, _, _ = registry
+    def stopped(*args, **kwargs):
+        (store.guard.workspace / '.jarvis-stop').write_text('stop')
+        raise ProcessRegistryError('interrupted')
+    monkeypatch.setattr(ProcessRegistry, 'register_child', stopped)
+    with pytest.raises(GuardrailError):
+        observe_spawned(store.guard, SimpleNamespace(pid=123,poll=lambda:None),
+                        kind='worker',label='local',timeout_seconds=1)
+
+
+def test_local_runner_registers_spawn_before_processing_response(tmp_path, monkeypatch):
+    from jarvis.agents.runner import LocalConfig, LocalRunner
+    from jarvis.agents.store import TaskStore
+    captured = []
+    def observe(guard, process, **kwargs):
+        captured.append(kwargs)
+    def communicate(**kwargs):
+        assert captured
+        return json.dumps({'ok':True,'result':{'passed':True}}).encode(), None
+    child = SimpleNamespace(communicate=communicate,poll=lambda:0,wait=lambda **kwargs:0,returncode=0)
+    monkeypatch.setattr('jarvis.agents.runner.subprocess.Popen', lambda *args,**kwargs:child)
+    monkeypatch.setattr('jarvis.agents.runner.observe_spawned', observe)
+    runner = LocalRunner(TaskStore(Guardrails(tmp_path)), LocalConfig())
+    assert runner._worker('qa', {'proposal':'def f(): return 1'},time.time()+10)['passed']
+    assert captured[0]['kind'] == 'verification' and captured[0]['label'] == 'local-qa'
+    assert 0 < captured[0]['timeout_seconds'] <= 10
