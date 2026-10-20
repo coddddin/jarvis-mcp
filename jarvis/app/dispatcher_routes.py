@@ -1,0 +1,46 @@
+"""HUD routes for the dispatcher panel: status, pause, resume.
+
+Built as a separate route list so the HUD app only needs to append it. Same rules as the other HUD APIs:
+bearer token from the connection file, exact local Origin, matching Host, no query string. State changes
+(POST) also require an Origin header, which browsers always send on POST.
+"""
+import asyncio
+from urllib.parse import urlsplit
+
+from starlette.responses import JSONResponse
+from starlette.routing import Route
+
+from jarvis.agents import dispatch_control
+
+
+def dispatcher_routes(guard, config_path, *, valid, origins, headers):
+    hosts = {urlsplit(item).netloc for item in origins}
+
+    def refuse(request):
+        origin = request.headers.get('origin')
+        if request.url.query or request.url.netloc not in hosts or (origin is not None and origin not in origins):
+            return JSONResponse({'error': 'origin_denied'}, status_code=403, headers=headers)
+        if request.method == 'POST' and origin is None:
+            return JSONResponse({'error': 'origin_denied'}, status_code=403, headers=headers)
+        header = request.headers.get('authorization', '')
+        if not header.startswith('Bearer ') or not valid(header[7:]):
+            return JSONResponse({'error': 'connection_required'}, status_code=401, headers=headers)
+        return None
+
+    async def status(request):
+        denied = refuse(request)
+        if denied:
+            return denied
+        try:
+            if request.url.path.endswith('/pause'):
+                await asyncio.to_thread(dispatch_control.pause, guard)
+            elif request.url.path.endswith('/resume'):
+                await asyncio.to_thread(dispatch_control.resume, guard)
+            result = await asyncio.to_thread(dispatch_control.snapshot, guard, config_path)
+            return JSONResponse(result, headers=headers)
+        except Exception:
+            return JSONResponse({'error': 'dispatcher_unavailable'}, status_code=503, headers=headers)
+
+    return [Route('/api/dispatcher', status, methods=['GET']),
+            Route('/api/dispatcher/pause', status, methods=['POST']),
+            Route('/api/dispatcher/resume', status, methods=['POST'])]
