@@ -251,9 +251,21 @@ Claude Code 작성 초안이다. 사용자 승인 전에는 착수하지 않으�
 - 재배정: 한도 회복이 확인되면 open 작업부터 Codex 복귀를 추천만 한다. 진행 중 claim은 유지한다.
 - 완료 조건: 모의 사용량으로 normal→exhausted→recovered 전이와 게시판 추천 검증, 실제 예약 백업 1회 실행 기록.
 
+### W4 AI 직원 체계 (2026-10-21 사용자 승인)
+
+목표: Codex·Claude Code 외 AI 도구를 "AI 직원"으로 코드 수정 없이 들이고, 신뢰 수준에 따라 권한을 나눈다. 순서는 명부 → 안내서 → 신원·권한 → 수습·승진 → 업무 평가.
+
+- [x] W4-1 명부: `config/agents.json`, `jarvis/core/roster.py`. 게시판 agent ID와 무료 배정 runtime이 명부를 읽는다. 첫 신규 직원 Cursor(probation, standard), 후보 opencode·gemini. 명부 20개·게시판·배정 검사, 전체 571개 통과. [명부 안내](guides/agents-roster.md).
+- [x] W4-4 안내서(일부): 루트 `CLAUDE.md`와 `.cursor/rules/jarvis.mdc`가 AGENTS_CONTEXT.md를 가리킨다. Cursor `~/.cursor/mcp.json`에 자비스 등록.
+- [ ] W4-2 신원·권한: 직원별 출입 토큰(MCP 설정의 환경 변수), 서버가 신원을 확인하고 `max_tier`와 직원별 예산을 강제한다. 토큰 발급·보관 방식은 사용자 결정.
+- [ ] W4-3 수습·승진: probation은 제안·검토만, 게시판 완료 실적 후 사용자 승인으로 승격.
+- [ ] W4-5 업무 평가: 게시판 기록에서 직원별 완료·검증 실패·재작업 집계, 배정 참고.
+- [ ] 공통 작업자 어댑터: `team.py` 실행 파일 탐색과 `workload_policy.py` 직원 목록을 명부로 통합.
+- [ ] Cursor 실사용: CLI(`agent`) 설치·로그인은 사용자 단계. IDE에서 게시판 첫 작업 1회.
+
 ### 순서와 사용자 결정 사항
 
-순서는 W0 → W1 → W2 → W3이다. W1이 W2·W3의 경고·재배정 기반이다. 사용자 결정이 필요한 항목은 백업 저장소, 시간창 예산 수치, 알림 방식, 사용량 수집 경로다.
+순서는 W0 → W1 → W2 → W3이다. W4는 W1 이후 병행한다. W1이 W2·W3의 경고·재배정 기반이다. 사용자 결정이 필요한 항목은 백업 저장소, 시간창 예산 수치, 알림 방식, 사용량 수집 경로다.
 
 ## Phase 3 — 차세대 HUD
 

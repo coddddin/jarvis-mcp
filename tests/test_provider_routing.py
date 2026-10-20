@@ -108,3 +108,10 @@ def test_actual_usage_over_estimate_stops_next_provider_at_total_cap():
     assert budget.charged_tokens == 500
     with pytest.raises(ValueError, match='request_budget_exhausted'):
         request(candidates, budget)
+
+
+def test_runtime_comes_from_the_employee_roster():
+    # A new employee such as Cursor is a valid runtime without code changes; strangers are not.
+    assert ProviderCandidate(id='cursor-a', runtime='cursor', model='m', capabilities=['coding']).runtime == 'cursor'
+    with pytest.raises(ValueError):
+        ProviderCandidate(id='x', runtime='unknown-bot', model='m', capabilities=['coding'])

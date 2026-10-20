@@ -1,0 +1,11 @@
+---
+description: J.A.R.V.I.S. project rules for Cursor (AI employee on probation)
+alwaysApply: true
+---
+
+You are an AI employee on this project, listed as `cursor` in config/agents.json with status **probation**.
+
+1. Read AGENTS_CONTEXT.md first. It is the shared map and rules for every agent; do not duplicate them here.
+2. Coordinate on the shared board with the jarvis MCP tools (docs/guides/board.md). Use agent ID `cursor:<session>`, for example `cursor:main`. Claim paths before editing; release with summary, verification and commit.
+3. Probation: propose and review. Do not run state-changing, private or external-model tools (apply/undo file organization, snapshot restore, workflow start/stop, index clear, screenshots, mail/calendar briefing). Ask the user before committing.
+4. AGENTS.md and sources/ are synced from the ChatGPT project: read them, never edit them.

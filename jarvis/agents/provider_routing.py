@@ -2,13 +2,15 @@
 from datetime import datetime, timezone
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from jarvis.core.roster import RosterError, load_roster
 
 
 class ProviderCandidate(BaseModel):
     model_config = ConfigDict(strict=True, extra='forbid')
     id: str = Field(min_length=1, max_length=120, pattern=r'^[a-zA-Z0-9_.:/-]+$')
-    runtime: Literal['opencode', 'gemini', 'codex', 'claude-code']
+    runtime: str = Field(min_length=2, max_length=32)  # an employee ID from config/agents.json
     model: str = Field(min_length=1, max_length=120)
     capabilities: list[Literal['research', 'coding', 'review', 'summary']] = Field(max_length=4)
     cost: Literal['free', 'subscription', 'paid', 'unknown'] = 'unknown'
@@ -21,6 +23,17 @@ class ProviderCandidate(BaseModel):
     pending: int = Field(default=0, ge=0, le=100)
     max_input_tokens: int = Field(default=4096, ge=1, le=1000000)
     blocked: bool = False
+
+    @field_validator('runtime')
+    @classmethod
+    def rostered(cls, value):
+        try:
+            runtimes = load_roster().runtimes()
+        except RosterError as exc:
+            raise ValueError('agent roster unavailable') from exc
+        if value not in runtimes:
+            raise ValueError(f'runtime {value!r} is not an active employee in config/agents.json')
+        return value
 
 
 class DispatchAttempt(BaseModel):

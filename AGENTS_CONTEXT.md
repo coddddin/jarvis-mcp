@@ -11,7 +11,7 @@
 - Features: system(3), knowledge(3), google(2), snapshots(4), files(6), workflows(6), development(1), web(4), integrations(2), board(7); 38 tools (27 original contracts preserved).
 - jarvis/workers/: web_https.py and workflow_status.py; standalone subprocess implementations.
 - jarvis/cli/: OAuth + agents preview/apply; agents/: task control/runner; development service: preview-bound single-file apply.
-- config/: trusted workflow/web source registrations; location unchanged.
+- config/: trusted workflow/web source registrations; agents.json is the AI employee roster ([guide](docs/guides/agents-roster.md)).
 - .venv/ / requirements*.txt: environment and dependency versions.
 - docs/: PLAN.md, DEVELOPMENT.md, guides/, reports/, archive/, V5 reference.
 - scripts/check_docs.py + check_architecture.py: docs/layout/import checks; docs/architecture.md is the map.

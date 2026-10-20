@@ -12,13 +12,14 @@ from uuid import uuid4
 
 from jarvis.core.guardrails import GuardrailError
 from jarvis.core.redaction import redact
+from jarvis.core.roster import RosterError, load_roster
 
 
 class BoardError(ValueError):
     """A board request was refused."""
 
 
-AGENT = re.compile(r'(?:codex|claude-code|local|user):[A-Za-z0-9._-]{1,48}')
+AGENT = re.compile(r'([a-z][a-z0-9-]{1,31}):[A-Za-z0-9._-]{1,48}')
 TASK_ID = re.compile(r'[a-f0-9]{32}')
 COMMIT = re.compile(r'[0-9a-f]{7,40}')
 SEGMENT = re.compile(r'[A-Za-z0-9._@+-]+')
@@ -35,12 +36,6 @@ def _text(value, name, limit, *, required=True):
     if redact(value) != value:
         raise BoardError(f'Remove credentials or control characters from {name}.')
     return value.strip()
-
-
-def _agent(value):
-    if not isinstance(value, str) or not AGENT.fullmatch(value):
-        raise BoardError('Invalid agent ID; use codex:<name>, claude-code:<name>, local:<name> or user:<name>.')
-    return value
 
 
 def _task_id(value):
@@ -82,9 +77,25 @@ class BoardStore:
     DIRECTORY = '.jarvis-board'
     DATABASE = '.jarvis-board/board.sqlite3'
 
-    def __init__(self, guard, *, clock=time.time):
+    def __init__(self, guard, *, clock=time.time, roster=None):
         self.guard, self.clock = guard, clock
+        self._roster = roster
         self._ready = False
+
+    def _prefixes(self):
+        if self._roster is None:
+            try:
+                self._roster = load_roster(workspace=self.guard.workspace)
+            except RosterError as exc:
+                raise BoardError(f'Agent roster unavailable: {exc}') from None
+        return self._roster.board_prefixes()
+
+    def _agent(self, value):
+        match = AGENT.fullmatch(value) if isinstance(value, str) else None
+        if match is None or match.group(1) not in self._prefixes():
+            raise BoardError('Invalid agent ID; use <employee>:<session> with an employee from config/agents.json '
+                             '(or user:/local:).')
+        return value
 
     @contextmanager
     def connection(self):
@@ -149,7 +160,7 @@ class BoardStore:
         return minutes * 60
 
     def create(self, agent, title, detail, paths, *, depends_on=None):
-        agent = _agent(agent)
+        agent = self._agent(agent)
         title, detail = _text(title, 'title', 200), _text(detail, 'detail', 2000, required=False)
         paths = _paths(paths)
         depends_on = sorted(dict.fromkeys(_task_id(item) for item in (depends_on or [])))
@@ -168,7 +179,7 @@ class BoardStore:
             return self._load(db, identity)
 
     def claim(self, agent, task_id, *, lease_minutes=30):
-        agent, lease = _agent(agent), self._lease(lease_minutes)
+        agent, lease = self._agent(agent), self._lease(lease_minutes)
         now = self.clock()
         with self.connection() as db:
             task = self._load(db, task_id)
@@ -199,7 +210,7 @@ class BoardStore:
             return self._load(db, task['id'])
 
     def heartbeat(self, agent, task_id, *, lease_minutes=30):
-        agent, lease = _agent(agent), self._lease(lease_minutes)
+        agent, lease = self._agent(agent), self._lease(lease_minutes)
         now = self.clock()
         with self.connection() as db:
             task = self._load(db, task_id)
@@ -209,7 +220,7 @@ class BoardStore:
             return self._load(db, task['id'])
 
     def note(self, agent, task_id, kind, body, refs=None):
-        agent = _agent(agent)
+        agent = self._agent(agent)
         if kind not in NOTE_KINDS:
             raise BoardError('kind must be handoff, finding or question.')
         body = _text(body, 'body', 4000)
@@ -224,7 +235,7 @@ class BoardStore:
             return self._load(db, task['id'])
 
     def release(self, agent, task_id, status, summary, *, verification='', commit=''):
-        agent = _agent(agent)
+        agent = self._agent(agent)
         if status not in RELEASE_TO:
             raise BoardError('status must be open, blocked, review, done or cancelled.')
         summary = _text(summary, 'summary', 2000)
@@ -255,7 +266,7 @@ class BoardStore:
         if status and status not in STATUSES:
             raise BoardError('Unknown status filter.')
         if agent:
-            _agent(agent)
+            self._agent(agent)
         if type(limit) is not int or not 1 <= limit <= 100:
             raise BoardError('limit must be 1-100.')
         now = self.clock()

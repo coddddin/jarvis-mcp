@@ -145,6 +145,28 @@ def test_invalid_agent_ids_are_rejected(board, agent):
         board.create(agent, 'Title', '', ['a.py'])
 
 
+def test_roster_employees_can_use_the_board(board):
+    # Cursor joined through config/agents.json alone; no board code lists it.
+    task = make(board, agent='cursor:main')
+    assert board.claim('cursor:main', task)['owner'] == 'cursor:main'
+
+
+def test_retired_or_unknown_employees_are_refused(tmp_path, clock):
+    import json
+    from jarvis.core.roster import load_roster
+    path = tmp_path / 'agents.json'
+    path.write_text(json.dumps({'version': 1, 'agents': {'old-bot': {
+        'label': 'Old', 'kind': 'cli', 'capabilities': ['coding'], 'cost': 'free',
+        'status': 'retired', 'max_tier': 'light'}}}), encoding='utf-8')
+    workspace = tmp_path / 'ws'
+    workspace.mkdir()
+    store = BoardStore(Guardrails(workspace), clock=clock, roster=load_roster(path))
+    for agent in ('old-bot:main', 'cursor:main'):
+        with pytest.raises(BoardError, match='agent'):
+            store.create(agent, 'Title', '', ['a.py'])
+    assert store.create('user:heejun', 'Title', '', ['a.py'])['creator'] == 'user:heejun'
+
+
 def test_credentials_in_text_are_rejected(board):
     with pytest.raises(BoardError, match='credential'):
         board.create(CODEX, 'Leak', 'password=hunter2-secret', ['a.py'])

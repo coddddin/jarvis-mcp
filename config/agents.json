@@ -1,0 +1,58 @@
+{
+  "version": 1,
+  "agents": {
+    "codex": {
+      "label": "OpenAI Codex",
+      "kind": "cli",
+      "command": "codex",
+      "capabilities": ["research", "coding", "review", "summary"],
+      "cost": "subscription",
+      "status": "active",
+      "max_tier": "sensitive",
+      "instructions": ["AGENTS.md", "AGENTS_CONTEXT.md"],
+      "notes": "Primary builder. Account-shared usage windows; see workload_policy."
+    },
+    "claude-code": {
+      "label": "Claude Code",
+      "kind": "cli",
+      "command": "claude",
+      "capabilities": ["research", "coding", "review", "summary"],
+      "cost": "subscription",
+      "status": "active",
+      "max_tier": "sensitive",
+      "instructions": ["CLAUDE.md", "AGENTS_CONTEXT.md"],
+      "notes": "Reviewer and builder. Interactive sessions use the jarvis MCP; team.py calls claude -p without tools."
+    },
+    "cursor": {
+      "label": "Cursor",
+      "kind": "cli",
+      "command": "agent",
+      "capabilities": ["coding", "review"],
+      "cost": "subscription",
+      "status": "probation",
+      "max_tier": "standard",
+      "instructions": ["AGENTS.md", "AGENTS_CONTEXT.md", ".cursor/rules/jarvis.mdc"],
+      "notes": "Joined 2026-10-21 on probation: proposals and reviews, no sensitive tools. IDE installed; CLI (agent) not installed yet."
+    },
+    "opencode": {
+      "label": "OpenCode",
+      "kind": "cli",
+      "command": "opencode",
+      "capabilities": ["coding", "review"],
+      "cost": "free",
+      "status": "candidate",
+      "max_tier": "light",
+      "notes": "Free-model candidate for dispatch; CLI free model returned 403 on 2026-10-20."
+    },
+    "gemini": {
+      "label": "Gemini CLI",
+      "kind": "cli",
+      "command": "gemini",
+      "capabilities": ["research", "coding", "review", "summary"],
+      "cost": "unknown",
+      "status": "candidate",
+      "max_tier": "light",
+      "notes": "Not found on this PC as of 2026-10-20."
+    }
+  }
+}
