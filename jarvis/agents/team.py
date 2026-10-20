@@ -306,8 +306,9 @@ class HybridTeam:
                     raise ChatError('Claude worker reported failure.')
                 value = envelope.get('structured_output')
             result = WorkResult.model_validate(value)
+            safe = WorkResult(summary=redact(result.summary), output=redact(result.output))
             self._worker_event(folder, runtime, name, 'result')
-            return WorkResult(summary=redact(result.summary), output=redact(result.output))
+            return safe
         except Exception:
             self._worker_event(folder, runtime, name, 'failed')
             raise

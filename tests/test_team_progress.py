@@ -7,6 +7,7 @@ import time
 from uuid import uuid4
 
 import pytest
+from pydantic import ValidationError
 
 from jarvis.agents.chat import ChatError, ChatStore
 from jarvis.agents.team import HybridTeam
@@ -126,3 +127,14 @@ def test_view_callback_observes_spawn_and_start_before_result(worker, monkeypatc
     team._external('claude-code', {}, folder, 'p1', time.monotonic() + 30)
     assert calls == ['spawn', 'view']
     assert records(folder)[-1]['event'] == 'result'
+
+
+def test_redaction_expansion_failure_never_records_validated_result(worker, monkeypatch):
+    team, folder = worker
+    # The original meets 6000 chars, but replacing a short token expands it.
+    raw = json.dumps({'structured_output': {'summary': 'proposal', 'output': 'x' * 5990 + ' sk-a'}}).encode()
+    process = SimpleNamespace(returncode=0, poll=lambda: 0, communicate=lambda *a, **k: (raw, None))
+    monkeypatch.setattr('jarvis.agents.team.subprocess.Popen', lambda *args, **kwargs: process)
+    with pytest.raises(ValidationError):
+        team._external('claude-code', {}, folder, 'p1', time.monotonic() + 30)
+    assert [r['event'] for r in records(folder)] == ['start', 'failed']
