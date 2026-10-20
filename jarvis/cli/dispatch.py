@@ -16,8 +16,8 @@ import time
 
 import psutil
 
-from jarvis.agents.dispatch_policy import (DispatchLedger, DispatcherConfig, EmployeeState, build_command,
-                                           detect_limit, due, parse_usage, wake_prompt)
+from jarvis.agents.dispatch_policy import (DispatchLedger, DispatcherConfig, EmployeeState, build_command, build_env,
+                                           detect_eligibility, detect_limit, due, parse_usage, wake_prompt)
 from jarvis.agents.dispatch_service import DispatchService, KillOnCloseJob, codex_workload_gate, read_usage_sample
 from jarvis.agents.process_registry import ProcessRegistry, observe_spawned
 from jarvis.agents.dispatch_policy import Decision
@@ -74,6 +74,10 @@ def executable(employee):
         script = Path(os.environ.get('LOCALAPPDATA', '')) / 'cursor-agent' / 'cursor-agent.ps1'
         if script.is_file():
             return ['powershell.exe', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', str(script)]
+    if employee == 'opencode':
+        bundled = Path(os.environ.get('LOCALAPPDATA', '')) / 'Programs' / '@opencodedesktop' / 'resources' / 'opencode-cli.exe'
+        found = str(bundled) if bundled.is_file() else shutil.which('opencode')
+        return [found] if found else None
     return None
 
 
@@ -110,7 +114,9 @@ def run_employee(employee, run_id, config, guard, ledger, board):
     log_path = LOGS / f'{employee}-{run_id}.log'
     timeout = config.run_timeout_minutes * 60
     with log_path.open('w', encoding='utf-8', errors='replace') as log:
-        process = subprocess.Popen(argv, cwd=worktree, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
+        workspace = os.environ.get('JARVIS_WORKSPACE', str(PROJECT_ROOT / 'JarvisWorkspace'))
+        env = {**os.environ, **build_env(employee, project_root=PROJECT_ROOT, workspace=workspace)}
+        process = subprocess.Popen(argv, cwd=worktree, env=env, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
                                    creationflags=NO_WINDOW)
         if not job().assign(process) and os.name == 'nt':  # bind before anything else can spawn
             log_service_error(RuntimeError(f'{employee} run {run_id} not bound to kill-on-close job'))
@@ -132,7 +138,9 @@ def run_employee(employee, run_id, config, guard, ledger, board):
     tokens_in, tokens_out = parse_usage(output)
     failed = process.returncode != 0 or '"is_error":true' in output.replace(' ', '')
     if status is None:
-        status = ('limit' if detect_limit(output) else 'error') if failed else 'ok'
+        # A free-tier refusal can arrive as an error event with exit code 0, so check it first.
+        status = ('eligibility' if detect_eligibility(output)
+                  else ('limit' if detect_limit(output) else 'error') if failed else 'ok')
     ledger.finish(run_id, status=status, exit_code=process.returncode, input_tokens=tokens_in,
                   output_tokens=tokens_out, note=log_path.name)
     branch = f'auto/{employee}'
