@@ -219,7 +219,7 @@ Claude Code 작성 초안이다. 사용자 승인 전에는 착수하지 않으�
 ### W0 기반 — 버전 관리·데이터 백업
 
 - [x] Git 저장소와 비공개 GitHub `coddddin/jarvis-mcp` (2026-10-21).
-- [ ] 작업공간·`.jarvis-auth` 암호화 원격 백업. restic으로 로컬 암호화 후 전송한다. 저장소 후보는 Cloudflare R2, Google Drive(rclone 경유), Firebase/Google Cloud Storage(Blaze 요금제 필요)이며 사용자가 선택한다.
+- [ ] 작업공간·`.jarvis-auth` 암호화 원격 백업. 사용자가 Cloudflare R2를 선택했다(2026-10-21). restic 0.19.1과 `scripts/backup/` 스크립트를 추가했고 로컬 저장소로 백업→복원 일치를 확인했다. R2 계정·토큰 설정과 실제 첫 백업은 사용자 단계다. [백업 안내](guides/backup.md).
 - [ ] SQLite는 실행 중 파일 복사 대신 sqlite3 backup API 스냅샷을 백업한다. 저장소 암호 분실 시 복구가 불가능함을 안내하고, 암호는 OS 자격 증명 저장소에 둔다.
 - 완료 조건: 예약 백업 1회와 빈 폴더로의 복원 리허설 1회 성공, 복원본으로 서버 기동 확인.
 
