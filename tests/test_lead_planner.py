@@ -172,6 +172,8 @@ def test_workload_gate_matches_dispatch_service():
     # Missing or stale samples never shut Codex out (same as codex_workload_gate).
     assert choose_employee(names, None, NOW) == ('codex', 'no_usage_sample')
     assert choose_employee(names, {**EXHAUSTED, 'sampled_at': NOW - 3600}, NOW) == ('codex', 'stale_usage_sample')
+    assert choose_employee(names, {'usage': {'primary': 'junk'}, 'sampled_at': NOW}, NOW) == (
+        'codex', 'unparsed_usage_sample')
     result, _ = run()
     assert result['employee'] == 'codex' and result['workload'] == 'no_usage_sample'
 

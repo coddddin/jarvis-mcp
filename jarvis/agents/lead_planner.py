@@ -145,7 +145,7 @@ def choose_employee(names, usage_sample, now):
     allowed, gate = codex_workload_gate(usage_sample, now)
     if not allowed:
         names = [name for name in names if name != 'codex']
-    if gate in ('no_usage_sample', 'stale_usage_sample'):
+    if gate.endswith('_usage_sample'):  # no, stale or unparsed sample: no workload preference
         return (names[0] if names else None), gate
     workload = plan_workload(usage_sample.get('usage'), [WORKLOAD_NAMES.get(n, n) for n in names],
                              usage_sample.get('sampled_at'), now)
