@@ -28,9 +28,9 @@ def test_low_quota_pauses_codex(used, profile):
     assert not allowed and reason == 'workload_paused:' + profile
 
 
-def test_stale_or_invalid_sample_is_unknown_and_conservative():
-    allowed, reason = codex_workload_gate(sample(30, age=3600), NOW)
-    assert not allowed and reason == 'workload_paused:unknown'
+def test_stale_sample_is_treated_like_no_sample():
+    # A stopped collector must not silently pause Codex forever (review finding 5).
+    assert codex_workload_gate(sample(30, age=3600), NOW) == (True, 'stale_usage_sample')
 
 
 def test_usage_sample_is_read_from_the_workspace(tmp_path):
@@ -123,3 +123,80 @@ def test_stop_marker_present_at_start_exits_without_ticking(tmp_path):
     (tmp_path / '.jarvis-stop').touch()
     fake = Fake(guard)
     assert make_service(fake).run()['reason'] == 'stopped' and fake.ticks == 0
+
+
+# --- Review fixes (claude-code:review, 2026-10-21) ---
+
+def test_delegate_profile_still_lets_codex_coordinate():
+    assert codex_workload_gate(sample(70), NOW) == (True, 'delegate')
+
+
+def test_concurrent_acquire_has_one_winner(tmp_path):
+    import threading
+    guard = Guardrails(tmp_path)
+    results, barrier = [], threading.Barrier(4)
+
+    def attempt():
+        service = make_service(Fake(guard))
+        barrier.wait()
+        try:
+            service.acquire()
+            results.append('acquired')
+        except ServiceBusy:
+            results.append('busy')
+
+    threads = [threading.Thread(target=attempt) for _ in range(4)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert results.count('acquired') == 1
+
+
+def test_bad_config_keeps_last_good_settings_and_service_survives(tmp_path):
+    fake = Fake(Guardrails(tmp_path))
+    calls, errors = {'n': 0}, []
+
+    def flaky():
+        calls['n'] += 1
+        if calls['n'] % 2 == 0:
+            raise ValueError('half-written config')
+        return fake.config()
+
+    service = DispatchService(fake.guard, tick=fake.tick, config=flaky, sleep=fake.sleep, clock=lambda: fake.now,
+                              register=lambda: None, on_error=errors.append)
+    assert service.run()['reason'] == 'stopped'
+    assert fake.ticks == 3 and errors and all(isinstance(e, ValueError) for e in errors)
+
+
+def test_no_good_config_ever_means_disabled(tmp_path):
+    fake = Fake(Guardrails(tmp_path))
+    def broken():
+        raise ValueError('missing')
+    service = DispatchService(fake.guard, tick=fake.tick, config=broken, sleep=fake.sleep, clock=lambda: fake.now,
+                              register=lambda: None, on_error=lambda exc: None)
+    assert service.run()['reason'] == 'stopped' and fake.ticks == 0
+
+
+def test_registry_failure_does_not_prevent_the_service(tmp_path):
+    fake = Fake(Guardrails(tmp_path))
+    errors = []
+    def failing_register():
+        raise RuntimeError('registry full')
+    service = DispatchService(fake.guard, tick=fake.tick, config=fake.config, sleep=fake.sleep, clock=lambda: fake.now,
+                              register=failing_register, on_error=errors.append)
+    assert service.run()['reason'] == 'stopped' and fake.ticks == 3 and len(errors) == 1
+
+
+def test_child_processes_die_with_the_job(tmp_path):
+    import subprocess, sys, time
+    import psutil
+    from jarvis.agents.dispatch_service import KillOnCloseJob
+    job = KillOnCloseJob()
+    child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])
+    job.assign(child)
+    job.close()
+    deadline = time.time() + 10
+    while child.poll() is None and time.time() < deadline:
+        time.sleep(0.1)
+    assert child.poll() is not None

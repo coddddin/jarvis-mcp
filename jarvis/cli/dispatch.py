@@ -18,7 +18,7 @@ import psutil
 
 from jarvis.agents.dispatch_policy import (DispatchLedger, DispatcherConfig, EmployeeState, build_command,
                                            detect_limit, due, parse_usage, wake_prompt)
-from jarvis.agents.dispatch_service import DispatchService, codex_workload_gate, read_usage_sample
+from jarvis.agents.dispatch_service import DispatchService, KillOnCloseJob, codex_workload_gate, read_usage_sample
 from jarvis.agents.process_registry import ProcessRegistry, observe_spawned
 from jarvis.agents.dispatch_policy import Decision
 from jarvis.app.runtime import load_guardrails
@@ -30,6 +30,15 @@ WORKTREES = Path(os.environ.get('LOCALAPPDATA', Path.home())) / 'JarvisWorktrees
 LOGS = Path(os.environ.get('LOCALAPPDATA', Path.home())) / 'JarvisDispatch' / 'logs'
 DISPATCHER_ID = 'local:dispatcher'
 NO_WINDOW = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+_JOB = None
+
+
+def job():
+    """One kill-on-close job per dispatcher process: employees die if the dispatcher dies."""
+    global _JOB
+    if _JOB is None:
+        _JOB = KillOnCloseJob()
+    return _JOB
 
 
 def git(*args, cwd=PROJECT_ROOT, check=True):
@@ -104,6 +113,7 @@ def run_employee(employee, run_id, config, guard, ledger, board):
         process = subprocess.Popen(argv, cwd=worktree, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
                                    creationflags=NO_WINDOW)
         ledger.set_pid(run_id, process.pid)
+        job().assign(process)
         observe_spawned(guard, process, kind='worker', label=f'dispatch {employee}', timeout_seconds=timeout)
         deadline, status = time.monotonic() + timeout, None
         while process.poll() is None:
@@ -132,6 +142,15 @@ def run_employee(employee, run_id, config, guard, ledger, board):
         board.send(DISPATCHER_ID, 'user:heejun',
                    f'[알림] 디스패처: {employee} 실행 {status} (run {run_id}, exit {process.returncode}). 로그 {log_path.name}')
     return status
+
+
+def log_service_error(exc):
+    """The service runs windowless (pythonw), so errors go to a log file instead of stderr."""
+    LOGS.mkdir(parents=True, exist_ok=True)
+    line = json.dumps({'at': time.strftime('%Y-%m-%d %H:%M:%S'), 'error': type(exc).__name__,
+                       'detail': str(exc)[:300]}, ensure_ascii=False)
+    with (LOGS / 'service.log').open('a', encoding='utf-8') as stream:
+        stream.write(line + '\n')
 
 
 def tick(dry_run=False):
@@ -189,13 +208,12 @@ def main():
         if args.action == 'serve':
             guard = load_guardrails()
             def config():
-                return json.loads((CONFIG_ROOT / 'dispatcher.json').read_text(encoding='utf-8'))
+                return DispatcherConfig.model_validate_json((CONFIG_ROOT / 'dispatcher.json').read_bytes()).model_dump()
             service = DispatchService(
                 guard, tick=tick, config=config,
                 register=lambda: ProcessRegistry(guard).register_current(
                     kind='service', label='JARVIS dispatcher', max_runtime_seconds=604800),
-                on_error=lambda exc: print(json.dumps({'tick_error': type(exc).__name__, 'detail': str(exc)[:200]},
-                                                      ensure_ascii=False), file=sys.stderr, flush=True))
+                on_error=log_service_error)
             result = service.run()
         elif args.action == 'status':
             result = DispatchLedger(load_guardrails()).summary()

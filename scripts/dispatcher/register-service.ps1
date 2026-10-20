@@ -3,12 +3,12 @@
 param([switch]$StartNow)
 
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
-$python = Join-Path $root '.venv\Scripts\python.exe'
-$workspace = Join-Path $root 'JarvisWorkspace'
-$command = "`$env:JARVIS_WORKSPACE='$workspace'; `$env:JARVIS_DOWNLOADS_READONLY='1'; Set-Location '$root'; & '$python' -m jarvis.cli.dispatch serve"
+# Run python directly (no PowerShell wrapper) so ending the task ends the service, and the service's
+# kill-on-close job ends any employee it started. The default workspace is <root>\JarvisWorkspace.
+$python = Join-Path $root '.venv\Scripts\pythonw.exe'
+if (-not (Test-Path $python)) { $python = Join-Path $root '.venv\Scripts\python.exe' }
 
-$action = New-ScheduledTaskAction -Execute 'powershell.exe' `
-    -Argument "-NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -Command `"$command`""
+$action = New-ScheduledTaskAction -Execute $python -Argument '-m jarvis.cli.dispatch serve' -WorkingDirectory $root
 $trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
 $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -MultipleInstances IgnoreNew `
     -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 5) `

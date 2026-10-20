@@ -30,8 +30,9 @@
 직원을 깨우는 주체는 자비스다. Claude·Codex·Cursor는 깨워지는 직원일 뿐 디스패처를 돌리지 않는다.
 
 - `python -m jarvis.cli.dispatch serve`: 작업공간당 하나만 실행된다(잠금 `작업공간/.jarvis-dispatch/service.json`, 살아 있는 다른 서비스가 있으면 거부). 프로세스 감시(process_registry)에 `service`로 등록한다. 설정의 `interval_minutes`마다 tick을 돌리고, 5초마다 `.jarvis-stop`을 확인해 멈춘다. `enabled: false`면 켜져 있어도 깨우지 않는다. tick 실패는 기록만 하고 서비스는 계속 돈다.
-- 한도 판단: Codex는 깨우기 전에 자비스 `workload_policy`를 거친다. 사용량 표본(`작업공간/.jarvis-dispatch/usage/codex.json`, W3 수집기 몫)이 있으면 `normal`일 때만 깨우고 그 외(delegate·conserve·critical·exhausted·unknown)는 `workload_paused:<상태>`로 건너뛴다. 표본이 없으면 `no_usage_sample`로 기록하고 장부의 한도 대기만 적용한다(표본이 없다는 이유로 영구 정지하지 않음).
-- 사용자가 한 번 켠다: `powershell -ExecutionPolicy Bypass -File scripts\dispatcher\register-service.ps1 -StartNow`. 로그인할 때마다 자동으로 뜨고, 실패하면 5분 간격으로 3번 다시 시작한다. 끄기는 `.jarvis-stop` 또는 `enabled: false`, 등록 해제는 `Unregister-ScheduledTask -TaskName 'JARVIS Dispatcher'`.
+- 단일 실행은 OS 파일 잠금(`작업공간/.jarvis-dispatch/service.lock`)으로 보장한다. 서비스가 비정상 종료되면 OS가 잠금을 푼다. 깨운 직원 프로세스는 kill-on-close Job Object에 묶여 서비스가 죽으면 함께 종료된다. 설정 파일을 읽거나 검증하다 실패하면 직전 정상 설정을 유지하고(처음부터 없으면 비활성), 프로세스 감시 등록 실패는 기록만 한다. 서비스 오류는 `%LOCALAPPDATA%\JarvisDispatch\logs\service.log`.
+- 한도 판단: Codex는 깨우기 전에 자비스 `workload_policy`를 거친다. 사용량 표본(`작업공간/.jarvis-dispatch/usage/codex.json`, W3 수집기 몫)이 10분 이내로 신선하면 정책이 `paused`일 때만 `workload_paused:<상태>`로 건너뛴다(delegate는 조율 역할로 깨움). 표본이 없거나 오래됐으면 `no_usage_sample`/`stale_usage_sample`로 기록하고 장부의 한도 대기만 적용한다(수집기가 멈췄다고 영구 정지하지 않음).
+- 사용자가 한 번 켠다: `powershell -ExecutionPolicy Bypass -File scripts\dispatcher\register-service.ps1 -StartNow`. 로그인할 때마다 자동으로 뜬다. 예약 작업은 PowerShell을 거치지 않고 프로젝트의 `pythonw.exe`를 직접 실행하므로 작업을 끝내면 서비스와 그 직원들이 함께 끝난다. 끄기는 `.jarvis-stop` 또는 `enabled: false`, 등록 해제는 `Unregister-ScheduledTask -TaskName 'JARVIS Dispatcher'`.
 
 ## 명령
 
