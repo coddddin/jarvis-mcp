@@ -2,7 +2,8 @@
 
 Pure orchestration. The model judgment (Ollama), the board and the ledger are injected, so this module
 never calls a model or imports the board feature. Sensitive work is never created as a task: the lead
-only asks user:heejun for approval. One action per tick, bounded by a daily cap.
+only asks user:heejun for approval. One action per tick, bounded by a daily cap; a tick first reserves
+its slot in the ledger so concurrent ticks cannot double-create or exceed the cap.
 """
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -22,22 +23,32 @@ BUSY_STATUSES = ('open', 'claimed')
 TIERS = ('light', 'standard', 'sensitive')
 CAPABILITIES = ('research', 'coding', 'review', 'summary')
 MAX_CANDIDATES = 10
+RESERVATION_SECONDS = 600
 TAG = re.compile(r'\[PLAN:([0-9a-f]{12})\]')
 UNCHECKED = re.compile(r'^\s*[-*] \[ \]\s+(.+?)\s*$')
 HEADING = re.compile(r'^(#{2,4})\s+(.+?)\s*$')
-# Text that always forces approval, whatever the model says. The model may raise a tier, never lower it.
+# Optional stable ID in a PLAN item (<!-- plan:w4-2 -->): rewording the item then keeps the same key.
+STABLE_ID = re.compile(r'<!--\s*plan:([A-Za-z0-9._-]{1,40})\s*-->')
+# Stems that always force approval, whatever the model says. The model may raise a tier, never lower it.
+# Checked against item text, section heading and model title. Over-matching only costs an approval message.
 SENSITIVE_WORDS = re.compile(
-    r'토큰|인증|권한|암호|자격 증명|삭제|외부 전송|머지|배포|token|credential|secret|password|'
-    r'\bmerge\b|\bpush\b|deploy|delete', re.I)
-# Forces approval only when the work may change code or config; Markdown-only work stays allowed.
-CHANGE_SENSITIVE_WORDS = re.compile(r'복원|백업|restore|backup', re.I)
+    r'토큰|인증|권한|암호|비밀|자격\s*증명|삭제|제거|초기화|외부|전송|업로드|배포|병합|머지|푸시|덮어|'
+    r'\bAPI\s*키|키\s*발급|token|auth|credential|secret|password|passwd|api[\s_-]?key|permission|'
+    r'merg|delet|remov|wipe|purge|reset|push|deploy|upload|publish|overwrit|exfil', re.I)
+# Force approval only when the work may change code or config; explicit Markdown-only work stays allowed.
+CHANGE_SENSITIVE_WORDS = re.compile(r'복원|백업|restor|backup', re.I)
+# Paths whose change always needs approval (prefix match, case-insensitive).
+SENSITIVE_PATHS = ('config/', 'scripts/backup/', '.jarvis-auth', '.env', '.git', '.claude/', '.cursor/',
+                   '.codex/', 'sources/', 'agents.md', 'claude.md', 'agents_context.md', 'google_auth_setup.py',
+                   'jarvis/core/guardrails.py', 'jarvis/core/roster.py', 'jarvis/core/redaction.py',
+                   'jarvis/app/runtime.py', 'requirements')
 # Roster employee ID -> name used by workload_policy.
 WORKLOAD_NAMES = {'codex': 'codex', 'claude-code': 'claude'}
 
 
 @dataclass(frozen=True)
 class Candidate:
-    key: str        # 12 hex chars of sha256 over the normalized item text
+    key: str        # 12 hex chars: sha256 of the stable ID if present, else of the normalized text
     section: str
     text: str
 
@@ -47,11 +58,16 @@ def _normalize(text):
 
 
 def item_key(text):
-    return hashlib.sha256(_normalize(text).encode('utf-8')).hexdigest()[:12]
+    stable = STABLE_ID.search(text)
+    basis = 'id:' + stable.group(1) if stable else _normalize(STABLE_ID.sub('', text))
+    return hashlib.sha256(basis.encode('utf-8')).hexdigest()[:12]
 
 
 def plan_candidates(plan_text):
-    """Unchecked '- [ ]' items in PLAN order, de-duplicated by normalized text."""
+    """Unchecked '- [ ]' items in PLAN order, de-duplicated by key.
+
+    Without a stable ID the key is the text alone, not the section: PLAN mirrors some items in two
+    sections, and a section-scoped key would create the same work twice."""
     section, seen, found = '', set(), []
     for line in plan_text.splitlines():
         heading = HEADING.match(line)
@@ -61,8 +77,7 @@ def plan_candidates(plan_text):
         item = UNCHECKED.match(line)
         if not item:
             continue
-        text = _normalize(item.group(1))
-        key = item_key(text)
+        key, text = item_key(item.group(1)), _normalize(STABLE_ID.sub('', item.group(1)))
         if text and key not in seen:
             seen.add(key)
             found.append(Candidate(key, section, text))
@@ -100,6 +115,17 @@ def _safe_paths(values):
     return paths
 
 
+def is_sensitive(candidate, capability, title, paths):
+    words = ' '.join((candidate.text, candidate.section, title))
+    if SENSITIVE_WORDS.search(words):
+        return True
+    if any(str(PurePosixPath(p)).lower().startswith(SENSITIVE_PATHS) for p in paths):  # './x' -> 'x'
+        return True
+    # Docs-only means explicit paths, all Markdown, and no coding; anything vaguer counts as a change.
+    docs_only = capability != 'coding' and bool(paths) and all(p.lower().endswith('.md') for p in paths)
+    return bool(CHANGE_SENSITIVE_WORDS.search(words)) and not docs_only
+
+
 def validate_judgment(raw, candidates):
     """Model output -> (candidate, capability, tier, title, paths) or None when anything is off."""
     if not isinstance(raw, dict):
@@ -111,37 +137,31 @@ def validate_judgment(raw, candidates):
         return None
     candidate = candidates[index]
     paths = _safe_paths(raw.get('paths', []))
-    # Docs-only means explicit paths, all Markdown, and no coding; anything vaguer counts as a change.
-    docs_only = capability != 'coding' and bool(paths) and all(p.lower().endswith('.md') for p in paths)
-    if SENSITIVE_WORDS.search(candidate.text) or (CHANGE_SENSITIVE_WORDS.search(candidate.text) and not docs_only):
-        tier = 'sensitive'
     title = raw.get('title')
     if not isinstance(title, str) or not title.strip():
         title = candidate.text
     title = _normalize(title)[:170]
+    if is_sensitive(candidate, capability, title, paths):
+        tier = 'sensitive'
     return candidate, capability, tier, title, paths
 
 
 def eligible_employees(roster, capability, tier):
-    """Roster order. Probation employees only review; candidates and retired never work."""
+    """Roster order, roster facts only: active status, the capability, and a max_tier covering the tier.
+
+    Probation employees are never auto-assigned: the capability label comes from the model, so an
+    implementation item mislabelled 'review' must not reach them. Humans can still assign them reviews."""
     rank = TIERS.index(tier)
-    names = []
-    for name, agent in roster.agents.items():
-        if agent.status not in ('active', 'probation') or capability not in agent.capabilities:
-            continue
-        if agent.status == 'probation' and capability != 'review':
-            continue
-        if TIERS.index(agent.max_tier) < rank:
-            continue
-        names.append(name)
-    return names
+    return [name for name, agent in roster.agents.items()
+            if agent.status == 'active' and capability in agent.capabilities
+            and TIERS.index(agent.max_tier) >= rank]
 
 
 def choose_employee(names, usage_sample, now):
     """(employee or None, workload label).
 
     Codex is excluded only by dispatch_service.codex_workload_gate (a fresh sample saying 'paused'), so a
-    missing or stale sample never shuts Codex out. With a fresh sample, workload_policy's bulk owner wins."""
+    missing, stale or unparsed sample never shuts Codex out. With a usable sample the bulk owner wins."""
     allowed, gate = codex_workload_gate(usage_sample, now)
     if not allowed:
         names = [name for name in names if name != 'codex']
@@ -174,9 +194,19 @@ def approval_message(candidate, capability):
 def plan_next(board, roster, plan_text, *, judge, ledger, now, usage_sample=None, daily_cap=3, agent=LEAD_AGENT):
     """One lead tick. Returns {'action': ..., 'reason': ..., ...}; at most one task or approval request.
 
-    usage_sample has the dispatch_service shape: {'usage': {...}, 'sampled_at': epoch} or None."""
-    if ledger.count_since(_day_start(now)) >= daily_cap:
-        return {'action': 'none', 'reason': 'daily_cap'}
+    usage_sample has the dispatch_service shape: {'usage': {...}, 'sampled_at': epoch} or None.
+    The ledger slot is reserved before anything else and released unless an action is recorded."""
+    slot, refusal = ledger.reserve(now, _day_start(now), daily_cap)
+    if slot is None:
+        return {'action': 'none', 'reason': refusal}
+    try:
+        result = _tick(board, roster, plan_text, judge, ledger, now, usage_sample, agent, slot)
+    finally:
+        ledger.release(slot)  # no-op once committed
+    return result
+
+
+def _tick(board, roster, plan_text, judge, ledger, now, usage_sample, agent, slot):
     if not board_is_idle(board):
         return {'action': 'none', 'reason': 'board_busy'}
     done = tagged_keys(board) | ledger.keys()
@@ -198,7 +228,7 @@ def plan_next(board, roster, plan_text, *, judge, ledger, now, usage_sample=None
 
     if tier == 'sensitive':
         sent = board.send(agent, APPROVER, approval_message(candidate, capability))
-        ledger.add(candidate.key, 'approval_requested', now, str(sent.get('id', '')))
+        ledger.commit(slot, candidate.key, 'approval_requested', str(sent.get('id', '')))
         return {'action': 'approval_requested', 'reason': 'sensitive', 'plan': candidate.key}
 
     employee, workload = choose_employee(eligible_employees(roster, capability, tier), usage_sample, now)
@@ -208,14 +238,18 @@ def plan_next(board, roster, plan_text, *, judge, ledger, now, usage_sample=None
     detail = (f'plan_item_hash: {candidate.key}\nsection: {candidate.section}\ncapability: {capability}\n'
               f'tier: {tier}\nassigned: {employee} (workload {workload})\n\n{candidate.text}')[:2000]
     task = board.create(agent, f'[PLAN:{candidate.key}] {title}', detail, paths)
-    ledger.add(candidate.key, 'task_created', now, task['id'])
+    ledger.commit(slot, candidate.key, 'task_created', task['id'])
     board.send(agent, employee, assignment_message(task, candidate, capability), task_id=task['id'])
     return {'action': 'task_created', 'reason': 'assigned', 'plan': candidate.key, 'task_id': task['id'],
             'employee': employee, 'workload': workload}
 
 
 class LeadLedger:
-    """What the lead did: one row per created task or approval request (dedupe + daily cap)."""
+    """What the lead did, one row per created task or approval request (dedupe + daily cap).
+
+    A tick first inserts a 'reserved' row in the same transaction that checks the cap and that no other
+    tick is in flight; the row becomes the action (commit) or is deleted (release). A reservation older
+    than RESERVATION_SECONDS is treated as a crashed tick and removed."""
     DIRECTORY = '.jarvis-dispatch'
     DATABASE = '.jarvis-dispatch/lead.sqlite3'
 
@@ -232,21 +266,39 @@ class LeadLedger:
         db = sqlite3.connect(self.guard.validate_path(self.DATABASE, must_exist=False), timeout=5, isolation_level=None)
         try:
             db.execute('BEGIN IMMEDIATE')
-            db.execute('CREATE TABLE IF NOT EXISTS actions (plan_key TEXT PRIMARY KEY, action TEXT NOT NULL, '
-                       'at REAL NOT NULL, ref TEXT NOT NULL DEFAULT "")')
+            db.execute('CREATE TABLE IF NOT EXISTS lead_actions (id INTEGER PRIMARY KEY AUTOINCREMENT, '
+                       'plan_key TEXT UNIQUE, action TEXT NOT NULL, at REAL NOT NULL, ref TEXT NOT NULL DEFAULT "")')
             yield db
             db.commit()
         finally:
             db.close()
 
+    def reserve(self, now, day_start, daily_cap):
+        """(slot id, None) or (None, 'tick_in_progress' | 'daily_cap')."""
+        with self.connection() as db:
+            db.execute('DELETE FROM lead_actions WHERE action="reserved" AND at<?', (now - RESERVATION_SECONDS,))
+            if db.execute('SELECT 1 FROM lead_actions WHERE action="reserved"').fetchone():
+                return None, 'tick_in_progress'
+            if db.execute('SELECT COUNT(*) FROM lead_actions WHERE at>=?', (day_start,)).fetchone()[0] >= daily_cap:
+                return None, 'daily_cap'
+            return db.execute('INSERT INTO lead_actions(plan_key, action, at) VALUES (NULL, "reserved", ?)',
+                              (now,)).lastrowid, None
+
+    def commit(self, slot, plan_key, action, ref=''):
+        with self.connection() as db:
+            if db.execute('SELECT 1 FROM lead_actions WHERE plan_key=?', (plan_key,)).fetchone():
+                db.execute('DELETE FROM lead_actions WHERE id=? AND action="reserved"', (slot,))
+                return
+            updated = db.execute('UPDATE lead_actions SET plan_key=?, action=?, ref=? WHERE id=? AND action="reserved"',
+                                 (plan_key, action, ref[:100], slot)).rowcount
+            if not updated:  # reservation expired meanwhile: still record what was done
+                db.execute('INSERT OR IGNORE INTO lead_actions(plan_key, action, at, ref) VALUES (?,?,?,?)',
+                           (plan_key, action, time.time(), ref[:100]))
+
+    def release(self, slot):
+        with self.connection() as db:
+            db.execute('DELETE FROM lead_actions WHERE id=? AND action="reserved"', (slot,))
+
     def keys(self):
         with self.connection() as db:
-            return {row[0] for row in db.execute('SELECT plan_key FROM actions')}
-
-    def count_since(self, start):
-        with self.connection() as db:
-            return db.execute('SELECT COUNT(*) FROM actions WHERE at>=?', (start,)).fetchone()[0]
-
-    def add(self, plan_key, action, at, ref=''):
-        with self.connection() as db:
-            db.execute('INSERT OR REPLACE INTO actions VALUES (?,?,?,?)', (plan_key, action, at, ref[:100]))
+            return {row[0] for row in db.execute('SELECT plan_key FROM lead_actions WHERE plan_key IS NOT NULL')}
