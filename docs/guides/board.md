@@ -2,11 +2,11 @@
 
 [문서 안내](../README.md) · [현재 계획](../PLAN.md)
 
-Codex·Claude Code·로컬 리드가 같은 자비스 MCP 도구로 할 일·담당·수정 경로·인수인계를 공유한다. 보고서를 대체하지 않고 "지금 누가 무엇을 하는지"의 색인 역할을 한다.
+Codex·Claude Code·Cursor·로컬 리드가 같은 자비스 MCP 도구 9개로 할 일·담당·수정 경로·인수인계를 공유한다. 보고서를 대체하지 않고 "지금 누가 무엇을 하는지"의 색인 역할을 한다.
 
 ## 작업 규칙
 
-1. 시작 전에 `board_list`로 열린 작업과 활성 claim을 본다.
+1. 시작 전에 `board_inbox`로 나에게 온 메시지를, `board_list`로 열린 작업과 활성 claim을 본다. 소통 방식은 [소통 규약](communication.md).
 2. 없으면 `board_create`로 작업을 만든다. `paths`에는 수정할 파일이나 폴더(끝에 `/`)를 프로젝트 상대 경로로 적는다.
 3. 파일을 고치기 전에 `board_claim`. 다른 에이전트의 활성 claim과 경로가 겹치면 거부된다.
 4. 30분보다 오래 걸리면 `board_heartbeat`로 lease를 연장한다.
@@ -19,20 +19,22 @@ Codex·Claude Code·로컬 리드가 같은 자비스 MCP 도구로 할 일·담
 
 | 도구 | 하는 일 |
 |---|---|
-| `board_list(status, agent, limit)` | 최근 작업 목록, owner·lease·paths·stale 표시. agent는 생성자 또는 담당자 |
-| `board_get(task_id)` | 작업 상세와 최근 노트 50개 |
+| `board_list(status, agent, limit)` | 간결한 작업 목록(id·제목·상태·담당·stale·paths·노트 수). agent는 생성자 또는 담당자 |
+| `board_get(task_id, notes=10)` | 작업 상세와 최근 노트(기본 10, 최대 50) |
 | `board_create(agent, title, paths, detail, depends_on)` | open 작업 생성 |
 | `board_claim(agent, task_id, lease_minutes=30)` | 작업 담당. 경로 충돌·미완료 의존 작업이면 거부 |
 | `board_heartbeat(agent, task_id, lease_minutes=30)` | 담당자만 lease 연장(5~240분) |
 | `board_note(agent, task_id, kind, body, refs)` | 노트 추가 |
 | `board_release(agent, task_id, status, summary, verification, commit)` | 담당 해제와 인수인계 노트 자동 기록 |
+| `board_send(agent, to, body, task_id)` | 짧은 메시지(1000자). to는 `codex:main`(세션), `codex`(직원 전체), `*`(모두) |
+| `board_inbox(agent, limit=20, mark_read=True)` | 안 읽은 메시지만, 오래된 순. 읽으면 읽음 처리 |
 
 ## 동작 세부
 
 - 경로 겹침은 경로 조각 단위로 판단한다. `jarvis/app/`은 `jarvis/app/chat.py`와 겹치지만 `jarvis/application.py`와는 겹치지 않는다. 같은 에이전트의 claim끼리는 겹쳐도 된다.
 - lease가 지나면 `stale`로 표시만 한다. 자동 재배정이나 프로세스 종료는 하지 않는다. 다른 에이전트가 stale 작업을 claim하면 이전 담당자를 적은 인수인계 노트가 자동으로 남는다. 만료된 claim은 경로를 막지 않는다.
 - `JarvisWorkspace`, `.jarvis-auth`, `.venv`, `.git`, `..`, 절대 경로, 드라이브 경로는 claim할 수 없다. 역슬래시는 `/`로 바꾼다.
-- 비밀값이나 제어 문자가 섞인 텍스트는 거부한다. 노트는 작업당 200개, 작업은 전체 2000개까지다.
+- 비밀값이나 제어 문자가 섞인 텍스트는 거부한다. 노트는 작업당 200개, 작업은 전체 2000개, 메시지는 최근 5000개까지 보관한다.
 - 저장 위치는 작업공간 `.jarvis-board/board.sqlite3`이다. 데이터 백업에 함께 포함된다. 여러 서버 프로세스가 SQLite `BEGIN IMMEDIATE`로 직렬화하므로 동시 claim은 한 명만 성공한다.
 
 ## 한계

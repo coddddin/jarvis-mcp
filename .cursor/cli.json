@@ -7,7 +7,9 @@
       "Mcp(jarvis:board_claim)",
       "Mcp(jarvis:board_heartbeat)",
       "Mcp(jarvis:board_note)",
-      "Mcp(jarvis:board_release)"
+      "Mcp(jarvis:board_release)",
+      "Mcp(jarvis:board_send)",
+      "Mcp(jarvis:board_inbox)"
     ],
     "deny": [
       "Mcp(jarvis:apply_file_organization)",

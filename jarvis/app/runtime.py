@@ -53,6 +53,7 @@ class ToolContext:
 TOOL_TIERS = {
     **{name: 'light' for name in (
         'board_list', 'board_get', 'board_create', 'board_claim', 'board_heartbeat', 'board_note', 'board_release',
+        'board_send', 'board_inbox',
         'list_web_sources', 'list_workflows', 'list_workflow_runs', 'get_workflow_status',
         'list_project_snapshots', 'list_file_organization_operations')},
     **{name: 'sensitive' for name in (

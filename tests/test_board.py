@@ -244,3 +244,62 @@ def test_two_mcp_clients_share_the_board_over_stdio(tmp_path):
 def test_board_storage_stays_inside_workspace(board, tmp_path):
     make(board)
     assert (tmp_path / '.jarvis-board' / 'board.sqlite3').is_file()
+
+
+# --- Mailbox and compact responses (communication protocol) ---
+
+def test_direct_message_reaches_only_the_recipient_once(board):
+    board.send(CODEX, CLAUDE, 'Please review chat.py routing.')
+    inbox = board.inbox(CLAUDE)['messages']
+    assert [m['body'] for m in inbox] == ['Please review chat.py routing.'] and inbox[0]['from'] == CODEX
+    assert board.inbox(CLAUDE)['messages'] == []          # read once
+    assert board.inbox('claude-code:other')['messages'] == []
+    assert board.inbox(CODEX)['messages'] == []           # senders do not receive their own message
+
+
+def test_employee_wide_and_broadcast_messages(board):
+    board.send(CODEX, 'claude-code', 'Any Claude session: take task X.')
+    board.send(CLAUDE, '*', 'Board rule changed.')
+    assert [m['body'] for m in board.inbox('claude-code:s2')['messages']] == [
+        'Any Claude session: take task X.', 'Board rule changed.']
+    assert [m['body'] for m in board.inbox('cursor:main')['messages']] == ['Board rule changed.']
+    assert [m['body'] for m in board.inbox(CODEX)['messages']] == ['Board rule changed.']
+
+
+def test_peek_does_not_mark_read_and_limit_applies(board):
+    for index in range(5):
+        board.send(CODEX, CLAUDE, f'm{index}')
+    first = board.inbox(CLAUDE, limit=2, mark_read=False)
+    assert [m['body'] for m in first['messages']] == ['m0', 'm1'] and first['unread'] == 5
+    assert [m['body'] for m in board.inbox(CLAUDE, limit=2)['messages']] == ['m0', 'm1']
+    assert board.inbox(CLAUDE)['unread'] == 3
+
+
+def test_message_validation(board):
+    with pytest.raises(BoardError, match='agent'):
+        board.send(CODEX, 'unknown-bot', 'hi')
+    with pytest.raises(BoardError, match='credential'):
+        board.send(CODEX, CLAUDE, 'password=hunter2-secret')
+    with pytest.raises(BoardError, match='body'):
+        board.send(CODEX, CLAUDE, 'x' * 1001)
+    with pytest.raises(BoardError, match='Task not found'):
+        board.send(CODEX, CLAUDE, 'about task', task_id='0' * 32)
+    task = make(board)
+    message = board.send(CODEX, CLAUDE, 'about task', task_id=task)
+    assert message['task_id'] == task
+
+
+def test_list_is_compact(board):
+    make(board)
+    item = board.list()['tasks'][0]
+    assert set(item) == {'id', 'title', 'status', 'owner', 'stale', 'paths', 'notes', 'updated'}
+    assert isinstance(item['updated'], int)
+
+
+def test_get_returns_latest_notes_up_to_limit(board):
+    task = make(board)
+    for index in range(15):
+        board.note(CODEX, task, 'finding', f'n{index}')
+    notes = board.get(task)['notes']
+    assert len(notes) == 10 and notes[-1]['body'] == 'n14'
+    assert len(board.get(task, notes=50)['notes']) == 15
