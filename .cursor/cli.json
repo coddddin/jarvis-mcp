@@ -1,0 +1,23 @@
+{
+  "permissions": {
+    "allow": [
+      "Mcp(jarvis:board_list)",
+      "Mcp(jarvis:board_get)",
+      "Mcp(jarvis:board_create)",
+      "Mcp(jarvis:board_claim)",
+      "Mcp(jarvis:board_heartbeat)",
+      "Mcp(jarvis:board_note)",
+      "Mcp(jarvis:board_release)"
+    ],
+    "deny": [
+      "Mcp(jarvis:apply_file_organization)",
+      "Mcp(jarvis:undo_file_organization)",
+      "Mcp(jarvis:restore_project_snapshot)",
+      "Mcp(jarvis:start_workflow)",
+      "Mcp(jarvis:stop_workflow)",
+      "Mcp(jarvis:clear_local_index)",
+      "Mcp(jarvis:take_screenshot)",
+      "Mcp(jarvis:get_daily_briefing)"
+    ]
+  }
+}
