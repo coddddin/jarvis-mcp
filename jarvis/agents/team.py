@@ -3,6 +3,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import hashlib
 import os
+import stat
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -79,6 +81,62 @@ class HybridTeam:
         self.store, self.guard, self.infer = store, store.guard, infer
         self.executables = {'codex': codex or shutil.which('codex'), 'claude-code': claude or _discover_claude()}
         self.local_lock = threading.Lock()
+        self.progress_lock = threading.Lock()
+
+    def _worker_event(self, folder, runtime, name, event):
+        """Best-effort bounded observations, never raw provider output or context."""
+        messages = {'start': 'External CLI started; waiting for its final response.',
+                    'result': 'External proposal received and schema validated; execution not verified. Read the proposal in the chat HUD.',
+                    'failed': 'External CLI did not deliver a validated proposal.'}
+        if runtime not in ('codex', 'claude-code') or event not in messages:
+            return False
+        # Names are internal packet labels, not model output or user-supplied text.
+        if not isinstance(name, str) or not 1 <= len(name) <= 80 or any(
+                c not in 'abcdefghijklmnopqrstuvwxyz0123456789-_' for c in name):
+            return False
+        record = {'runtime': runtime, 'name': name, 'event': event, 'text': redact(messages[event])}
+        encoded = (json.dumps(record, ensure_ascii=False) + '\n').encode('utf-8')
+        if len(encoded) > 8192:
+            return False
+        try:
+            with self.progress_lock:
+                self.guard.check_running()
+                path = self.guard.validate_path(str(folder / 'worker-progress.jsonl'), must_exist=False)
+                if path.exists():
+                    info = path.stat()
+                    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size + len(encoded) > 262144:
+                        return False
+                flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND | getattr(os, 'O_NOFOLLOW', 0)
+                with os.fdopen(os.open(path, flags, 0o600), 'ab') as stream:
+                    info = os.fstat(stream.fileno())
+                    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size + len(encoded) > 262144:
+                        return False
+                    stream.write(encoded)
+            return True
+        except (OSError, ValueError):
+            # An observation failure must not repeat or change the actual model call.
+            return False
+
+    def _notify_worker_view(self, folder, runtime):
+        """An injected UI observer may open once, after a real Claude spawn."""
+        callback = getattr(self, 'worker_view', None)
+        match = re.fullmatch(r'team-([a-f0-9]{32})-([a-f0-9]{32})', folder.name)
+        if runtime != 'claude-code' or not callable(callback) or not match:
+            return
+        try:
+            with self.progress_lock:
+                self.guard.check_running()
+                expected = self.guard.validate_path('.jarvis-chat/' + folder.name)
+                if folder.resolve() != expected:
+                    return
+                marker = self.guard.validate_path(str(expected / 'worker-view.requested'), must_exist=False)
+                # Exclusive creation prevents corrections/concurrent packets opening more windows.
+                with marker.open('xb'):
+                    pass
+            callback(*match.groups())
+        except Exception:
+            # UI availability must never retry a provider request or change its result.
+            return
 
     def members(self):
         members = []
@@ -213,9 +271,15 @@ class HybridTeam:
             raise ChatError('External context exceeds limit.')
         env = {key: value for key, value in os.environ.items() if key.upper() in {
             'SYSTEMROOT', 'WINDIR', 'TEMP', 'TMP', 'USERPROFILE', 'HOME', 'APPDATA', 'LOCALAPPDATA', 'PATH', 'CODEX_HOME'}}
-        process = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-            cwd=folder, env=env, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
         try:
+            process = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                cwd=folder, env=env, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+        except OSError:
+            self._worker_event(folder, runtime, name, 'failed')
+            raise
+        try:
+            self._worker_event(folder, runtime, name, 'start')
+            self._notify_worker_view(folder, runtime)
             pending = prompt.encode('utf-8')
             stop_at = min(deadline, time.monotonic() + 180)
             observe_spawned(self.guard, process, kind='worker', label='native-' + runtime,
@@ -242,7 +306,11 @@ class HybridTeam:
                     raise ChatError('Claude worker reported failure.')
                 value = envelope.get('structured_output')
             result = WorkResult.model_validate(value)
+            self._worker_event(folder, runtime, name, 'result')
             return WorkResult(summary=redact(result.summary), output=redact(result.output))
+        except Exception:
+            self._worker_event(folder, runtime, name, 'failed')
+            raise
         finally:
             if process.poll() is None:
                 process.kill()
