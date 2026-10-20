@@ -25,6 +25,15 @@ def reply(text='안녕하세요. 저는 자비스입니다.'):
     return ChatDecision(reply=text, tool='none', argument='')
 
 
+def test_worker_console_is_an_explicit_observer_callback(tmp_path, monkeypatch):
+    seen = []
+    monkeypatch.setattr('jarvis.app.chat.open_worker_view', lambda *args: seen.append(args))
+    service = ChatService(Guardrails(tmp_path))
+    assert seen == []
+    service.team.worker_view('a' * 32, 'b' * 32)
+    assert seen == [(service.guard, 'a' * 32, 'b' * 32)]
+
+
 def test_persisted_history_and_duplicate_request_do_not_repeat_inference(service, monkeypatch):
     calls = []
     def generate(messages, schema, deadline):

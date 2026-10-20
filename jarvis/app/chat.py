@@ -20,6 +20,7 @@ from jarvis.app.dispatch import FreeDispatcher
 from jarvis.core.guardrails import GuardrailError
 from jarvis.core.paths import WORKERS_ROOT
 from jarvis.core.redaction import redact
+from jarvis.cli.worker_view import open_worker_view
 
 
 TOOLS = {
@@ -74,6 +75,7 @@ class ChatService:
                       if function.__name__ in TOOLS}
         self.lock = threading.Lock()
         self.team = HybridTeam(self.store, self._infer)
+        self.team.worker_view = lambda conversation, request: open_worker_view(self.guard, conversation, request)
         self.dispatcher = FreeDispatcher(self.store, candidates=provider_candidates, executors=provider_executors)
 
     def metadata(self):
