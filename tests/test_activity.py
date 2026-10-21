@@ -3,6 +3,7 @@ from concurrent.futures import ThreadPoolExecutor
 import json
 import os
 import subprocess
+import sqlite3
 import sys
 from types import SimpleNamespace
 from uuid import uuid4
@@ -201,3 +202,37 @@ def test_actual_owned_child_natural_exit_is_observed_separately_from_task_succes
     assert snapshot['process']['status'] == 'exited'
     assert snapshot['report']['event']['kind'] == 'start'
     assert snapshot['verified'] == []
+
+
+@pytest.mark.parametrize('terminal', ['completed', 'failed'])
+def test_late_terminal_report_stays_terminal_and_fences_newer_heartbeats(setup, terminal):
+    store, run, clock, _ = setup
+    store.ingest(run['token'], event(run, 3))
+    assert store.ingest(run['token'], event(run, 2, kind=terminal, phase='finished'))['status'] == 'stale_sequence'
+    clock['mono'] += 40
+    with pytest.raises(ActivityError, match='terminal'):
+        store.ingest(run['token'], event(run, 4, kind='heartbeat'))
+    snapshot = store.inspect()['runs'][0]
+    assert snapshot['report']['event']['kind'] == terminal
+    assert snapshot['terminal_seq'] == 2 and snapshot['last_seq'] == 3
+    assert snapshot['heartbeat']['status'] == 'delayed'
+    # Facts that arrived earlier are still idempotent; a duplicate cannot refresh freshness.
+    assert store.ingest(run['token'], event(run, 3))['status'] == 'duplicate'
+    assert store.inspect()['runs'][0]['heartbeat']['status'] == 'delayed'
+    assert store.ingest(run['token'], event(run, 1))['status'] == 'stale_sequence'
+    assert not store.inspect()['runs'][0]['sequence_gap']
+
+
+def test_prior_schema_terminal_history_is_migrated_without_discarding_facts(setup):
+    store, run, clock, process = setup
+    store.ingest(run['token'], event(run, 3))
+    store.ingest(run['token'], event(run, 2, kind='completed', phase='finished'))
+    path = store.guard.workspace / store.DIRECTORY / 'activity.sqlite3'
+    with sqlite3.connect(path) as db:
+        db.execute('ALTER TABLE runs DROP COLUMN terminal_seq')
+    reopened = ActivityStore(store.guard, clock=lambda: clock['wall'], monotonic=lambda: clock['mono'],
+                              lookup=lambda pid: process)
+    assert reopened.inspect()['runs'][0]['report']['event']['kind'] == 'completed'
+    assert len(reopened.history(run['run_id'])['events']) == 2
+    with pytest.raises(ActivityError, match='terminal'):
+        reopened.ingest(run['token'], event(run, 4, kind='heartbeat'))

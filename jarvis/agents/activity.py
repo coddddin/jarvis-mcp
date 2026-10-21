@@ -61,10 +61,18 @@ class ActivityStore:
                        'id TEXT PRIMARY KEY,owner TEXT NOT NULL,task_id TEXT NOT NULL,epoch INTEGER NOT NULL,'
                        'token_hash TEXT NOT NULL,pid INTEGER NOT NULL,process_created REAL NOT NULL,'
                        'registered_at REAL NOT NULL,last_seq INTEGER NOT NULL DEFAULT 0,'
-                       'received_at REAL,received_mono REAL,generation TEXT,heartbeat_mono REAL)')
+                       'received_at REAL,received_mono REAL,generation TEXT,heartbeat_mono REAL,terminal_seq INTEGER)')
             db.execute('CREATE TABLE IF NOT EXISTS events('
                        'event_id INTEGER PRIMARY KEY AUTOINCREMENT,run_id TEXT,seq INTEGER,'
                        'payload TEXT NOT NULL,digest TEXT NOT NULL,received_at REAL NOT NULL,UNIQUE(run_id,seq))')
+            if 'terminal_seq' not in {row['name'] for row in db.execute('PRAGMA table_info(runs)')}:
+                db.execute('ALTER TABLE runs ADD COLUMN terminal_seq INTEGER')
+                # Preserve old facts and repair existing out-of-order terminal reports.
+                for row in db.execute('SELECT run_id,seq,payload FROM events ORDER BY seq'):
+                    if json.loads(row['payload'])['kind'] in ('completed', 'failed'):
+                        db.execute('UPDATE runs SET terminal_seq=? WHERE id=? '
+                                   'AND (terminal_seq IS NULL OR terminal_seq>?)',
+                                   (row['seq'], row['run_id'], row['seq']))
 
     @contextmanager
     def connection(self, *, write=True):
@@ -167,14 +175,12 @@ class ActivityStore:
             if run['generation'] == self.generation and run['received_mono'] is not None and mono < run['received_mono']:
                 raise ActivityError('Collector monotonic clock regressed.')
             previous = db.execute('SELECT digest FROM events WHERE run_id=? AND seq=?', (parsed.run_id, parsed.seq)).fetchone()
-            latest = db.execute('SELECT payload FROM events WHERE run_id=? AND seq=?', (parsed.run_id, run['last_seq'])).fetchone()
-            if (parsed.seq > run['last_seq'] and latest is not None
-                    and json.loads(latest['payload'])['kind'] in ('completed', 'failed')):
-                raise ActivityError('Run already has a terminal report; register a new run.')
             if previous:
                 if not secrets.compare_digest(previous['digest'], digest):
                     raise ActivityError('Sequence already has different content.')
                 status = 'duplicate'
+            elif run['terminal_seq'] is not None and parsed.seq > run['terminal_seq']:
+                raise ActivityError('Run already has a terminal report; register a new run.')
             elif (parsed.kind == 'heartbeat' and run['generation'] == self.generation
                     and run['heartbeat_mono'] is not None and 0 <= mono - run['heartbeat_mono'] < self.MIN_HEARTBEAT):
                 status = 'rate_limited'
@@ -189,6 +195,10 @@ class ActivityStore:
                     run['heartbeat_mono'] if run['generation'] == self.generation else None)
                 db.execute('UPDATE runs SET last_seq=?,received_at=?,received_mono=?,generation=?,heartbeat_mono=? WHERE id=?',
                            (max(parsed.seq, run['last_seq']), now, mono, self.generation, heartbeat, parsed.run_id))
+                if parsed.kind in ('completed', 'failed'):
+                    db.execute('UPDATE runs SET terminal_seq=? WHERE id=? '
+                               'AND (terminal_seq IS NULL OR terminal_seq>?)',
+                               (parsed.seq, parsed.run_id, parsed.seq))
         return {'status': status, 'run_id': parsed.run_id, 'seq': parsed.seq}
 
     def _probe(self, row):
@@ -214,7 +224,8 @@ class ActivityStore:
             runs = []
             for row in rows[:limit]:
                 self.guard.check_running()
-                latest = db.execute('SELECT payload FROM events WHERE run_id=? AND seq=?', (row['id'], row['last_seq'])).fetchone()
+                report_seq = row['terminal_seq'] if row['terminal_seq'] is not None else row['last_seq']
+                latest = db.execute('SELECT payload FROM events WHERE run_id=? AND seq=?', (row['id'], report_seq)).fetchone()
                 count = db.execute('SELECT COUNT(*) FROM events WHERE run_id=?', (row['id'],)).fetchone()[0]
                 heartbeat, reason = 'unknown', 'no_report'
                 if row['generation'] is not None and row['generation'] != self.generation:
@@ -228,6 +239,7 @@ class ActivityStore:
                 runs.append({'run_id': row['id'], 'owner': row['owner'], 'task_id': row['task_id'],
                     'epoch': row['epoch'], 'fenced': row['epoch'] != row['current_epoch'],
                     'last_seq': row['last_seq'], 'sequence_gap': count != row['last_seq'],
+                    'terminal_seq': row['terminal_seq'],
                     'report': {'source': 'self_reported', 'event': json.loads(latest['payload']) if latest else None},
                     'heartbeat': {'source': 'observed', 'status': heartbeat, 'reason': reason, 'received_at': row['received_at']},
                     'process': {'source': 'observed', 'status': self._probe(row), 'pid': row['pid']},
