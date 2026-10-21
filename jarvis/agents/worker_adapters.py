@@ -270,28 +270,44 @@ def edit_markers(employee):
     return markers
 
 
-def roster_problems(roster):
-    """{employee: [problem, ...]} between adapters and the roster; employees without problems are absent.
+# Problem kinds between an adapter and the roster. Codes carry no command fragments, so user-facing
+# reports (the daily digest) can show them; roster_problems() keeps the detailed text for the service log.
+PROBLEM_CODES = ('no_roster', 'retired', 'probation_can_edit', 'label_mismatch')
 
-    Probation is checked against the real argv and env (edit_markers), not the applies_edits label."""
-    problems = {}
+
+def _roster_findings(roster):
+    """{employee: [(code, detail text), ...]}; the single place that judges adapters against the roster."""
+    findings = {}
     for name, item in ADAPTERS.items():
         agent = roster.agents.get(name)
         found = []
         if agent is None:
-            found.append(f'{name}: adapter without a roster entry')
+            found.append(('no_roster', f'{name}: adapter without a roster entry'))
         elif agent.status == 'retired':
-            found.append(f'{name}: adapter for a retired employee')
+            found.append(('retired', f'{name}: adapter for a retired employee'))
         else:
             markers = edit_markers(name)
             if agent.status == 'probation' and (markers or item.applies_edits):
-                found.append(f'{name}: probation employee with an edit-capable work command'
-                             + (f' ({"; ".join(markers)})' if markers else ''))
+                found.append(('probation_can_edit', f'{name}: probation employee with an edit-capable work command'
+                              + (f' ({"; ".join(markers)})' if markers else '')))
             elif markers and not item.applies_edits:
-                found.append(f'{name}: applies_edits=False but the work command can edit ({"; ".join(markers)})')
+                found.append(('label_mismatch',
+                              f'{name}: applies_edits=False but the work command can edit ({"; ".join(markers)})'))
         if found:
-            problems[name] = found
-    return problems
+            findings[name] = found
+    return findings
+
+
+def roster_problems(roster):
+    """{employee: [problem, ...]} between adapters and the roster; employees without problems are absent.
+
+    Probation is checked against the real argv and env (edit_markers), not the applies_edits label."""
+    return {name: [text for _, text in found] for name, found in _roster_findings(roster).items()}
+
+
+def roster_problem_codes(roster):
+    """{employee: [code, ...]} with codes from PROBLEM_CODES; same judgment as roster_problems."""
+    return {name: [code for code, _ in found] for name, found in _roster_findings(roster).items()}
 
 
 def check_roster(roster):

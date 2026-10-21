@@ -390,3 +390,31 @@ def test_tick_wakes_an_employee_whose_pid_less_row_outlived_the_run_limit(tmp_pa
     assert launched == ['claude-code']
     rows = {r['id']: r for r in DispatchLedger(guard).summary()['recent']}
     assert rows[stuck]['status'] == 'lost' and rows[stuck]['note'] == 'no_pid'
+
+
+# --- 00bb1b4d: structured problem codes for the daily digest (no command fragments) --------------------
+
+def test_problem_codes_match_the_problem_texts_and_carry_no_command_fragments(monkeypatch):
+    roster = load_roster()
+    assert wa.roster_problem_codes(roster) == {}
+    original = wa.ADAPTERS['cursor'].work_command
+    tampered(monkeypatch, 'cursor', work_command=lambda r: original(r) + ['--force'])
+    codes = wa.roster_problem_codes(roster)
+    assert codes == {'cursor': ['probation_can_edit']}
+    assert '--force' in ' '.join(wa.roster_problems(roster)['cursor'])   # the log text keeps its detail
+    assert set(code for found in codes.values() for code in found) <= set(wa.PROBLEM_CODES)
+
+
+def test_problem_codes_cover_every_kind(monkeypatch):
+    from dataclasses import replace
+    roster = load_roster()
+    agents = dict(roster.agents)
+    agents['codex'] = replace(agents['codex'], status='retired') if hasattr(agents['codex'], '__dataclass_fields__') \
+        else agents['codex'].model_copy(update={'status': 'retired'})
+    agents.pop('claude-code')
+    changed = SimpleNamespace(agents=agents)
+    original = wa.ADAPTERS['opencode'].work_command
+    tampered(monkeypatch, 'opencode', applies_edits=False, work_command=lambda r: original(r) + ['--yolo'])
+    codes = wa.roster_problem_codes(changed)
+    assert codes['codex'] == ['retired'] and codes['claude-code'] == ['no_roster']
+    assert codes['opencode'] == ['probation_can_edit']
