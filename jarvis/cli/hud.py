@@ -12,7 +12,7 @@ from jarvis.features.board.service import BoardStore
 from jarvis.app.events import create_event_app, load_event_token
 from jarvis.app.chat import ChatService
 from jarvis.core.guardrails import Guardrails
-from jarvis.core.paths import DEFAULT_WORKSPACE
+from jarvis.core.paths import CONFIG_ROOT, DEFAULT_WORKSPACE
 
 
 class HUDServer(uvicorn.Server):
@@ -48,7 +48,8 @@ def main():
     processes = ProcessRegistry(store.guard)
     processes.register_current(kind='hud', label='JARVIS HUD', max_runtime_seconds=604800)
     app = create_event_app(store, token=load_event_token(), task_ids=ids, origins=[url], chat=chat,
-        processes=processes, board=BoardStore(store.guard), activity=activity)
+        processes=processes, board=BoardStore(store.guard), activity=activity,
+        dispatcher=(store.guard, CONFIG_ROOT / 'dispatcher.json'))
     print(f'J.A.R.V.I.S. local workspace: {url}', flush=True)
     print('Local chat enabled; task HUD read-only. Close this process to stop. Connection file: .jarvis-auth/agent-events-token.txt', flush=True)
     config = uvicorn.Config(app, host='127.0.0.1', port=args.port, ws='websockets-sansio',
