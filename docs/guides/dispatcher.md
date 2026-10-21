@@ -47,6 +47,14 @@
 - overdue: 실행 중으로 `run_timeout_minutes` + 2분을 넘김.
 - 범용 실행 감시는 활동 수집기 몫이다. 알림 전송과 정리는 2단계다.
 
+## 사용량 감시 (W3, 1단계)
+
+모델을 호출하지 않고 5시간·주간 사용량을 `작업공간/.jarvis-dispatch/usage/<직원>.json`에 모은다. Codex 표본은 기존 workload_policy가 판단에 쓰고, 10분보다 오래된 표본은 판단에서 무시한다. HUD 패널의 "마지막 사용량"과 하루 요약의 `사용량(마지막 관찰)` 줄은 마지막 값과 그 시각을 보여 주기만 한다(오래됨 표시).
+
+- Codex: 디스패처 tick(dry-run 제외)이 `~/.codex/sessions` 아래 최근 rollout 파일 3개의 끝 256KB에서 `token_count` 이벤트의 `rate_limits`만 읽는다. 값의 형식은 Codex 공식 코드(protocol.rs, 0~100%, 초 단위 초기화 시각)이고, 파일에 저장된다는 것은 관찰한 사실이라 출처를 `codex_rollout_observed`로 적는다. 대화 원문이 있는 파일이라 두 표시가 모두 있는 줄만 해석하고, 링크·정션은 거부한다. Codex가 쉬면 갱신되지 않는다.
+- Claude Code: 공식 statusline 입력의 `rate_limits.five_hour`·`seven_day`(Pro·Max, 세션 첫 응답 이후). `jarvis/cli/claude_statusline_usage.py`가 숫자만 저장하고 한 줄을 출력한다. 설치(사용자 Claude Code 설정의 `statusLine`)는 사용자 승인 후. 예시: `config/statusline.claude.example.json`, 실제 경로 출력: `--workspace <작업공간> --render-config`.
+- 수집 실패는 로그만 남기고 이전 파일을 그대로 둔다.
+
 ## 순환 닫기: 로컬 팀장과 하루 요약
 
 - 로컬 팀장: 모든 직원에게 처리할 메시지도 실행 중인 일도 없을 때만 tick이 `lead_planner.plan_next`를 부른다. 팀장은 `docs/PLAN.md`의 미체크 항목 하나를 작업으로 만들고 담당 직원에게 메시지로 배정한다. 같은 tick에서 그 직원을 바로 깨운다. 판단은 로컬 Ollama(`lead_judge.ollama_judge`)가 하고, Ollama가 꺼져 있거나 판단 함수가 없으면 팀장만 쉬고 직원 깨우기는 계속한다. 하루 생성 상한은 `lead.daily_tasks`(기본 3). 민감 작업은 작업을 만들지 않고 사용자에게 승인 요청만 보낸다.

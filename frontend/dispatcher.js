@@ -44,7 +44,10 @@
   // W2 process watch: report-only findings about orphaned records and overdue runs.
   const watchTitle = element('h3', '', '확인이 필요한 기록'); watchTitle.hidden = true;
   const watch = element('ul', 'activity'); watch.setAttribute('aria-label', '감시 경고'); watch.hidden = true;
-  panel.append(heading, summary, notice, actions, watchTitle, watch, element('h3', '', '직원별 누적'), employees,
+  // W3: last observed 5-hour and weekly usage; display only, the dispatcher ignores stale samples.
+  const usageTitle = element('h3', '', '마지막 사용량'); usageTitle.hidden = true;
+  const usage = element('ul', 'activity'); usage.setAttribute('aria-label', '마지막 사용량'); usage.hidden = true;
+  panel.append(heading, summary, notice, actions, watchTitle, watch, usageTitle, usage, element('h3', '', '직원별 누적'), employees,
     element('h3', '', '최근 실행 (최대 10개)'), recent);
   workspace.append(panel);
 
@@ -101,6 +104,25 @@
     watch.hidden = !show; watchTitle.hidden = !show;
   }
 
+  function renderUsage(view) {
+    usage.replaceChildren();
+    const names = view && typeof view === 'object' ? Object.keys(view).slice(0, 5) : [];
+    for (const name of names) {
+      const item = view[name];
+      if (!item || typeof item.five_hour !== 'number') continue;
+      let text = String(name) + ' · 5시간 ' + Math.round(item.five_hour) + '%';
+      if (typeof item.weekly === 'number') text += ' · 주간 ' + Math.round(item.weekly) + '%';
+      const row = element('li');
+      row.append(element('span', '', text),
+        element('span', 'muted small', (isTime(item.sampled_at) ? stamp(item.sampled_at) : '시각 모름')
+          + (item.fresh ? '' : ' · 오래됨')));
+      usage.append(row);
+    }
+    if (usage.children.length) usage.append(element('li', 'empty-feed', '마지막으로 관찰한 값입니다. 판단에는 쓰지 않음(오래된 값).'));
+    const show = usage.children.length > 0;
+    usage.hidden = !show; usageTitle.hidden = !show;
+  }
+
   function render(data) {
     snapshot = data;
     const [label, kind] = data.effective_enabled ? ['켜짐', 'completed']
@@ -119,6 +141,7 @@
     toggle.disabled = acting;
 
     renderWatch(data.watch);
+    renderUsage(data.usage);
 
     const now = Date.now() / 1000;
     employees.replaceChildren();

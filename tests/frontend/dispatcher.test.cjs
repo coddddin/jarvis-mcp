@@ -175,3 +175,21 @@ test('an unavailable watch is reported without hiding the rest', async () => {
   assert.match(flatten(list), /감시 결과를 읽지 못했어요/);
   assert.match(flatten(h.panel), /켜짐/);
 });
+
+test('last observed usage shows per employee with stale marking; absent keeps it hidden', async () => {
+  const h = harness();
+  await h.connect('t');
+  const list = find(h.panel, n => n.attributes['aria-label'] === '마지막 사용량');
+  assert.equal(list.hidden, true);
+  h.setHandler(() => ({status:200, body:snapshot({usage:{
+    codex:{five_hour:81, weekly:44, sampled_at:NOW - 60, source:'codex_rollout_observed', fresh:true},
+    '<b>x</b>':{five_hour:23.5, weekly:null, sampled_at:NOW - 7200, source:'claude_statusline', fresh:false}}})}));
+  await h.button('새로고침').events.click();
+  await h.settle();
+  assert.equal(list.hidden, false);
+  const text = flatten(list);
+  assert.match(text, /codex · 5시간 81% · 주간 44%/);
+  assert.match(text, /<b>x<\/b> · 5시간 24%/);
+  assert.match(text, /오래됨/);
+  assert.match(text, /판단에는 쓰지 않음/);
+});
