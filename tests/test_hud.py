@@ -246,3 +246,31 @@ def test_real_activity_store_http_reports_are_not_verification(setup):
     assert run['sequence_gap'] is True
     assert run['verified'] == []
     assert registration['token'] not in response.text
+
+
+def test_session_status_is_authenticated_read_only_and_never_receives_event_posts(setup):
+    from jarvis.agents.session_status import SessionStatusStore
+    store, selected, _, _ = setup
+    sessions = SessionStatusStore(store.guard)
+    sessions.report({'employee': 'codex', 'session_id': 'test-session', 'event_id': 'a'*32,
+        'turn_id': 'test-turn', 'event': 'permission_requested', 'source': 'self_reported'})
+    client = TestClient(create_event_app(store, token='x'*43, task_ids=[selected.task_id],
+        origins=['http://127.0.0.1:8787'], sessions=sessions))
+    url = 'http://127.0.0.1:8787/api/sessions'
+    headers = {'Authorization': 'Bearer '+'x'*43}
+    assert client.get(url).status_code == 401
+    assert client.get(url+'?token=bad', headers=headers).status_code == 403
+    assert client.get(url, headers={**headers, 'Origin': 'https://evil.example'}).status_code == 403
+    assert client.get('/api/sessions', headers=headers).status_code == 403
+    response = client.get(url, headers=headers)
+    assert response.status_code == 200 and response.headers['cache-control'] == 'no-store'
+    assert response.json()['identity_verified'] is False
+    assert response.json()['sessions'][0]['state'] == 'unknown'
+    assert client.post(url, json={'event': 'tool_started'}, headers=headers).status_code == 405
+
+
+def test_missing_session_adapter_is_unavailable_not_idle(setup):
+    client = setup[-1]
+    response = client.get('http://127.0.0.1:8787/api/sessions', headers={'Authorization': 'Bearer '+'x'*43})
+    assert response.status_code == 503
+    assert response.json() == {'error': 'sessions_unavailable'}
