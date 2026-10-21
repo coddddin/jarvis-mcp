@@ -1,0 +1,101 @@
+{
+  "description": "Example only: render real absolute paths with --render-config, then review and trust. No prompt or tool content is stored.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"__ABSOLUTE_PYTHON__\" \"__ABSOLUTE_REPO__/jarvis/cli/session_signal.py\" --workspace \"__ABSOLUTE_WORKSPACE__\" --project-root \"__ABSOLUTE_REPO__\"",
+            "commandWindows": "\"__ABSOLUTE_PYTHON__\" \"__ABSOLUTE_REPO__/jarvis/cli/session_signal.py\" --workspace \"__ABSOLUTE_WORKSPACE__\" --project-root \"__ABSOLUTE_REPO__\"",
+            "timeout": 2
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"__ABSOLUTE_PYTHON__\" \"__ABSOLUTE_REPO__/jarvis/cli/session_signal.py\" --workspace \"__ABSOLUTE_WORKSPACE__\" --project-root \"__ABSOLUTE_REPO__\"",
+            "commandWindows": "\"__ABSOLUTE_PYTHON__\" \"__ABSOLUTE_REPO__/jarvis/cli/session_signal.py\" --workspace \"__ABSOLUTE_WORKSPACE__\" --project-root \"__ABSOLUTE_REPO__\"",
+            "timeout": 2
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"__ABSOLUTE_PYTHON__\" \"__ABSOLUTE_REPO__/jarvis/cli/session_signal.py\" --workspace \"__ABSOLUTE_WORKSPACE__\" --project-root \"__ABSOLUTE_REPO__\"",
+            "commandWindows": "\"__ABSOLUTE_PYTHON__\" \"__ABSOLUTE_REPO__/jarvis/cli/session_signal.py\" --workspace \"__ABSOLUTE_WORKSPACE__\" --project-root \"__ABSOLUTE_REPO__\"",
+            "timeout": 2
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"__ABSOLUTE_PYTHON__\" \"__ABSOLUTE_REPO__/jarvis/cli/session_signal.py\" --workspace \"__ABSOLUTE_WORKSPACE__\" --project-root \"__ABSOLUTE_REPO__\"",
+            "commandWindows": "\"__ABSOLUTE_PYTHON__\" \"__ABSOLUTE_REPO__/jarvis/cli/session_signal.py\" --workspace \"__ABSOLUTE_WORKSPACE__\" --project-root \"__ABSOLUTE_REPO__\"",
+            "timeout": 2
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"__ABSOLUTE_PYTHON__\" \"__ABSOLUTE_REPO__/jarvis/cli/session_signal.py\" --workspace \"__ABSOLUTE_WORKSPACE__\" --project-root \"__ABSOLUTE_REPO__\"",
+            "commandWindows": "\"__ABSOLUTE_PYTHON__\" \"__ABSOLUTE_REPO__/jarvis/cli/session_signal.py\" --workspace \"__ABSOLUTE_WORKSPACE__\" --project-root \"__ABSOLUTE_REPO__\"",
+            "timeout": 2
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"__ABSOLUTE_PYTHON__\" \"__ABSOLUTE_REPO__/jarvis/cli/session_signal.py\" --workspace \"__ABSOLUTE_WORKSPACE__\" --project-root \"__ABSOLUTE_REPO__\"",
+            "commandWindows": "\"__ABSOLUTE_PYTHON__\" \"__ABSOLUTE_REPO__/jarvis/cli/session_signal.py\" --workspace \"__ABSOLUTE_WORKSPACE__\" --project-root \"__ABSOLUTE_REPO__\"",
+            "timeout": 2
+          }
+        ]
+      }
+    ],
+    "Interrupt": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"__ABSOLUTE_PYTHON__\" \"__ABSOLUTE_REPO__/jarvis/cli/session_signal.py\" --workspace \"__ABSOLUTE_WORKSPACE__\" --project-root \"__ABSOLUTE_REPO__\"",
+            "commandWindows": "\"__ABSOLUTE_PYTHON__\" \"__ABSOLUTE_REPO__/jarvis/cli/session_signal.py\" --workspace \"__ABSOLUTE_WORKSPACE__\" --project-root \"__ABSOLUTE_REPO__\"",
+            "timeout": 2
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"__ABSOLUTE_PYTHON__\" \"__ABSOLUTE_REPO__/jarvis/cli/session_signal.py\" --workspace \"__ABSOLUTE_WORKSPACE__\" --project-root \"__ABSOLUTE_REPO__\"",
+            "commandWindows": "\"__ABSOLUTE_PYTHON__\" \"__ABSOLUTE_REPO__/jarvis/cli/session_signal.py\" --workspace \"__ABSOLUTE_WORKSPACE__\" --project-root \"__ABSOLUTE_REPO__\"",
+            "timeout": 2
+          }
+        ]
+      }
+    ]
+  }
+}
