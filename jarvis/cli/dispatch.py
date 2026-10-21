@@ -20,6 +20,7 @@ from jarvis.agents.dispatch_policy import (DispatchLedger, DispatcherConfig, Emp
                                            build_digest, detect_eligibility, detect_limit, digest_due, due, parse_usage,
                                            should_run_lead, wake_prompt)
 from jarvis.agents.lead_planner import LeadLedger, plan_next
+from jarvis.agents import process_watch
 from jarvis.agents.dispatch_service import DispatchService, KillOnCloseJob, codex_workload_gate, read_pause, read_usage_sample
 from jarvis.agents.process_registry import ProcessRegistry, observe_spawned
 from jarvis.agents.dispatch_policy import Decision
@@ -272,7 +273,7 @@ def tick(dry_run=False):
 
 def main():
     parser = argparse.ArgumentParser(description='자비스 W5 디스패처: 게시판에 일이 온 AI 직원을 깨운다. main 머지는 하지 않는다.')
-    parser.add_argument('action', choices=['serve', 'tick', 'dry-run', 'status'])
+    parser.add_argument('action', choices=['serve', 'tick', 'dry-run', 'status', 'watch'])
     args = parser.parse_args()
     try:
         if args.action == 'serve':
@@ -288,6 +289,8 @@ def main():
         elif args.action == 'status':
             guard = load_guardrails()
             result = {**DispatchLedger(guard).summary(), 'pause': read_pause(guard)}
+        elif args.action == 'watch':  # W2: report only; never terminates or edits
+            result = process_watch.scan(load_guardrails(), CONFIG_ROOT / 'dispatcher.json')
         else:
             result = tick(dry_run=args.action == 'dry-run')
         print(json.dumps(result, ensure_ascii=False, indent=2, default=str))

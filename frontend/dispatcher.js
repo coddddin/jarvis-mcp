@@ -41,7 +41,10 @@
   actions.append(toggle, reload);
   const employees = element('ul', 'activity'); employees.setAttribute('aria-label', '직원별 누적');
   const recent = element('ol', 'activity'); recent.setAttribute('aria-label', '최근 실행');
-  panel.append(heading, summary, notice, actions, element('h3', '', '직원별 누적'), employees,
+  // W2 process watch: report-only findings about orphaned records and overdue runs.
+  const watchTitle = element('h3', '', '확인이 필요한 기록'); watchTitle.hidden = true;
+  const watch = element('ul', 'activity'); watch.setAttribute('aria-label', '감시 경고'); watch.hidden = true;
+  panel.append(heading, summary, notice, actions, watchTitle, watch, element('h3', '', '직원별 누적'), employees,
     element('h3', '', '최근 실행 (최대 10개)'), recent);
   workspace.append(panel);
 
@@ -70,6 +73,34 @@
     return data;
   }
 
+  function watchText(item) {
+    const detail = item.detail && typeof item.detail === 'object' ? item.detail : {};
+    const who = String(item.ref || '') + (detail.employee ? ' (' + String(detail.employee) + ')' : '');
+    switch (item.kind) {
+      case 'service_down': return '서비스가 꺼져 있어요. 설정은 켜져 있고 일시정지도 아니에요.';
+      case 'service_record_stale': return '서비스 기록은 남아 있지만 그 프로세스는 없어요.';
+      case 'owner_dead': return who + ': 실행 중으로 남아 있지만 프로세스가 없어요.';
+      case 'owner_unknown': return who + ': 프로세스 번호 없이 실행 중으로 남아 있어요. 이 직원은 다시 실행되지 않아요.';
+      case 'overdue': return who + ': 제한 시간 ' + count(Math.round((detail.limit_seconds || 0) / 60)) + '분을 넘겼어요.';
+      default: return null;
+    }
+  }
+
+  function renderWatch(report) {
+    watch.replaceChildren();
+    const findings = report && Array.isArray(report.findings) ? report.findings : [];
+    for (const item of findings.slice(0, 20)) {
+      const text = item && typeof item === 'object' ? watchText(item) : null;
+      if (!text) continue;
+      const row = element('li');
+      row.append(element('span', 'status needs_user_input', '확인 필요'), element('span', '', ' ' + text));
+      watch.append(row);
+    }
+    if (report && report.error) watch.append(element('li', 'empty-feed', '감시 결과를 읽지 못했어요.'));
+    const show = watch.children.length > 0;
+    watch.hidden = !show; watchTitle.hidden = !show;
+  }
+
   function render(data) {
     snapshot = data;
     const [label, kind] = data.effective_enabled ? ['켜짐', 'completed']
@@ -86,6 +117,8 @@
     summary.textContent = parts.join(' · ');
     toggle.textContent = data.paused ? '재개' : '일시정지';
     toggle.disabled = acting;
+
+    renderWatch(data.watch);
 
     const now = Date.now() / 1000;
     employees.replaceChildren();

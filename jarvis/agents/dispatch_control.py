@@ -59,7 +59,7 @@ def resume(guard, reason='', *, clock=time.time):
     _write_pause(guard, False, reason, clock)
 
 
-def service_state(guard):
+def service_state(guard, *, lookup=psutil.Process):
     """Observed, not self-reported: the recorded pid must be alive and started no later than the record."""
     path = guard.validate_path(SERVICE_INFO, must_exist=False)
     try:
@@ -70,7 +70,7 @@ def service_state(guard):
     if type(pid) is not int or started is None:
         return {'running': False, 'pid': None, 'started': None}
     try:
-        running = psutil.Process(pid).create_time() <= started + 5  # a reused pid starts later
+        running = lookup(pid).create_time() <= started + 5  # a reused pid starts later
     except (psutil.Error, OSError):
         running = False
     return {'running': running, 'pid': pid if running else None, 'started': started}
@@ -98,5 +98,14 @@ def snapshot(guard, config_path, *, clock=time.time):
         'service': service_state(guard),
         'employees': employees,
         'recent': [{key: row.get(key) for key in RUN_FIELDS} for row in recent[:RECENT]],
+        'watch': _watch(guard, config_path),
         'read_at': clock(),
     }
+
+
+def _watch(guard, config_path):
+    from jarvis.agents import process_watch  # imported here: process_watch imports this module
+    try:
+        return process_watch.scan(guard, config_path)
+    except Exception:  # the panel still shows the rest when the watch cannot run
+        return {'findings': [], 'checked_at': None, 'error': 'watch_unavailable'}

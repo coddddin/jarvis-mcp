@@ -162,3 +162,18 @@ def test_validate_path_still_rejects_extended_unc_result(guard, monkeypatch):
     monkeypatch.setattr(pathlib.Path, 'resolve', lambda self, strict=False: pathlib.Path(EXTENDED + 'UNC' + BS + 'host' + BS + 'share' + BS + 'x'))
     with pytest.raises(GuardrailError):
         guard.validate_path('x.json', must_exist=False)
+
+
+def test_snapshot_includes_the_process_watch(guard, config):
+    run_id = DispatchLedger(guard).start('codex', pid=None)
+    state = dispatch_control.snapshot(guard, config)
+    assert state['watch']['findings'][0]['kind'] == 'service_down'
+    assert run_id
+
+
+def test_snapshot_survives_a_failing_watch(guard, config, monkeypatch):
+    from jarvis.agents import process_watch
+    monkeypatch.setattr(process_watch, 'scan', lambda *a, **k: 1 / 0)
+    state = dispatch_control.snapshot(guard, config)
+    assert state['watch'] == {'findings': [], 'checked_at': None, 'error': 'watch_unavailable'}
+    assert state['effective_enabled'] is True
