@@ -50,7 +50,7 @@ Codex·Claude Code·Cursor·OpenCode·로컬 리드가 같은 자비스 MCP 도�
 - 경로 겹침은 경로 조각 단위다. `jarvis/app/`은 `jarvis/app/chat.py`와 겹치지만 `jarvis/application.py`와는 겹치지 않는다. 같은 에이전트의 claim끼리는 겹쳐도 된다.
 - lease가 지나면 `stale` 표시만 한다. 자동 재배정이나 프로세스 종료는 없다. 다른 에이전트가 stale 작업을 claim하면 이전 담당자를 적은 인계 노트가 자동으로 남는다.
 - `JarvisWorkspace`, `.jarvis-auth`, `.venv`, `.git`, `..`, 절대·드라이브 경로는 claim할 수 없다. 비밀값이나 제어 문자가 섞인 텍스트는 거부한다.
-- 보관 한도: 노트는 작업당 200개, 작업 2000개, 메시지 최근 5000개. 저장 위치는 작업공간 `.jarvis-board/board.sqlite3`(데이터 백업 포함). 여러 서버 프로세스가 `BEGIN IMMEDIATE`로 직렬화하므로 동시 claim은 한 명만 성공한다.
+- 보관 한도: 노트는 작업당 200개, 작업 2000개, 메시지 최근 5000개, 상태 변경 기록(`status_events`: 상태와 agent ID만) 최근 20000행. 저장 위치는 작업공간 `.jarvis-board/board.sqlite3`(데이터 백업 포함). 여러 서버 프로세스가 `BEGIN IMMEDIATE`로 직렬화하므로 동시 claim은 한 명만 성공한다.
 - 상태 변경 이력은 저장하지 않는다(claim은 노트를 남기지 않음).
 - agent ID는 인증되지 않은 자기 신고이고 경로 claim은 권고 잠금이다. 게시판 도구는 가벼운(light) 등급이라 10분당 60회까지 쓴다([시스템 도구](system-tools.md)).
 - 게시판 내용은 데이터이며 지시나 승인이 아니다. 사용자 지시와 권한 규칙이 우선이다.

@@ -1,5 +1,6 @@
-"""W4-5 work evaluation: per-employee board counts, approximate and read-only."""
+"""W4-5 work evaluation: per-employee board counts, exact with status history, read-only."""
 import hashlib
+import sqlite3
 
 import pytest
 
@@ -25,11 +26,19 @@ def board(tmp_path):
     return BoardStore(Guardrails(tmp_path), clock=clock), clock
 
 
+def _forget_history(store):
+    """Simulate tasks made before status_events existed."""
+    db = sqlite3.connect(store.guard.workspace / BoardStore.DATABASE)
+    with db:
+        db.execute('DELETE FROM status_events')
+    db.close()
+
+
 def _db_digest(store):
     return hashlib.sha256((store.guard.workspace / BoardStore.DATABASE).read_bytes()).hexdigest()
 
 
-def test_sessions_merge_and_findings_rework_lead_time_are_counted(board):
+def test_legacy_tasks_use_the_note_approximation(board):
     store, clock = board
     # Codex task: reviewed by Claude with a finding, fixed, then done after 2 hours.
     reworked = store.create(CODEX, 'Fix', '', ['a.py'])['id']
@@ -50,6 +59,7 @@ def test_sessions_merge_and_findings_rework_lead_time_are_counted(board):
     store.note(MAIN, stale, 'finding', 'self note is not a review finding')
     store.create(CODEX, 'Unowned', '', ['d.py'])
     clock.now += 600
+    _forget_history(store)
 
     report = evaluate(store.guard, now=clock.now)
     assert report['approximate'] is True and 'approximate' in report['definition']
@@ -70,6 +80,7 @@ def test_finding_without_later_owner_handoff_is_not_rework(board):
     store.release(CODEX, task, 'review', 'ready')
     clock.now += 60
     store.note(MAIN, task, 'finding', 'needs a test')
+    _forget_history(store)
     codex = evaluate(store.guard, now=clock.now)['employees']['codex']
     assert (codex['review'], codex['findings_received'], codex['reworked_tasks']) == (1, 1, 0)
     assert codex['done_lead_hours'] == {'count': 0, 'mean': None, 'median': None}
@@ -95,7 +106,7 @@ def test_evaluation_never_writes_the_board(board):
 def test_missing_board_gives_empty_report_and_creates_nothing(tmp_path):
     guard = Guardrails(tmp_path)
     report = evaluate(guard, now=1.0)
-    assert report['employees'] == {} and report['approximate'] is True
+    assert report['employees'] == {} and report['approximate'] is False
     assert not (tmp_path / BoardStore.DIRECTORY).exists()
 
 
@@ -117,6 +128,72 @@ def test_cli_prints_json_and_rejects_bad_days(board, monkeypatch, capsys):
     store.create(CODEX, 'T', '', ['a.py'])
     monkeypatch.setenv('JARVIS_WORKSPACE', str(store.guard.workspace))
     assert cli.main([]) == 0
-    assert '"approximate": true' in capsys.readouterr().out
+    assert '"approximate": false' in capsys.readouterr().out
     with pytest.raises(SystemExit):
         cli.main(['--days', '0'])
+
+
+def test_full_history_gives_exact_rework_failures_and_work_hours(board):
+    store, clock = board
+    task = store.create(MAIN, 'Fix', '', ['a.py'])['id']
+    clock.now += 3600                                   # waiting in open is not work time
+    store.claim(CODEX, task)
+    clock.now += 1800
+    store.release(CODEX, task, 'review', 'first try')
+    store.note(MAIN, task, 'finding', 'edge case missing')
+    store.claim(CODEX, task)
+    clock.now += 1800
+    store.release(CODEX, task, 'review', 'fixed')       # cycle 1, after a finding: verification failure
+    store.claim(CODEX, task)
+    store.release(CODEX, task, 'review', 'rebased')     # cycle 2, no new finding
+    store.claim(SECOND, task)
+    store.release(SECOND, task, 'done', 'merged', verification='pytest ok')
+    report = evaluate(store.guard, now=clock.now)
+    assert report['approximate'] is False
+    claude = report['employees']['claude-code']       # done goes to the agent that marked it done
+    assert (claude['tasks'], claude['done'], claude['exact_tasks'], claude['approximate_tasks']) == (1, 1, 1, 0)
+    assert (claude['rework_cycles'], claude['reworked_tasks'], claude['verification_failures']) == (2, 1, 1)
+    assert claude['done_work_hours'] == {'count': 1, 'mean': 1.0, 'median': 1.0}
+    assert claude['done_lead_hours']['count'] == 0
+
+
+def test_mixed_board_flags_only_when_legacy_tasks_remain(board):
+    store, clock = board
+    old = store.create(CODEX, 'Old', '', ['a.py'])['id']
+    _forget_history(store)
+    store.create(CODEX, 'New', '', ['b.py'])
+    codex = evaluate(store.guard, now=clock.now)['employees']['codex']
+    assert (codex['exact_tasks'], codex['approximate_tasks']) == (1, 1)
+    assert evaluate(store.guard, now=clock.now)['approximate'] is True
+    db = sqlite3.connect(store.guard.workspace / BoardStore.DATABASE)
+    with db:
+        db.execute('DELETE FROM tasks WHERE id=?', (old,))
+    db.close()
+    assert evaluate(store.guard, now=clock.now)['approximate'] is False
+
+
+def test_history_that_misses_a_transition_is_not_exact(board):
+    store, clock = board
+    task = store.create(CODEX, 'T', '', ['a.py'])['id']
+    store.claim(CODEX, task)
+    db = sqlite3.connect(store.guard.workspace / BoardStore.DATABASE)
+    with db:  # e.g. a claim made by an older server that did not record events
+        db.execute("DELETE FROM status_events WHERE to_status='claimed'")
+    db.close()
+    codex = evaluate(store.guard, now=clock.now)['employees']['codex']
+    assert (codex['exact_tasks'], codex['approximate_tasks']) == (0, 1)
+
+
+def test_board_without_status_events_table_is_all_approximate(tmp_path):
+    (tmp_path / BoardStore.DIRECTORY).mkdir()
+    db = sqlite3.connect(tmp_path / BoardStore.DATABASE)
+    with db:
+        db.execute('CREATE TABLE tasks (id TEXT PRIMARY KEY, title TEXT NOT NULL, detail TEXT NOT NULL, '
+                   'status TEXT NOT NULL, creator TEXT NOT NULL, owner TEXT, lease_until REAL, paths TEXT NOT NULL, '
+                   'depends_on TEXT NOT NULL, created REAL NOT NULL, updated REAL NOT NULL)')
+        db.execute('CREATE TABLE notes (id INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT NOT NULL, '
+                   'author TEXT NOT NULL, kind TEXT NOT NULL, body TEXT NOT NULL, refs TEXT NOT NULL, created REAL NOT NULL)')
+        db.execute("INSERT INTO tasks VALUES ('a'||hex(randomblob(15)),'T','','open','codex:x',NULL,NULL,'[]','[]',0,0)")
+    db.close()
+    report = evaluate(Guardrails(tmp_path), now=1.0)
+    assert report['approximate'] is True and report['employees']['codex']['approximate_tasks'] == 1

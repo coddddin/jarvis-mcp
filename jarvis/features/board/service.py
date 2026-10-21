@@ -29,6 +29,7 @@ STATUSES = ('open', 'claimed', 'blocked', 'review', 'done', 'cancelled')
 RELEASE_TO = ('open', 'blocked', 'review', 'done', 'cancelled')
 NOTE_KINDS = ('handoff', 'finding', 'question')
 MAX_TASKS, MAX_NOTES, MAX_PATHS, MAX_MESSAGES = 2000, 200, 20, 5000
+MAX_EVENTS = 20000
 
 
 def _text(value, name, limit, *, required=True):
@@ -140,6 +141,13 @@ class BoardStore:
         db.execute('CREATE TABLE IF NOT EXISTS reads (message_id INTEGER NOT NULL, reader TEXT NOT NULL, '
                    'PRIMARY KEY(message_id, reader))')
         db.execute('CREATE INDEX IF NOT EXISTS messages_recipient ON messages(recipient, id)')
+        # Status history: states and agent IDs only, never summaries or note text.
+        db.execute('CREATE TABLE IF NOT EXISTS status_events (id INTEGER PRIMARY KEY AUTOINCREMENT, '
+                   'task_id TEXT NOT NULL, from_status TEXT, to_status TEXT NOT NULL, agent TEXT NOT NULL, '
+                   'at REAL NOT NULL)')
+        db.execute('CREATE INDEX IF NOT EXISTS status_events_task ON status_events(task_id, id)')
+        db.execute('CREATE TRIGGER IF NOT EXISTS status_events_follow_tasks AFTER DELETE ON tasks '
+                   'BEGIN DELETE FROM status_events WHERE task_id = old.id; END')
 
     def _row(self, row, now):
         task = dict(row)
@@ -158,6 +166,14 @@ class BoardStore:
             raise BoardError('Note limit reached for this task; create a follow-up task.')
         db.execute('INSERT INTO notes(task_id,author,kind,body,refs,created) VALUES(?,?,?,?,?,?)',
                    (task_id, author, kind, body, json.dumps(refs), now))
+
+    @staticmethod
+    def _event(db, task_id, from_status, to_status, agent, now):
+        """One status transition, in the caller's transaction; the oldest rows beyond MAX_EVENTS are pruned."""
+        db.execute('INSERT INTO status_events(task_id,from_status,to_status,agent,at) VALUES(?,?,?,?,?)',
+                   (task_id, from_status, to_status, agent, now))
+        db.execute('DELETE FROM status_events WHERE id <= '
+                   '(SELECT id FROM status_events ORDER BY id DESC LIMIT 1 OFFSET ?)', (MAX_EVENTS,))
 
     @staticmethod
     def _lease(minutes):
@@ -182,6 +198,7 @@ class BoardStore:
             db.execute('INSERT INTO tasks VALUES (?,?,?,?,?,?,?,?,?,?,?)',
                        (identity, title, detail, 'open', agent, None, None, json.dumps(paths),
                         json.dumps(depends_on), now, now))
+            self._event(db, identity, None, 'open', agent, now)
             return self._load(db, identity)
 
     def claim(self, agent, task_id, *, lease_minutes=30):
@@ -213,6 +230,9 @@ class BoardStore:
                                f'Took over stale claim from {task["owner"]} (lease expired).', [], now)
             db.execute('UPDATE tasks SET status="claimed", owner=?, lease_until=?, updated=? WHERE id=?',
                        (agent, now + lease, now, task['id']))
+            if not renewing:
+                # A stale takeover is claimed -> claimed with the new owner as agent.
+                self._event(db, task['id'], task['status'], 'claimed', agent, now)
             return self._load(db, task['id'])
 
     def heartbeat(self, agent, task_id, *, lease_minutes=30):
@@ -258,6 +278,7 @@ class BoardStore:
             body = summary + (f'\nVerification: {verification}' if verification else '')
             self._add_note(db, task['id'], agent, 'handoff', body, [f'commit:{commit}'] if commit else [], now)
             db.execute('UPDATE tasks SET status=?, lease_until=NULL, updated=? WHERE id=?', (status, now, task['id']))
+            self._event(db, task['id'], 'claimed', status, agent, now)
             return self._load(db, task['id'])
 
     def get(self, task_id, *, notes=10):
