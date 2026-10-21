@@ -344,7 +344,10 @@ class HybridTeam:
             try:
                 if process.poll() is None:
                     process.kill()
-                process.communicate()
+                try:
+                    process.communicate(timeout=2)
+                except subprocess.TimeoutExpired:
+                    logging.getLogger(__name__).warning('External worker pipe cleanup exceeded its observation deadline.')
             finally:
                 if reporter is not None:
                     reporter.close()

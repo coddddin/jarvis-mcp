@@ -1,6 +1,7 @@
 """Injected activity collectors observe proposals without changing provider dispatch."""
 import json
 import os
+import subprocess
 from types import SimpleNamespace
 import time
 from uuid import uuid4
@@ -72,3 +73,25 @@ def test_parallel_packets_have_distinct_epoch_slots_and_corrections_fence_only_t
     finally:
         for reporter in reporters:
             reporter.close()
+
+
+def test_pipe_cleanup_timeout_does_not_block_reporter_close_or_repeat_provider(tmp_path, monkeypatch, caplog):
+    guard = Guardrails(tmp_path)
+    team = HybridTeam(ChatStore(guard), None, codex='unused', claude='unused')
+    folder = tmp_path / '.jarvis-chat' / f'team-{uuid4().hex}-{uuid4().hex}'
+    folder.mkdir()
+    timeouts, spawned, closed = [], [], []
+    def communicate(*args, **kwargs):
+        timeouts.append(kwargs['timeout'])
+        if kwargs['timeout'] == 2:
+            raise subprocess.TimeoutExpired('fixture-cli', 2)
+        return b'{"structured_output":{"summary":"ok","output":"proposal"}}', None
+    child = SimpleNamespace(returncode=0, poll=lambda: 0, communicate=communicate)
+    reporter = SimpleNamespace(send=lambda *a, **k: True, close=lambda: closed.append(True))
+    monkeypatch.setattr(team, '_activity_reporter', lambda *args: reporter)
+    monkeypatch.setattr(team, '_external_command', lambda *args: ['fixture-not-executed'])
+    monkeypatch.setattr('jarvis.agents.team.observe_spawned', lambda *a, **k: None)
+    monkeypatch.setattr('jarvis.agents.team.subprocess.Popen', lambda *a, **k: spawned.append(True) or child)
+    assert team._external('claude-code', {}, folder, 'p1-r0', time.monotonic() + 30).output == 'proposal'
+    assert timeouts == [0.2, 2] and closed == [True] and spawned == [True]
+    assert 'cleanup exceeded' in caplog.text
