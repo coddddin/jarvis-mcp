@@ -108,3 +108,40 @@ def test_absolute_cli_smoke_does_not_depend_on_working_directory(tmp_path):
                              '--workspace', str(tmp_path), '--project-root', str(tmp_path)],
                             cwd=tmp_path, input=b'{}', capture_output=True, timeout=5)
     assert result.returncode == 0 and result.stdout == b'' and result.stderr == b''
+
+
+def test_real_cli_persists_only_metadata_and_preserves_stop_barrier(tmp_path):
+    from jarvis.agents.session_status import SessionStatusStore
+    from jarvis.cli import session_signal
+    from jarvis.core.guardrails import Guardrails
+
+    project = tmp_path / 'project'
+    project.mkdir()
+    workspace = tmp_path / 'data'
+    workspace.mkdir()
+    command = [sys.executable, str(Path(session_signal.__file__).resolve()),
+               '--workspace', str(workspace), '--project-root', str(project)]
+
+    def emit(event, **extra):
+        result = subprocess.run(command, cwd=tmp_path,
+                                input=json.dumps(payload(project, event, **extra)).encode(),
+                                capture_output=True, timeout=5)
+        assert (result.returncode, result.stdout, result.stderr) == (0, b'', b'')
+
+    for event in ('SessionStart', 'UserPromptSubmit', 'PreToolUse',
+                  'PermissionRequest', 'Stop', 'PostToolUse'):
+        emit(event)
+    store = SessionStatusStore(Guardrails(workspace))
+    snapshot = store.inspect()
+    assert snapshot['identity_verified'] is False
+    row = snapshot['sessions'][0]
+    assert row['state'] == 'turn_stopped'
+    assert row['verified'] == [] and row['connection_status'] == 'unknown'
+    emit('UserPromptSubmit', cwd=str(tmp_path), session_id='outside-session')
+    assert len(store.inspect()['sessions']) == 1
+    with store.connection(write=False) as db:
+        assert db.execute('SELECT count(*) FROM events').fetchone()[0] == 6
+    stored = (workspace / '.jarvis-sessions' / 'sessions.sqlite3').read_bytes()
+    assert all(value not in stored for value in
+               (b'PRIVATE', b'NEVER', b'transcript_path', str(project).encode()))
+
