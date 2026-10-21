@@ -6,6 +6,7 @@ service reads it with dispatch_service.read_pause; this module is the only write
 """
 import json
 import os
+import threading
 import time
 
 import psutil
@@ -17,6 +18,7 @@ from jarvis.core.guardrails import GuardrailError
 SERVICE_INFO = '.jarvis-dispatch/service.json'
 OPERATOR = 'user:heejun'  # the HUD is operator-started and token-gated
 RECENT = 10
+_WRITE_LOCK = threading.Lock()  # HUD POSTs run in worker threads; a double click must not race
 RUN_FIELDS = ('id', 'employee', 'status', 'started', 'ended', 'exit_code', 'input_tokens', 'output_tokens')
 
 
@@ -28,14 +30,24 @@ def _write_pause(guard, paused, reason, clock):
     guard.check_running()
     if not isinstance(reason, str) or len(reason) > 200:
         raise ValueError('Reason must be text of at most 200 characters.')
-    path = guard.validate_path(PAUSE, must_exist=False)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if path.is_symlink():
-        raise GuardrailError('Linked dispatcher pause marker is forbidden.')
-    temp = path.with_name(path.name + '.tmp')
-    temp.write_text(json.dumps({'paused': paused, 'by': OPERATOR, 'at': clock(), 'reason': reason},
-                               ensure_ascii=False), encoding='utf-8')
-    os.replace(temp, path)
+    body = json.dumps({'paused': paused, 'by': OPERATOR, 'at': clock(), 'reason': reason}, ensure_ascii=False)
+    with _WRITE_LOCK:  # also covers validate_path, which misreads a file another write is swapping in
+        path = guard.validate_path(PAUSE, must_exist=False)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if path.is_symlink():
+            raise GuardrailError('Linked dispatcher pause marker is forbidden.')
+        temp = path.with_name(path.name + '.tmp')
+        temp.write_text(body, encoding='utf-8')
+        for attempt in range(7):  # backoff 20ms..640ms, about 1.3s in total
+            try:
+                os.replace(temp, path)
+                return
+            except PermissionError:
+                # Windows refuses the swap while the service is reading the marker; that read is brief.
+                if attempt == 6:
+                    temp.unlink(missing_ok=True)
+                    raise
+                time.sleep(0.02 * 2 ** attempt)
 
 
 def pause(guard, reason='', *, clock=time.time):

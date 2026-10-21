@@ -41,7 +41,12 @@ def read_usage_sample(guard, employee):
 def read_pause(guard):
     """Pause switch written by the HUD backend. Missing file: running. Unreadable or malformed: paused
     (conservative). Contract agreed with claude-code:third on 2026-10-21."""
-    path = guard.validate_path(PAUSE, must_exist=False)
+    try:
+        # validate_path can fail spuriously while the HUD swaps the file in (Windows resolves a
+        # pending-delete file to an extended-length path). The service loop must not die on that: stay paused.
+        path = guard.validate_path(PAUSE, must_exist=False)
+    except GuardrailError:
+        return {'paused': True, 'reason': 'unreadable_pause_file'}
     if not path.exists():
         return {'paused': False}
     try:
@@ -161,11 +166,16 @@ class DispatchService:
             handle.close()
             raise ServiceBusy('Dispatcher service already running for this workspace.') from None
         self._lock_file = handle
-        info = path.with_name('service.json')
-        info.write_text(json.dumps({'pid': os.getpid(), 'started': self.clock()}), encoding='utf-8')
+        self._info = path.with_name('service.json')
+        self._info.write_text(json.dumps({'pid': os.getpid(), 'started': self.clock()}), encoding='utf-8')
 
     def release(self):
         if self._lock_file is not None:
+            # Remove the record while still holding the lock, so a successor's record is never deleted.
+            try:
+                self._info.unlink(missing_ok=True)
+            except OSError:
+                pass  # a leftover record is reported by the watch, not fatal
             try:
                 if os.name == 'nt':
                     import msvcrt
@@ -212,7 +222,12 @@ class DispatchService:
             while not self._stopped():
                 if self.clock() >= next_tick:
                     settings = self._current_settings()
-                    if read_pause(self.guard)['paused']:
+                    try:
+                        paused = read_pause(self.guard)['paused']
+                    except Exception as exc:  # conservative: an unexpected error counts as paused
+                        self.on_error(exc)
+                        paused = True
+                    if paused:
                         # Stay due: the first poll after resume ticks immediately.
                         self.sleep(POLL_SECONDS)
                         continue

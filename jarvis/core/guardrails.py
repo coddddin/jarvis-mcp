@@ -114,6 +114,11 @@ class Guardrails:
             candidate = self.workspace / candidate
         try:
             resolved = candidate.resolve(strict=must_exist)
+            # realpath can return an extended-length (\\?\C:\...) path when the file is replaced
+            # mid-call. Network/device input is rejected above, so this only normalizes the result.
+            text = str(resolved)
+            if text.startswith('\\\\?\\') and not text.upper().startswith('\\\\?\\UNC\\'):
+                resolved = Path(text[4:])
             if not resolved.is_relative_to(self.workspace):
                 raise GuardrailError("Path is outside JarvisWorkspace.")
             # Reject links/junctions even when they currently target the workspace.
