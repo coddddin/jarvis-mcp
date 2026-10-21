@@ -546,3 +546,31 @@ def test_native_worker_registers_spawn_before_collecting_output(setup, monkeypat
     assert result.output == 'bounded proposal'
     assert observed[0]['kind'] == 'worker' and observed[0]['label'] == 'native-claude-code'
     assert 0 < observed[0]['timeout_seconds'] <= 30
+
+
+def test_proposal_commands_are_delegated_to_worker_adapters_byte_for_byte(setup, tmp_path):
+    from jarvis.agents import worker_adapters
+    _, team, _, _, _ = setup
+    installed = tmp_path.parent / (uuid4().hex + '.exe')
+    installed.write_bytes(b'fixture; never executed')
+    schema = tmp_path / 'schema.json'
+    schema.write_text('{"type":"object"}', encoding='utf-8')
+    answer = tmp_path / 'answer.json'
+    team.executables.update({'codex': str(installed), 'claude-code': str(installed)})
+    disabled = []
+    for feature in ('shell_tool', 'unified_exec', 'code_mode_host', 'code_mode', 'browser_use',
+                    'browser_use_external', 'computer_use', 'in_app_browser', 'apps', 'plugins', 'hooks',
+                    'image_generation', 'view_image', 'multi_agent', 'workspace_dependencies', 'skill_search'):
+        disabled += ['--disable', feature]
+    # Literal pre-delegation shapes: any drift in the adapters must fail here.
+    assert team._external_command('codex', schema, answer) == [
+        str(installed), '--no-daemon', '-a', 'never', 'exec', '--ignore-user-config', '--ephemeral',
+        '--skip-git-repo-check', '--sandbox', 'read-only', '--color', 'never', '-c', 'project_doc_max_bytes=0',
+        '-c', 'web_search="disabled"', *disabled, '--output-schema', str(schema), '--output-last-message', str(answer), '-']
+    assert team._external_command('claude-code', schema, answer) == [
+        str(installed), '-p', '--output-format', 'json', '--json-schema', '{"type":"object"}', '--tools', '',
+        '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}', '--setting-sources', '',
+        '--no-session-persistence', '--max-turns', '1']
+    for runtime in ('codex', 'claude-code'):
+        assert team._external_command(runtime, schema, answer) == \
+            worker_adapters.adapter(runtime).proposal_command(installed, schema, answer)

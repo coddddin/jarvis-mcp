@@ -7,13 +7,14 @@ import os
 import stat
 import re
 from pathlib import Path
-import shutil
+import shutil  # noqa: F401  kept: tests patch jarvis.agents.team.shutil.which (shared module object)
 import subprocess
 import threading
 import time
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from jarvis.agents import worker_adapters
 from jarvis.agents.chat import ChatError
 from jarvis.agents.activity import ActivityError, ActivityReporter
 from jarvis.agents.team_routing import select_role_seat
@@ -60,19 +61,8 @@ class RevisionPlan(TeamContract):
     summary: str = Field(min_length=1, max_length=1200)
 
 
-def _discover_claude():
-    """Discover native Windows installs even before the host refreshes PATH."""
-    home = Path.home()
-    candidates = [shutil.which('claude'), str(home / '.local/bin/claude.exe'),
-                  str(home / 'AppData/Local/Microsoft/WinGet/Packages/'
-                      'Anthropic.ClaudeCode_Microsoft.Winget.Source_8wekyb3d8bbwe/claude.exe')]
-    for candidate in candidates:
-        if candidate:
-            path = Path(candidate)
-            if (path.is_absolute() and path.suffix.lower() == '.exe' and path.is_file()
-                    and not path.is_symlink() and path.stat().st_nlink == 1):
-                return str(path)
-    return None
+# Discovery and command shapes live in worker_adapters (one adapter per employee).
+_discover_claude = worker_adapters.discover_claude_native
 
 
 class HybridTeam:
@@ -82,7 +72,8 @@ class HybridTeam:
 
     def __init__(self, store, infer, *, codex=None, claude=None):
         self.store, self.guard, self.infer = store, store.guard, infer
-        self.executables = {'codex': codex or shutil.which('codex'), 'claude-code': claude or _discover_claude()}
+        self.executables = {'codex': codex or worker_adapters.adapter('codex').discover_proposal(),
+                            'claude-code': claude or worker_adapters.adapter('claude-code').discover_proposal()}
         self.local_lock = threading.Lock()
         self.progress_lock = threading.Lock()
 
@@ -259,23 +250,14 @@ class HybridTeam:
         executable = self.executables.get(runtime)
         if not executable:
             raise ChatError(runtime + ' is unavailable; no silent fallback.')
-        executable = Path(executable)
-        if (not executable.is_absolute() or not executable.is_file() or executable.suffix.lower() != '.exe'
-                or executable.is_symlink() or executable.stat().st_nlink != 1
-                or executable.resolve().is_relative_to(self.guard.workspace)):
-            raise ChatError('External worker must be a trusted installed native executable.')
-        if runtime == 'codex':
-            argv = [str(executable), '--no-daemon', '-a', 'never', 'exec', '--ignore-user-config',
-                    '--ephemeral', '--skip-git-repo-check', '--sandbox', 'read-only', '--color', 'never',
-                    '-c', 'project_doc_max_bytes=0', '-c', 'web_search="disabled"']
-            for feature in ('shell_tool', 'unified_exec', 'code_mode_host', 'code_mode', 'browser_use',
-                            'browser_use_external', 'computer_use', 'in_app_browser', 'apps', 'plugins',
-                            'hooks', 'image_generation', 'view_image', 'multi_agent', 'workspace_dependencies', 'skill_search'):
-                argv += ['--disable', feature]
-            return argv + ['--output-schema', str(schema_path), '--output-last-message', str(result_path), '-']
-        return [str(executable), '-p', '--output-format', 'json', '--json-schema', schema_path.read_text(encoding='utf-8'),
-                '--tools', '', '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}',
-                '--setting-sources', '', '--no-session-persistence', '--max-turns', '1']
+        try:
+            executable = worker_adapters.trusted_native_executable(executable, self.guard.workspace)
+        except ValueError:
+            raise ChatError('External worker must be a trusted installed native executable.') from None
+        item = worker_adapters.ADAPTERS.get(runtime)
+        if item is None or item.proposal_command is None:
+            raise ChatError(runtime + ' has no proposal command; no silent fallback.')
+        return item.proposal_command(executable, schema_path, result_path)
 
     def _external(self, runtime, context, folder, name, deadline):
         self.guard.enter_call('sensitive')  # external model transmission
