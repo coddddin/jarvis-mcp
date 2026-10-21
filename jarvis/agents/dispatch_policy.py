@@ -6,7 +6,6 @@ No model is invoked here. The CLI in jarvis/cli/dispatch.py performs launches.
 from contextlib import contextmanager
 from dataclasses import dataclass
 import json
-from pathlib import Path
 import re
 import sqlite3
 import time
@@ -14,14 +13,16 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+# CLAUDE_TOOLS, EMPLOYEES and OPENCODE_DEFAULT_MODEL stay importable from here for existing callers.
+from jarvis.agents.worker_adapters import (ADAPTERS, CLAUDE_TOOLS, EMPLOYEES, OPENCODE_DEFAULT_MODEL, WorkRequest,  # noqa: F401
+                                          adapter)
 from jarvis.core.guardrails import GuardrailError
 
 BACKOFF_START, BACKOFF_MAX = 3600, 6 * 3600
 LIMIT_PATTERN = re.compile(r'usage limit|rate limit|quota|\b429\b|limit reached|exceeded your|out of (?:credits|usage)', re.I)
-EMPLOYEES = ('codex', 'claude-code', 'cursor', 'opencode')
-PROBATION_PROMPT = ('cursor', 'opencode')
+# Employees whose work command cannot apply edits get the probation prompt (from worker_adapters).
+PROBATION_PROMPT = tuple(name for name in EMPLOYEES if not ADAPTERS[name].applies_edits)
 ELIGIBILITY_PATTERN = re.compile(r'FreeTierError|free tier can only be used', re.I)
-OPENCODE_DEFAULT_MODEL = 'opencode/glm-5.3-flash-free'
 
 
 class EmployeeSettings(BaseModel):
@@ -120,6 +121,12 @@ def build_digest(*, day, done, review, stale, runs, exhausted, pause):
     return '\n'.join(lines).replace('"', "'")[:1000]
 
 
+def block_unsafe(decisions, problems):
+    """Keep employees whose adapter failed worker_adapters.roster_problems asleep (reason adapter_check_failed)."""
+    return [Decision(d.employee, False, 'adapter_check_failed') if d.wake and problems.get(d.employee) else d
+            for d in decisions]
+
+
 def next_backoff(previous):
     return BACKOFF_START if not previous else min(BACKOFF_MAX, previous * 2)
 
@@ -182,50 +189,18 @@ def wake_prompt(employee, python='.venv/Scripts/python.exe'):
     return '\n'.join(lines)
 
 
-CLAUDE_TOOLS = ['Read', 'Edit', 'Write', 'Glob', 'Grep',
-                'Bash(git status:*)', 'Bash(git diff:*)', 'Bash(git log:*)', 'Bash(git add:*)', 'Bash(git commit:*)',
-                *(f'mcp__jarvis__board_{name}' for name in
-                  ('list', 'get', 'create', 'claim', 'heartbeat', 'note', 'release', 'send', 'inbox'))]
-
-
 def build_command(employee, config, worktree, prompt, mcp_json, *, executable, git_dir=None, python=None):
-    worktree = str(worktree)
-    if employee == 'claude-code':
-        return [executable, '-p', prompt, '--output-format', 'json', '--setting-sources', '',
-                '--strict-mcp-config', '--mcp-config', mcp_json, '--no-session-persistence',
-                '--permission-mode', 'acceptEdits', '--max-turns', str(config.employees[employee].max_turns),
-                '--allowedTools', *CLAUDE_TOOLS, *([f'Bash({python}:*)'] if python else [])]
-    if employee == 'codex':
-        # Sandbox writes stay inside the worktree plus its git metadata; pushes are done by the dispatcher.
-        return [executable, '-a', 'never', 'exec', '-C', worktree, '--sandbox', 'workspace-write',
-                '--skip-git-repo-check', '--json', '--color', 'never',
-                *(['--add-dir', str(git_dir)] if git_dir else []), prompt]
-    if employee == 'cursor':
-        # Probation: no --force, so Cursor proposes and reviews but cannot apply edits.
-        return [executable, '-p', '--approve-mcps', '--trust', '--output-format', 'json',
-                '--workspace', worktree, prompt]
-    if employee == 'opencode':
-        # Standalone server so the project config (MCP, permissions) applies; default agent, because a custom
-        # restricted agent made the free tier answer 403 FreeTierError.
-        model = config.employees[employee].model or OPENCODE_DEFAULT_MODEL
-        return [executable, 'run', '--standalone', '-m', model, '--format', 'json', prompt]
-    raise ValueError(f'No headless command for {employee}')
+    """Work-mode argv for one employee; the shape lives in worker_adapters."""
+    settings = lambda: config.employees[employee]  # noqa: E731 - read only by employees that need it
+    return adapter(employee).work_command(WorkRequest(
+        str(worktree), prompt, mcp_json, executable, max_turns=lambda: settings().max_turns,
+        model=lambda: settings().model, git_dir=git_dir, python=python))
 
 
 def build_env(employee, *, project_root, workspace):
     """Extra environment for an employee run. OpenCode gets its whole probation config inline."""
-    if employee != 'opencode':
-        return {}
-    python = Path(project_root) / '.venv' / 'Scripts' / 'python.exe'
-    config = {
-        'permission': {'edit': 'deny', 'webfetch': 'deny',
-                       'bash': {'*': 'deny', 'git status *': 'allow', 'git diff *': 'allow', 'git log *': 'allow'}},
-        'mcp': {'jarvis': {'type': 'local', 'command': [str(python), str(Path(project_root) / 'server.py')],
-                           'environment': {'JARVIS_WORKSPACE': str(workspace)}, 'enabled': True}},
-        # Verified 2026-10-21: the underscore glob hides every other jarvis tool (privacy), the dot glob does not.
-        'tools': {'jarvis_*': False, 'jarvis_board_*': True},
-    }
-    return {'OPENCODE_CONFIG_CONTENT': json.dumps(config)}
+    item = ADAPTERS.get(employee)
+    return item.work_env(project_root, workspace) if item else {}
 
 
 class DispatchLedger:

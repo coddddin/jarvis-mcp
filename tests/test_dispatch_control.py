@@ -117,3 +117,63 @@ def test_api_failure_is_a_generic_503(client, config):
     config.write_text('{}', encoding='utf-8')
     response = client.get('/api/dispatcher', headers=AUTH)
     assert response.status_code == 503 and response.json() == {'error': 'dispatcher_unavailable'}
+
+
+def test_concurrent_pause_and_resume_never_fail(guard):
+    # A double-clicked HUD button sends two POSTs that run in parallel threads; neither may fail.
+    from concurrent.futures import ThreadPoolExecutor
+    calls = [dispatch_control.pause, dispatch_control.resume] * 20
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        list(pool.map(lambda call: call(guard), calls))
+    assert isinstance(read_pause(guard)['paused'], bool)
+    leftovers = [p.name for p in (guard.workspace / '.jarvis-dispatch').iterdir() if p.name != 'paused.json']
+    assert leftovers == []
+
+
+def test_read_pause_stays_paused_when_path_check_fails(guard, monkeypatch):
+    # The service loop calls read_pause outside its try block; a guard error there must not escape.
+    from jarvis.core.guardrails import GuardrailError
+
+    def refuse(*args, **kwargs):
+        raise GuardrailError('Path is outside JarvisWorkspace.')
+    monkeypatch.setattr(guard, 'validate_path', refuse)
+    assert read_pause(guard) == {'paused': True, 'reason': 'unreadable_pause_file'}
+
+BS = chr(92)
+EXTENDED = BS * 2 + '?' + BS  # the Windows extended-length path prefix
+
+
+def test_validate_path_normalizes_extended_length_result(guard, monkeypatch):
+    # Windows realpath can return an extended-length path for a file being replaced; still inside the workspace.
+    import pathlib
+    real = pathlib.Path.resolve
+
+    def extended(self, strict=False):
+        result = real(self, strict=strict)
+        return pathlib.Path(EXTENDED + str(result)) if 'paused' in self.name else result
+    monkeypatch.setattr(pathlib.Path, 'resolve', extended)
+    assert guard.validate_path('.jarvis-dispatch/paused.json', must_exist=False) == \
+        guard.workspace / '.jarvis-dispatch' / 'paused.json'
+
+
+def test_validate_path_still_rejects_extended_unc_result(guard, monkeypatch):
+    import pathlib
+    from jarvis.core.guardrails import GuardrailError
+    monkeypatch.setattr(pathlib.Path, 'resolve', lambda self, strict=False: pathlib.Path(EXTENDED + 'UNC' + BS + 'host' + BS + 'share' + BS + 'x'))
+    with pytest.raises(GuardrailError):
+        guard.validate_path('x.json', must_exist=False)
+
+
+def test_snapshot_includes_the_process_watch(guard, config):
+    run_id = DispatchLedger(guard).start('codex', pid=None)
+    state = dispatch_control.snapshot(guard, config)
+    assert state['watch']['findings'][0]['kind'] == 'service_down'
+    assert run_id
+
+
+def test_snapshot_survives_a_failing_watch(guard, config, monkeypatch):
+    from jarvis.agents import process_watch
+    monkeypatch.setattr(process_watch, 'scan', lambda *a, **k: 1 / 0)
+    state = dispatch_control.snapshot(guard, config)
+    assert state['watch'] == {'findings': [], 'checked_at': None, 'error': 'watch_unavailable'}
+    assert state['effective_enabled'] is True
