@@ -144,3 +144,5 @@
 ## 이력
 
 지난 상태 기록, 단계별 세부, 설계 결정 D01~, 구조 정비, REA 체크포인트는 [계획 이력](archive/reports/plan-history.md)에 있다.
+
+- [ ] Codex 내용 없는 세션 이벤트·인증 조회·HUD: `codex/session-status`에서 합성 CLI→저장→화면 확인, PR 검토 대기. 실제 desktop hook 설치·신뢰·자동 보고는 미완료.
