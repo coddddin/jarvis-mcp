@@ -69,8 +69,10 @@ def test_service_is_running_only_for_a_live_matching_process(guard):
     info.parent.mkdir(parents=True)
     assert dispatch_control.service_state(guard)['running'] is False
     info.write_text(json.dumps({'pid': os.getpid(), 'started': time.time()}), encoding='utf-8')
-    assert dispatch_control.service_state(guard) == {'running': True, 'pid': os.getpid(),
-                                                     'started': pytest.approx(time.time(), abs=60)}
+    observed = dispatch_control.service_state(guard)
+    assert observed == {'running': True, 'pid': os.getpid(),
+                        'started': pytest.approx(time.time(), abs=60), 'status': 'running',
+                        'reason': 'matching_pid', 'source': 'observed'}
     # The pid now belongs to a process created after the record: a reused pid, not the service.
     created = psutil.Process(os.getpid()).create_time()
     info.write_text(json.dumps({'pid': os.getpid(), 'started': created - 3600}), encoding='utf-8')
@@ -167,7 +169,8 @@ def test_validate_path_still_rejects_extended_unc_result(guard, monkeypatch):
 def test_snapshot_includes_the_process_watch(guard, config):
     run_id = DispatchLedger(guard).start('codex', pid=None)
     state = dispatch_control.snapshot(guard, config)
-    assert state['watch']['findings'][0]['kind'] == 'service_down'
+    assert state['service']['status'] == 'not_registered'
+    assert not any(f['kind'] == 'service_down' for f in state['watch']['findings'])
     assert run_id
 
 
@@ -177,3 +180,50 @@ def test_snapshot_survives_a_failing_watch(guard, config, monkeypatch):
     state = dispatch_control.snapshot(guard, config)
     assert state['watch'] == {'findings': [], 'checked_at': None, 'error': 'watch_unavailable'}
     assert state['effective_enabled'] is True
+
+
+def test_service_missing_record_is_not_a_stopped_observation(guard):
+    state = dispatch_control.service_state(guard)
+    assert state['status'] == 'not_registered' and state['reason'] == 'missing_record'
+    assert state['running'] is False
+
+
+@pytest.mark.parametrize('body', ['{broken', '[]', '{"pid":true,"started":10}',
+    '{"pid":-1,"started":10}', '{"pid":1,"started":NaN}', '{"pid":1,"started":0}'])
+def test_bad_service_record_is_unknown_not_stopped(guard, body):
+    info = guard.workspace / '.jarvis-dispatch/service.json'
+    info.parent.mkdir(parents=True)
+    info.write_text(body, encoding='utf-8')
+    state = dispatch_control.service_state(guard)
+    assert state['status'] == 'unknown' and state['reason'] == 'invalid_record'
+    assert state['pid'] is None and state['running'] is False
+
+
+@pytest.mark.parametrize('error,status', [(psutil.NoSuchProcess(42),'stopped'),
+    (psutil.AccessDenied(42),'unknown'), (OSError('PRIVATE process error'),'unknown')])
+def test_service_lookup_missing_and_denied_are_distinct(guard, error, status):
+    info = guard.workspace / '.jarvis-dispatch/service.json'
+    info.parent.mkdir(parents=True)
+    info.write_text('{"pid":42,"started":100}', encoding='utf-8')
+    def lookup(pid):
+        raise error
+    state = dispatch_control.service_state(guard, lookup=lookup)
+    assert state['status'] == status and state['running'] is False
+    assert 'PRIVATE' not in json.dumps(state)
+
+
+def test_service_reused_pid_is_not_reported_as_stopped(guard):
+    info = guard.workspace / '.jarvis-dispatch/service.json'
+    info.parent.mkdir(parents=True)
+    info.write_text('{"pid":42,"started":100}', encoding='utf-8')
+    class Process:
+        def create_time(self): return 200
+    state = dispatch_control.service_state(guard, lookup=lambda pid: Process())
+    assert state['status'] == 'identity_mismatch' and state['pid'] is None
+
+
+def test_enabled_snapshot_does_not_imply_registered_service(client):
+    data = client.get('/api/dispatcher', headers=AUTH).json()
+    assert data['config_enabled'] is True and data['effective_enabled'] is True
+    assert data['service']['status'] == 'not_registered'
+    assert data['service']['running'] is False

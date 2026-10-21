@@ -96,7 +96,7 @@ def test_overdue_run_is_reported_even_if_alive(guard, config):
 
 
 def test_service_down_and_stale_record(guard, config):
-    assert kinds(scan(guard, config, {})) == [('service_down', 'service')]
+    assert kinds(scan(guard, config, {})) == []  # no record does not prove an unregistered service is absent
     write_service(guard, 100, NOW - 3600)
     assert kinds(scan(guard, config, {})) == [('service_down', 'service'), ('service_record_stale', 'service')]
 
@@ -163,3 +163,15 @@ def test_access_denied_is_not_reported_as_dead(guard, config, monkeypatch):
             raise psutil.AccessDenied(pid)
         return psutil.Process(pid)
     assert process_watch.scan(guard, config, now=NOW, lookup=lookup)['findings'] == []
+
+
+def test_service_access_denied_is_unknown_not_down_and_other_findings_survive(guard, config):
+    write_service(guard, 600, NOW - 3600)
+    run_id = run(guard, started=NOW - 600, pid=None)
+    def denied(pid):
+        raise psutil.AccessDenied(pid)
+    report = process_watch.scan(guard, config, now=NOW, lookup=denied)
+    assert report['error'] == 'service_observation_unavailable'
+    assert ('service_down', 'service') not in kinds(report)
+    assert ('service_record_stale', 'service') not in kinds(report)
+    assert ('owner_unknown', f'run:{run_id}') in kinds(report)

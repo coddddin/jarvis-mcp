@@ -5,6 +5,7 @@ so pausing the dispatcher never stops the rest of JARVIS and never dirties the s
 service reads it with dispatch_service.read_pause; this module is the only writer.
 """
 import json
+import math
 import os
 import threading
 import time
@@ -60,20 +61,42 @@ def resume(guard, reason='', *, clock=time.time):
 
 
 def service_state(guard, *, lookup=psutil.Process):
-    """Observed, not self-reported: the recorded pid must be alive and started no later than the record."""
+    """Process-record observation only; config enabled and worker success are separate facts.
+
+    running stays boolean for older clients. New clients must read status: False can mean
+    not registered, stopped, identity mismatch or unknown. The record is not authenticated.
+    """
+    def result(status, reason, *, pid=None, started=None):
+        return {'running': status == 'running', 'pid': pid if status == 'running' else None,
+                'started': started, 'status': status, 'reason': reason, 'source': 'observed'}
+
     path = guard.validate_path(SERVICE_INFO, must_exist=False)
     try:
+        if path.stat().st_size > 16384:
+            return result('unknown', 'invalid_record')
         info = json.loads(path.read_text(encoding='utf-8'))
-        pid, started = info.get('pid'), _number(info.get('started'))
-    except (OSError, ValueError, AttributeError):
-        return {'running': False, 'pid': None, 'started': None}
-    if type(pid) is not int or started is None:
-        return {'running': False, 'pid': None, 'started': None}
+    except FileNotFoundError:
+        return result('not_registered', 'missing_record')
+    except (OSError, UnicodeError):
+        return result('unknown', 'unreadable_record')
+    except ValueError:
+        return result('unknown', 'invalid_record')
+    if not isinstance(info, dict):
+        return result('unknown', 'invalid_record')
+    pid, started = info.get('pid'), _number(info.get('started'))
+    if type(pid) is not int or pid <= 0 or started is None or not math.isfinite(started) or started <= 0:
+        return result('unknown', 'invalid_record')
     try:
-        running = lookup(pid).create_time() <= started + 5  # a reused pid starts later
+        created = lookup(pid).create_time()
+    except psutil.NoSuchProcess:
+        return result('stopped', 'process_missing', started=started)
     except (psutil.Error, OSError):
-        running = False
-    return {'running': running, 'pid': pid if running else None, 'started': started}
+        return result('unknown', 'process_unreadable', started=started)
+    if _number(created) is None or not math.isfinite(created) or created <= 0:
+        return result('unknown', 'process_unreadable', started=started)
+    if created > started + 5:
+        return result('identity_mismatch', 'pid_reused', started=started)
+    return result('running', 'matching_pid', pid=pid, started=started)
 
 
 def snapshot(guard, config_path, *, clock=time.time):
