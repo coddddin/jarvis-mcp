@@ -207,9 +207,11 @@ class DispatchLedger:
     DIRECTORY = '.jarvis-dispatch'
     DATABASE = '.jarvis-dispatch/ledger.sqlite3'
 
-    def __init__(self, guard, *, clock=time.time, alive=None):
+    def __init__(self, guard, *, clock=time.time, alive=None, lookup=None):
         self.guard, self.clock = guard, clock
         self.alive = alive or _pid_alive
+        # Creation-time lookup for pid reuse. An injected alive() alone means the caller decides liveness.
+        self.lookup = lookup if lookup is not None else (None if alive else _process)
 
     @contextmanager
     def connection(self):
@@ -228,6 +230,14 @@ class DispatchLedger:
             db.execute('CREATE TABLE IF NOT EXISTS exhaustion (employee TEXT PRIMARY KEY, until REAL NOT NULL, '
                        'backoff REAL NOT NULL)')
             db.execute('CREATE TABLE IF NOT EXISTS digests (day TEXT PRIMARY KEY, sent REAL NOT NULL)')
+            # W2 stage 2: when set_pid ran. Added in place for older ledgers, inside this IMMEDIATE transaction
+            # so concurrent openers (service, HUD, CLI) serialize; a lost race shows up as a duplicate column.
+            if 'pid_at' not in {row['name'] for row in db.execute('PRAGMA table_info(runs)')}:
+                try:
+                    db.execute('ALTER TABLE runs ADD COLUMN pid_at REAL')
+                except sqlite3.OperationalError as exc:
+                    if 'duplicate column' not in str(exc).lower():
+                        raise
             yield db
             db.commit()
         finally:
@@ -238,15 +248,56 @@ class DispatchLedger:
             return db.execute('INSERT INTO runs(employee,pid,started,status) VALUES(?,?,?,?)',
                               (employee, pid, self.clock(), 'running')).lastrowid
 
-    def try_start(self, employee, *, daily_runs):
-        """Atomically reserve a run: refused if one is live or the daily cap is reached. Returns run id or None."""
+    def owner_state(self, row):
+        """'alive', 'dead' or 'unverifiable' for a running row with a pid. Alive: the pid exists and was created
+        by set_pid time (pid_at + 5 s), or for rows from before pid_at, by started + 120 s (worktree setup).
+        Unverifiable: the pid exists but its creation time cannot be read (access denied)."""
+        if not self.alive(row['pid']):
+            return 'dead'
+        if self.lookup is None:
+            return 'alive'
+        try:
+            created = self.lookup(row['pid']).create_time()
+        except Exception as exc:  # psutil.NoSuchProcess means gone; anything else is a doubt
+            return 'dead' if type(exc).__name__ in ('NoSuchProcess', 'ZombieProcess') else 'unverifiable'
+        return 'alive' if created <= owner_deadline(row['pid_at'], row['started']) else 'dead'
+
+    def owner_alive(self, row):
+        """Compatibility view of owner_state: a doubt counts as alive."""
+        return self.owner_state(row) != 'dead'
+
+    def _settle(self, db, row, now, stale_after):
+        """True if the row still holds the employee's slot; otherwise close it as lost (never kills anything)."""
+        if row['pid'] is None:
+            if stale_after is None or now - row['started'] <= stale_after:
+                return True  # still spawning (or no limit given): keep waiting
+            db.execute('UPDATE runs SET status="lost", ended=?, note="no_pid" WHERE id=?', (now, row['id']))
+            return False
+        state = self.owner_state(row)
+        if state == 'alive':
+            return True
+        if state == 'unverifiable':
+            # A doubt holds the slot only within the run limit; a genuine run would have ended by then, so
+            # closing it afterwards cannot start a second copy (main review of 2c50855f).
+            if stale_after is None or now - row['started'] <= stale_after:
+                return True
+            db.execute('UPDATE runs SET status="lost", ended=?, note="owner_unverifiable" WHERE id=?', (now, row['id']))
+            return False
+        db.execute('UPDATE runs SET status="lost", ended=? WHERE id=?', (now, row['id']))
+        return False
+
+    def try_start(self, employee, *, daily_runs, stale_after=None):
+        """Atomically reserve a run: refused if one is live or the daily cap is reached. Returns run id or None.
+
+        stale_after (seconds, normally run_timeout_minutes*60): a pid-less running row older than this is closed
+        as lost instead of blocking the employee forever."""
         now = self.clock()
         day_start = time.mktime(time.localtime(now)[:3] + (0, 0, 0, 0, 0, -1))
         with self.connection() as db:
-            for row in db.execute('SELECT id, pid FROM runs WHERE employee=? AND status="running"', (employee,)).fetchall():
-                if row['pid'] is None or self.alive(row['pid']):
+            for row in db.execute('SELECT id, pid, pid_at, started FROM runs WHERE employee=? AND status="running"',
+                                  (employee,)).fetchall():
+                if self._settle(db, row, now, stale_after):
                     return None
-                db.execute('UPDATE runs SET status="lost", ended=? WHERE id=?', (now, row['id']))
             if db.execute('SELECT COUNT(*) FROM runs WHERE employee=? AND started>=?', (employee, day_start)).fetchone()[0] >= daily_runs:
                 return None
             return db.execute('INSERT INTO runs(employee,pid,started,status) VALUES(?,?,?,?)',
@@ -254,7 +305,7 @@ class DispatchLedger:
 
     def set_pid(self, run_id, pid):
         with self.connection() as db:
-            db.execute('UPDATE runs SET pid=? WHERE id=?', (pid, run_id))
+            db.execute('UPDATE runs SET pid=?, pid_at=? WHERE id=?', (pid, self.clock(), run_id))
 
     def finish(self, run_id, *, status, exit_code, input_tokens, output_tokens, note):
         now = self.clock()
@@ -269,16 +320,13 @@ class DispatchLedger:
             elif status == 'ok':
                 db.execute('DELETE FROM exhaustion WHERE employee=?', (row['employee'],))
 
-    def running(self, employee):
+    def running(self, employee, *, stale_after=None):
         with self.connection() as db:
-            row = db.execute('SELECT id, pid FROM runs WHERE employee=? AND status="running" ORDER BY id DESC LIMIT 1',
-                             (employee,)).fetchone()
+            row = db.execute('SELECT id, pid, pid_at, started FROM runs WHERE employee=? AND status="running" '
+                             'ORDER BY id DESC LIMIT 1', (employee,)).fetchone()
             if row is None:
                 return None
-            if row['pid'] is not None and not self.alive(row['pid']):
-                db.execute('UPDATE runs SET status="lost", ended=? WHERE id=?', (self.clock(), row['id']))
-                return None
-            return row['id']
+            return row['id'] if self._settle(db, row, self.clock(), stale_after) else None
 
     def runs_today(self, employee):
         start = time.mktime(time.localtime(self.clock())[:3] + (0, 0, 0, 0, 0, -1))
@@ -323,6 +371,20 @@ class DispatchLedger:
                 totals.setdefault(row['employee'], {})['exhausted_until'] = row['until']
             totals['recent'] = [dict(row) for row in db.execute('SELECT * FROM runs ORDER BY id DESC LIMIT ?', (recent,))]
             return totals
+
+
+PID_AT_TOLERANCE = 5        # Popen precedes set_pid, so a genuine owner was created before pid_at
+LEGACY_SETUP_TOLERANCE = 120  # rows without pid_at: started is written before the worktree is prepared
+
+
+def owner_deadline(pid_at, started):
+    """Latest creation time a run's genuine owner process can have."""
+    return pid_at + PID_AT_TOLERANCE if pid_at is not None else started + LEGACY_SETUP_TOLERANCE
+
+
+def _process(pid):
+    import psutil
+    return psutil.Process(pid)
 
 
 def _pid_alive(pid):

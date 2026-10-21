@@ -360,3 +360,33 @@ def test_read_only_equals_forms_and_prompt_text_are_not_flagged(monkeypatch):
         r.executable, '-p', '--sandbox=read-only', '--permission-mode=default', '--output-format=json',
         '이 프롬프트에는 -f 와 --force 라는 글자가 들어 있다'])
     assert problems_for(load_roster(), 'cursor') == []
+
+
+def test_tick_wakes_an_employee_whose_pid_less_row_outlived_the_run_limit(tmp_path, monkeypatch):
+    # W2 stage 2: the service died between try_start and set_pid hours ago; the employee must not stay blocked.
+    import time
+    from jarvis.agents.dispatch_policy import DispatchLedger
+    from jarvis.core.guardrails import Guardrails
+    from jarvis.features.board.service import BoardStore
+    workspace, config_root = tmp_path / 'ws', tmp_path / 'config'
+    workspace.mkdir(), config_root.mkdir()
+    (config_root / 'dispatcher.json').write_text(json.dumps({
+        'version': 1, 'enabled': True, 'interval_minutes': 10, 'daily_runs': 10, 'run_timeout_minutes': 30,
+        'employees': {'claude-code': {}}, 'lead': {'enabled': False}}), encoding='utf-8')
+    roster = load_roster()
+    guard = Guardrails(workspace)
+    stuck = DispatchLedger(guard, clock=lambda: time.time() - 2 * 3600).try_start('claude-code', daily_runs=10)
+    board = BoardStore(guard, roster=roster)
+    board.send('user:heejun', 'claude-code', 'build please')
+    launched = []
+    monkeypatch.setattr(cli_dispatch, 'CONFIG_ROOT', config_root)
+    monkeypatch.setattr(cli_dispatch, 'load_guardrails', lambda: Guardrails(workspace))
+    monkeypatch.setattr(cli_dispatch, 'load_roster', lambda **kw: roster)
+    monkeypatch.setattr(cli_dispatch, 'BoardStore', lambda guard: BoardStore(guard, roster=roster))
+    monkeypatch.setattr(cli_dispatch, 'run_employee', lambda employee, *a: launched.append(employee) or 'ok')
+    monkeypatch.setattr(cli_dispatch, 'send_digest_if_due', lambda *a: None)
+    monkeypatch.setattr(cli_dispatch, 'log_service_error', lambda exc: None)
+    cli_dispatch.tick()
+    assert launched == ['claude-code']
+    rows = {r['id']: r for r in DispatchLedger(guard).summary()['recent']}
+    assert rows[stuck]['status'] == 'lost' and rows[stuck]['note'] == 'no_pid'
