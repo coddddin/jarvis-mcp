@@ -143,3 +143,23 @@ def test_slow_worktree_setup_is_not_mistaken_for_a_reused_pid(guard, config):
     late = run(guard, started=NOW - 600, pid=401)
     assert kinds(scan(guard, config, {100: NOW - 3601, 400: NOW - 50, 401: NOW - 600 + 121 + 1})) == \
         [('owner_dead', f'run:{late}')]
+
+
+def test_pid_at_tightens_the_reused_pid_rule(guard, config):
+    write_service(guard, 100, NOW - 3600)
+    ledger = DispatchLedger(guard, clock=lambda: NOW - 60)
+    run_id = ledger.start('codex', pid=None)
+    DispatchLedger(guard, clock=lambda: NOW - 50).set_pid(run_id, 500)
+    assert scan(guard, config, {100: NOW - 3601, 500: NOW - 51})['findings'] == []      # created before pid_at
+    assert kinds(scan(guard, config, {100: NOW - 3601, 500: NOW - 44})) == [('owner_dead', f'run:{run_id}')]
+
+
+def test_access_denied_is_not_reported_as_dead(guard, config, monkeypatch):
+    write_service(guard, os.getpid(), psutil.Process(os.getpid()).create_time() + 1)
+    run(guard, started=NOW - 60, pid=600)
+
+    def lookup(pid):
+        if pid == 600:
+            raise psutil.AccessDenied(pid)
+        return psutil.Process(pid)
+    assert process_watch.scan(guard, config, now=NOW, lookup=lookup)['findings'] == []

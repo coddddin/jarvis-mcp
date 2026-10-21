@@ -209,6 +209,8 @@ def tick(dry_run=False):
     roster = load_roster(workspace=guard.workspace)
     ledger, board = DispatchLedger(guard), BoardStore(guard)
     now = time.time()
+    # W2 stage 2: a pid-less running row older than the run limit no longer blocks its employee forever.
+    stale_after = config.run_timeout_minutes * 60
 
     def collect():
         states = []
@@ -217,7 +219,7 @@ def tick(dry_run=False):
             states.append(EmployeeState(
                 employee=employee, enabled=settings.enabled, roster_status=agent.status if agent else 'missing',
                 pending=board.pending_for_employee(employee) if agent else 0,
-                runs_today=ledger.runs_today(employee), running=ledger.running(employee) is not None,
+                runs_today=ledger.runs_today(employee), running=ledger.running(employee, stale_after=stale_after) is not None,
                 exhausted_until=ledger.exhausted_until(employee)))
         return states
 
@@ -247,7 +249,7 @@ def tick(dry_run=False):
     for decision in decisions:
         if not decision.wake:
             continue
-        run_id = ledger.try_start(decision.employee, daily_runs=config.daily_runs)
+        run_id = ledger.try_start(decision.employee, daily_runs=config.daily_runs, stale_after=stale_after)
         if run_id is None:
             continue
         def work(employee=decision.employee, run_id=run_id):
