@@ -3,22 +3,17 @@
 계획·상태는 [현재 통합 계획](PLAN.md), 개발 방법은 [개발 규칙](DEVELOPMENT.md)을 기준으로 합니다. 프로젝트 루트를 기준으로 실행합니다.
 
 ## 현재 기준
-
 - [PLAN.md](PLAN.md): V2~V5를 통합한 유일한 현재 계획·진행 상태.
 - [DEVELOPMENT.md](DEVELOPMENT.md): 개발·보안·검증·문서 관리 규칙.
 - [패키지 구조와 이전 계획](architecture.md): 기능별 코드 배치·의존 방향·진입점 보존·구조 검사.
 - [프로젝트 지도](../AGENTS_CONTEXT.md): 에이전트가 처음 읽는 50줄 이내의 요약.
 
 ## 사용 안내
-
 - [로컬 리드·외부 작업자 협업](guides/hybrid-team.md): OpenRig 배정 소스 이식, 로컬/Codex 제안 협업과 운영자 CLI.
-
 - [자비스 전용 채팅](guides/chat.md): 로컬 모델 대화·기록·읽기 도구와 인증·예산 경계.
-
 - [플러그인 추가·구조](guides/plugins.md): 파일별 도구와 자동 로더 계약, 공통 실행 경계.
 - [AI 직원 명부와 온보딩](guides/agents-roster.md): config/agents.json 한 곳에 직원 등록, 수습·등급, 새 도구 들이는 절차.
 - [W5 디스패처](guides/dispatcher.md): 게시판에 일이 온 AI 직원을 자동으로 깨우는 순환, 브랜치 작업·머지 승인·상한·장부.
-- [에이전트 소통 규약](guides/communication.md): 같은 AI 세션끼리·다른 AI끼리 통로, 문서 대신 게시판, 저토큰 세션 시작 루틴.
 - [에이전트 스킬: 이슈 트래커](agents/issue-tracker.md): 이슈는 JARVIS 게시판 작업으로 다룸.
 - [에이전트 스킬: 분류 라벨](agents/triage-labels.md): 게시판에 라벨이 없어 `Triage: <label>` 줄이나 노트로 기록.
 - [에이전트 스킬: 도메인 문서](agents/domain.md): 루트 GLOSSARY.md와 docs/adr/를 필요할 때 만듦.
@@ -36,29 +31,12 @@
 - [로컬 작업 HUD](guides/local-hud.md): 실행·연결 파일 선택·작업/QA/예산/이벤트 표시와 읽기 전용 범위.
 - [REA · Agent Reach](guides/rea-agent-reach.md): 전용 설치, 단일 프로그램 정적 분석과 등록 RSS 읽기.
 
-## 단계별 보고서
+## 보관 자료 (평소에는 읽지 않음)
 
-- [계획 이력](reports/plan-history.md): 2026-10-21 PLAN.md에서 옮긴 지난 상태·단계 세부·설계 결정 D01~·REA 체크포인트 원문.
+당시 기록입니다. 현재 상태는 PLAN.md가 우선합니다. 에이전트는 필요한 절만 grep으로 찾습니다.
 
-- [협업 엔진 검증](reports/hybrid-team.md): 로컬 리드→Codex 실연결·검수 보류·담당 경계와 제한.
-
-- [Phase 1](reports/phase-01.md): 초기 34개 테스트·실제 캡처와 구조 정비 후 71개 회귀 테스트 기록.
-- [V2 Phase 2](reports/phase-02.md): 로컬 검색·99개 회귀 검사 이력, 런처 20개 검사 및 다운로드·런처·Google 실계정 MCP 검증 기록.
-- [Phase 2.5](reports/phase-02-5.md): 영속 작업 상태·최대 3회 수정 회로 차단과 관련 검사 기록.
-- [Phase 3](reports/phase-03.md): 로컬 읽기 전용 작업 화면과 실제 브라우저 연결 검증.
-- [REA · Agent Reach 연동 기록](reports/rea-agent-reach.md): 설치·Ghidra/공개 RSS·실제 MCP 검증과 후속 범위.
-
-보고서는 해당 시점의 기록입니다. 현재 상태 판단에는 PLAN.md를 우선합니다. MCP 재연결 상태처럼 이후 달라질 수 있는 사실도 보고서 작성 당시 기준입니다.
-
-## 역사 자료
-
-- [V2 계획 원문](archive/MASTER_BLUEPRINT_V2.md)
-- [V3 구조 참조 원문](archive/MASTER_BLUEPRINT_V3.md)
-- [V4 실용 기능 원안](archive/MASTER_BLUEPRINT_V4.md)
-- [V5 다중 에이전트 원안](master_blueprint_v5.md): 사용자 지정 위치의 보관본. 완료 표시는 현재 구현 상태와 구분합니다.
-- [이전 개발 지침 원문](archive/DEVELOPMENT_GUIDELINES_ORIGINAL.md)
-
-보관 문서는 당시 파일명·진행 상태·참조 표현을 그대로 유지합니다. 현재 실행 지침으로 사용하지 않습니다. 새 버전별 계획서를 루트에 추가하지 않고 PLAN.md를 갱신합니다.
+- 단계 보고서: [계획 이력](archive/reports/plan-history.md) · [협업 엔진](archive/reports/hybrid-team.md) · [Phase 1](archive/reports/phase-01.md) · [Phase 2](archive/reports/phase-02.md) · [Phase 2.5](archive/reports/phase-02-5.md) · [Phase 3](archive/reports/phase-03.md) · [REA · Agent Reach](archive/reports/rea-agent-reach.md)
+- 옛 계획 원문: [V2](archive/MASTER_BLUEPRINT_V2.md) · [V3](archive/MASTER_BLUEPRINT_V3.md) · [V4](archive/MASTER_BLUEPRINT_V4.md) · [이전 개발 지침](archive/DEVELOPMENT_GUIDELINES_ORIGINAL.md) · [V5 원안](master_blueprint_v5.md)(사용자 지정 위치의 보관본)
 
 ## 변경 후 확인
 

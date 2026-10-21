@@ -60,4 +60,4 @@ Microsoft Store 설치의 실제 설정은 `C:/Users/heejun/AppData/Local/Packag
 
 공식 SDK 참고: https://py.sdk.modelcontextprotocol.io/v1/
 
-이번 환경의 구체적인 검증 결과는 `docs/reports/phase-01.md`에 기록했습니다. 전체 의존성을 같은 버전으로 설치하려면 `requirements-lock.txt`를 사용할 수 있습니다.
+이번 환경의 구체적인 검증 결과는 `docs/archive/reports/phase-01.md`에 기록했습니다. 전체 의존성을 같은 버전으로 설치하려면 `requirements-lock.txt`를 사용할 수 있습니다.

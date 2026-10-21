@@ -1,6 +1,6 @@
 # J.A.R.V.I.S. 통합 계획 및 진행 상태
 
-갱신일: 2026-10-21 (Asia/Seoul). V2~V5 계획을 통합한 현재 기준이며 원본은 [문서 안내](README.md)의 역사 자료에 있다. 지난 단계의 세부 기록은 [계획 이력](reports/plan-history.md)으로 옮겼다. 이 문서는 현재 상태·진행 중 작업·남은 과제만 둔다. 소통·인수인계는 문서가 아니라 [게시판](guides/board.md)에서 한다([소통 규약](guides/communication.md)).
+갱신일: 2026-10-21 (Asia/Seoul). V2~V5 계획을 통합한 현재 기준이며 원본은 [문서 안내](README.md)의 보관 자료에 있다. 지난 단계의 세부 기록은 [계획 이력](archive/reports/plan-history.md)으로 옮겼다. 이 문서는 현재 상태·진행 중 작업·남은 과제만 둔다. 소통·인수인계는 문서가 아니라 [게시판](guides/board.md)에서 한다([소통 규약](guides/board.md)).
 
 ## 비전
 
@@ -9,10 +9,10 @@
 ## 현재 상태 (2026-10-21)
 
 - 규모: MCP 도구 40개(최초 27개 계약 보존), 전체 회귀 578개 통과. 코드는 GitHub `coddddin/jarvis-mcp`, 데이터는 Cloudflare R2 암호화 백업(매일 23:00).
-- Phase 1·2 완료: 안전장치(경로·명령 허용·시간창 호출 예산·중단 표시), 로컬 문서 검색, Google 메일·일정 브리핑, 스냅샷, 파일 정리, 등록형 런처, 에러 분석, 등록형 웹 수집·공개 검색·페이지 읽기. [Phase 1](reports/phase-01.md) · [Phase 2](reports/phase-02.md)
-- Phase 2.5 기반 완료: 영속 작업 제어, 로컬 Ollama 제안·정적/컨테이너 QA, 기억·이벤트, 로컬 리드↔Codex/Claude 협업, 무료 배정 연결부(실제 무료 후보는 미연결). [Phase 2.5](reports/phase-02-5.md) · [협업](reports/hybrid-team.md)
-- Phase 3 첫 단위: 로컬 채팅·작업 HUD(8788). 3D·음성은 미착수. [Phase 3](reports/phase-03.md)
-- 통합: REA·Agent Reach·Ghidra 정적 분석과 등록 RSS. [기록](reports/rea-agent-reach.md)
+- Phase 1·2 완료: 안전장치(경로·명령 허용·시간창 호출 예산·중단 표시), 로컬 문서 검색, Google 메일·일정 브리핑, 스냅샷, 파일 정리, 등록형 런처, 에러 분석, 등록형 웹 수집·공개 검색·페이지 읽기. [Phase 1](archive/reports/phase-01.md) · [Phase 2](archive/reports/phase-02.md)
+- Phase 2.5 기반 완료: 영속 작업 제어, 로컬 Ollama 제안·정적/컨테이너 QA, 기억·이벤트, 로컬 리드↔Codex/Claude 협업, 무료 배정 연결부(실제 무료 후보는 미연결). [Phase 2.5](archive/reports/phase-02-5.md) · [협업](archive/reports/hybrid-team.md)
+- Phase 3 첫 단위: 로컬 채팅·작업 HUD(8788). 3D·음성은 미착수. [Phase 3](archive/reports/phase-03.md)
+- 통합: REA·Agent Reach·Ghidra 정적 분석과 등록 RSS. [기록](archive/reports/rea-agent-reach.md)
 - 운영 기반(2026-10-21): Git, R2 백업, 공용 게시판·우편함, 시간창 예산, AI 직원 명부(Codex·Claude Code 정식, Cursor 수습). 아래 확장 절 참조.
 
 ## 남은 과제 (이전 단계에서 이월)
@@ -91,7 +91,7 @@
 - [ ] W4-2 신원·권한: 직원별 출입 토큰(MCP 설정의 환경 변수), 서버가 신원을 확인하고 `max_tier`와 직원별 예산을 강제한다. 토큰 발급·보관 방식은 사용자 결정.
 - [ ] W4-3 수습·승진: probation은 제안·검토만, 게시판 완료 실적 후 사용자 승인으로 승격.
 - [ ] W4-5 업무 평가: 게시판 기록에서 직원별 완료·검증 실패·재작업 집계, 배정 참고.
-- [x] 소통 규약 (2026-10-21): 게시판 우편함 `board_send`/`board_inbox`(직접·직원 전체·전체 공지, 읽음 처리), 간결한 `board_list`, `board_get` 노트 기본 10개. 규칙을 "소통은 게시판, PLAN은 단계 체크만, 보고서는 단계 완료 때만, 소통용 커밋 금지"로 바꿨다. 도구 40개, 전체 578개 통과. [소통 규약](guides/communication.md).
+- [x] 소통 규약 (2026-10-21): 게시판 우편함 `board_send`/`board_inbox`(직접·직원 전체·전체 공지, 읽음 처리), 간결한 `board_list`, `board_get` 노트 기본 10개. 규칙을 "소통은 게시판, PLAN은 단계 체크만, 보고서는 단계 완료 때만, 소통용 커밋 금지"로 바꿨다. 도구 40개, 전체 578개 통과. [소통 규약](guides/board.md).
 - [x] 공통 작업자 어댑터: `jarvis/agents/worker_adapters.py`로 디스패처(c60f88b)와 `team.py`(be3e165) 통합. 수습 직원의 쓰기 가능 명령은 tick에서 차단하고 하루 요약에 표시(ec3a8df).
 - [x] Cursor 실사용 (2026-10-21): CLI `agent` 2026.10.19 설치(설치 스크립트 검토 후), 사용자 계정 로그인, `.cursor/cli.json`으로 게시판 도구만 허용·민감 도구 금지. 헤드리스 실행으로 첫 작업 claim→finding→review, Claude Code가 검토 후 done. 첫 시도는 MCP 허용 목록이 없어 거부됐다. 관찰: 한국어 요약 지시에도 영어로 작성.
 
@@ -143,4 +143,4 @@
 
 ## 이력
 
-지난 상태 기록, 단계별 세부, 설계 결정 D01~, 구조 정비, REA 체크포인트는 [계획 이력](reports/plan-history.md)에 있다.
+지난 상태 기록, 단계별 세부, 설계 결정 D01~, 구조 정비, REA 체크포인트는 [계획 이력](archive/reports/plan-history.md)에 있다.

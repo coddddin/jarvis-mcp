@@ -1,6 +1,6 @@
 # 자비스 전용 채팅
 
-[문서 안내](../README.md) · [현재 계획](../PLAN.md) · [검증 기록](../reports/phase-03.md)
+[문서 안내](../README.md) · [현재 계획](../PLAN.md) · [검증 기록](../archive/reports/phase-03.md)
 
 ## 실행과 연결
 

@@ -1,6 +1,6 @@
 # Phase 2.5 — 다중 에이전트 협업 구현 기록
 
-[문서 안내](../README.md) · [현재 계획](../PLAN.md) · [작업 제어 안내](../guides/agent-tasks.md)
+[문서 안내](../../README.md) · [현재 계획](../../PLAN.md) · [작업 제어 안내](../../guides/agent-tasks.md)
 
 ## 2026-10-18 — 첫 단위: 영속 작업 상태와 수정 회로 차단
 
