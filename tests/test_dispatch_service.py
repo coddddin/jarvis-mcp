@@ -135,9 +135,11 @@ def test_concurrent_acquire_has_one_winner(tmp_path):
     import threading
     guard = Guardrails(tmp_path)
     results, barrier = [], threading.Barrier(4)
+    services = []  # keep every service alive: a collected winner closes its handle and frees the lock
 
     def attempt():
         service = make_service(Fake(guard))
+        services.append(service)
         barrier.wait()
         try:
             service.acquire()
@@ -248,3 +250,14 @@ def test_paused_service_skips_ticks_and_resumes_quickly(tmp_path):
     service.run()
     # t=0 tick, paused from 1 to 15 min (the t=10 tick is skipped), resume ticks within one poll at ~15 min.
     assert fake.ticks == 2
+
+
+def test_release_removes_service_record(tmp_path):
+    # A clean stop must not leave service.json behind, or the HUD keeps warning about a stale record.
+    guard = Guardrails(tmp_path)
+    service = make_service(Fake(guard))
+    service.acquire()
+    record = tmp_path / '.jarvis-dispatch' / 'service.json'
+    assert record.exists()
+    service.release()
+    assert not record.exists()

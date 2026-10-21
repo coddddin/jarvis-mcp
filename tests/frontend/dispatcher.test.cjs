@@ -145,3 +145,33 @@ test('a late response from an old connection is dropped and disconnect hides the
   await h.connect(null);
   assert.equal(h.panel.hidden, true);
 });
+
+test('process watch findings show as plain-text warnings; none keeps the section hidden', async () => {
+  const h = harness();
+  await h.connect('t');
+  const list = find(h.panel, n => n.attributes['aria-label'] === '감시 경고');
+  assert.equal(list.hidden, true);
+  h.setHandler(() => ({status:200, body:snapshot({watch:{checked_at:NOW, findings:[
+    {kind:'owner_dead', ref:'run:7', since:NOW - 60, detail:{employee:'<i>codex</i>', pid:12}},
+    {kind:'overdue', ref:'run:8', since:NOW - 4000, detail:{employee:'cursor', elapsed_seconds:3950, limit_seconds:1800}},
+    {kind:'service_down', ref:'service', since:null, detail:{}},
+    {kind:'unknown_kind', ref:'x', since:null, detail:{}}]}})}));
+  await h.button('새로고침').events.click();
+  await h.settle();
+  assert.equal(list.hidden, false);
+  assert.equal(list.children.length, 3);  // the unknown kind is ignored
+  const text = flatten(list);
+  assert.match(text, /run:7 \(<i>codex<\/i>\): 실행 중으로 남아 있지만 프로세스가 없어요/);
+  assert.match(text, /제한 시간 30분을 넘겼어요/);
+  assert.match(text, /서비스가 꺼져 있어요/);
+});
+
+test('an unavailable watch is reported without hiding the rest', async () => {
+  const h = harness();
+  h.setHandler(() => ({status:200, body:snapshot({watch:{findings:[], checked_at:null, error:'watch_unavailable'}})}));
+  await h.connect('t');
+  const list = find(h.panel, n => n.attributes['aria-label'] === '감시 경고');
+  assert.equal(list.hidden, false);
+  assert.match(flatten(list), /감시 결과를 읽지 못했어요/);
+  assert.match(flatten(h.panel), /켜짐/);
+});
