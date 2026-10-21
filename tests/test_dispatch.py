@@ -436,3 +436,10 @@ def test_digest_is_still_sent_when_the_blocked_check_fails(tmp_path, monkeypatch
     assert sent and sent[0].startswith('[알림] 자비스 하루 요약') and '점검' not in sent[0]
     assert len(logged) == 1 and 'roster gone' in str(logged[0])
     assert ledger.last_digest_day() is not None          # marked sent: no retry every tick
+
+
+def test_digest_labels_privacy_open():
+    from jarvis.agents.dispatch_policy import build_digest
+    text = build_digest(day='d', done=[], review=[], stale=[], runs={}, exhausted={}, pause={},
+                        blocked=[('opencode', ['privacy_open'], 1)])
+    assert '- 현재 점검으로 깨우지 않음: opencode(외부 읽기·웹 차단 안 됨, 받은 일 1건)' in text

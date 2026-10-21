@@ -124,10 +124,24 @@ def test_build_command_errors_match():
             call('claude-code', partial, 'w', 'p', '{}', executable='x')
 
 
-@pytest.mark.parametrize('employee', ['codex', 'claude-code', 'cursor', 'opencode', 'gemini', 'unknown'])
+@pytest.mark.parametrize('employee', ['codex', 'claude-code', 'cursor', 'gemini', 'unknown'])
 def test_build_env_is_identical(employee):
     kwargs = dict(project_root=Path('C:/proj root'), workspace=Path('C:/ws'))
     assert build_env(employee, **kwargs) == legacy_build_env(employee, **kwargs)
+
+
+# 100bb3a1: the only intended change to OpenCode's env is the added privacy and web rules.
+PRIVACY_RULES = {'external_directory': 'deny', 'websearch': 'deny', 'task': 'deny'}
+
+
+def test_opencode_env_changes_only_by_the_privacy_rules():
+    kwargs = dict(project_root=Path('C:/proj root'), workspace=Path('C:/ws'))
+    new = json.loads(build_env('opencode', **kwargs)['OPENCODE_CONFIG_CONTENT'])
+    old = json.loads(legacy_build_env('opencode', **kwargs)['OPENCODE_CONFIG_CONTENT'])
+    permission = new['permission']
+    assert {key: permission.pop(key) for key in PRIVACY_RULES} == PRIVACY_RULES
+    assert permission.pop('shell') == old['permission']['bash']   # current docs name; bash kept for v2.0.32
+    assert new == old
 
 
 @pytest.mark.parametrize('layout', ['empty', 'installed'])
@@ -418,3 +432,64 @@ def test_problem_codes_cover_every_kind(monkeypatch):
     codes = wa.roster_problem_codes(changed)
     assert codes['codex'] == ['retired'] and codes['claude-code'] == ['no_roster']
     assert codes['opencode'] == ['probation_can_edit']
+
+
+def test_current_adapters_have_no_privacy_markers():
+    assert all(wa.privacy_markers(name) == [] for name in wa.ADAPTERS)
+    assert wa.roster_problem_codes(load_roster()) == {}
+
+
+def _opencode_env(**changes):
+    """The real OpenCode config with permission or tools entries changed (None removes the entry)."""
+    def env(project_root, workspace):
+        config = json.loads(wa._work_env_opencode(project_root, workspace)['OPENCODE_CONFIG_CONTENT'])
+        for section, key, value in changes.get('entries', []):
+            if value is None:
+                config[section].pop(key, None)
+            else:
+                config[section][key] = value
+        return {'OPENCODE_CONFIG_CONTENT': json.dumps(config)}
+    return env
+
+
+@pytest.mark.parametrize('section,key,value,marker', [
+    ('permission', 'external_directory', None, 'external_directory'),       # default ask: not proven blocked
+    ('permission', 'external_directory', 'ask', 'external_directory'),
+    ('permission', 'external_directory', {'*': 'deny', 'C:/Users/**': 'allow'}, 'external_directory'),
+    ('permission', 'websearch', None, 'websearch'),
+    ('permission', 'webfetch', 'allow', 'webfetch'),
+    ('permission', 'task', None, 'task'),
+    ('tools', 'jarvis_*', True, 'jarvis'),
+    ('tools', 'jarvis_search_local_documents', True, 'jarvis'),
+])
+def test_opencode_privacy_or_web_opening_is_caught(monkeypatch, section, key, value, marker):
+    tampered(monkeypatch, 'opencode', work_env=_opencode_env(entries=[(section, key, value)]))
+    assert any(marker in m for m in wa.privacy_markers('opencode'))
+    assert wa.roster_problem_codes(load_roster())['opencode'] == ['privacy_open']
+    assert wa.edit_markers('opencode') == []          # a privacy problem is not an edit problem
+
+
+def test_unreadable_or_missing_opencode_config_is_a_privacy_problem(monkeypatch):
+    tampered(monkeypatch, 'opencode', work_env=lambda project_root, workspace: {'OPENCODE_CONFIG_CONTENT': '{oops'})
+    assert wa.privacy_markers('opencode')
+    tampered(monkeypatch, 'opencode', work_env=lambda project_root, workspace: {})
+    assert wa.privacy_markers('opencode')
+
+
+def test_shell_key_is_checked_like_bash(monkeypatch):
+    tampered(monkeypatch, 'opencode', work_env=_opencode_env(entries=[('permission', 'shell', {'*': 'allow'})]))
+    assert any('shell' in m for m in wa.edit_markers('opencode'))
+
+
+def test_privacy_open_blocks_an_active_employee_too(monkeypatch):
+    from dataclasses import replace
+    roster = load_roster()
+    agents = dict(roster.agents)
+    agents['opencode'] = agents['opencode'].model_copy(update={'status': 'active'})
+    active = SimpleNamespace(agents=agents)
+    tampered(monkeypatch, 'opencode', work_env=_opencode_env(entries=[('permission', 'websearch', 'allow')]))
+    assert wa.roster_problem_codes(active)['opencode'] == ['privacy_open']
+    from jarvis.agents.dispatch_policy import Decision, block_unsafe
+    out = block_unsafe([Decision('opencode', True, 'pending_work')], wa.roster_problems(active))
+    assert (out[0].wake, out[0].reason) == (False, 'adapter_check_failed')
+    assert replace  # dataclasses import kept local to this test

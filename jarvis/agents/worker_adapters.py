@@ -141,9 +141,13 @@ def _work_command_opencode(r):
 
 def _work_env_opencode(project_root, workspace):
     python = Path(project_root) / '.venv' / 'Scripts' / 'python.exe'
+    shell = {'*': 'deny', 'git status *': 'allow', 'git diff *': 'allow', 'git log *': 'allow'}
     config = {
-        'permission': {'edit': 'deny', 'webfetch': 'deny',
-                       'bash': {'*': 'deny', 'git status *': 'allow', 'git diff *': 'allow', 'git log *': 'allow'}},
+        # Defaults per opencode.ai/docs/permissions: most keys allow, external_directory ask. Deny explicitly what a
+        # probation run must never reach: paths outside the worktree, the web, and subagents (board 100bb3a1).
+        # 'shell' is the current docs name; 'bash' is kept because v2.0.32's schema still lists it.
+        'permission': {'edit': 'deny', 'webfetch': 'deny', 'bash': shell, 'shell': dict(shell),
+                       'external_directory': 'deny', 'websearch': 'deny', 'task': 'deny'},
         'mcp': {'jarvis': {'type': 'local', 'command': [str(python), str(Path(project_root) / 'server.py')],
                            'environment': {'JARVIS_WORKSPACE': str(workspace)}, 'enabled': True}},
         # Verified 2026-10-21: the underscore glob hides every other jarvis tool (privacy), the dot glob does not.
@@ -258,21 +262,49 @@ def edit_markers(employee):
     elif raw is not None:
         try:
             permission = json.loads(raw).get('permission') or {}
-            bash = permission.get('bash')
-            bash_all = bash if isinstance(bash, str) else bash.get('*') if isinstance(bash, dict) else None
+            shells = {key: _rule_all(permission[key]) for key in ('bash', 'shell') if key in permission}
         except (ValueError, AttributeError):
             markers.append('opencode config unreadable')
         else:
             if permission.get('edit') != 'deny':
                 markers.append(f"opencode permission.edit={permission.get('edit')!r}")
-            if bash_all != 'deny':
-                markers.append(f"opencode permission.bash['*']={bash_all!r}")
+            if not shells:
+                markers.append("opencode permission.bash['*']=None")   # no shell rule: the CLI default allows
+            markers += [f"opencode permission.{key}['*']={value!r}" for key, value in shells.items() if value != 'deny']
+    return markers
+
+
+def _rule_all(rule):
+    return rule if isinstance(rule, str) else rule.get('*') if isinstance(rule, dict) else None
+
+
+PRIVACY_DENY = ('external_directory', 'websearch', 'webfetch', 'task')
+
+
+def privacy_markers(employee):
+    """What in an OpenCode-style config lets a run read outside its worktree, reach the web, delegate, or use
+    jarvis tools beyond the board; [] means closed. Other employees carry no such config and report []."""
+    _, env = _probe(employee)
+    raw = env.get('OPENCODE_CONFIG_CONTENT')
+    if raw is None:
+        return ['opencode config missing (CLI defaults allow reads outside and the web)'] if employee == 'opencode' else []
+    try:
+        config = json.loads(raw)
+        permission, tools = config.get('permission') or {}, config.get('tools') or {}
+        markers = [f'opencode permission.{key}={permission.get(key)!r}' for key in PRIVACY_DENY
+                   if permission.get(key) != 'deny']
+        opened = [name for name, enabled in tools.items() if enabled is True and not name.startswith('jarvis_board_')]
+    except (ValueError, AttributeError):
+        return ['opencode config unreadable']
+    if tools.get('jarvis_*') is not False:
+        markers.append(f"opencode tools.jarvis_*={tools.get('jarvis_*')!r}")
+    markers += [f'opencode tools.{name} enabled' for name in opened if name.startswith('jarvis')]
     return markers
 
 
 # Problem kinds between an adapter and the roster. Codes carry no command fragments, so user-facing
 # reports (the daily digest) can show them; roster_problems() keeps the detailed text for the service log.
-PROBLEM_CODES = ('no_roster', 'retired', 'probation_can_edit', 'label_mismatch')
+PROBLEM_CODES = ('no_roster', 'retired', 'probation_can_edit', 'label_mismatch', 'privacy_open')
 
 
 def _roster_findings(roster):
@@ -293,6 +325,11 @@ def _roster_findings(roster):
             elif markers and not item.applies_edits:
                 found.append(('label_mismatch',
                               f'{name}: applies_edits=False but the work command can edit ({"; ".join(markers)})'))
+            # Separate from editing, and for active employees too: personal data must not leave via a free API.
+            privacy = privacy_markers(name)
+            if privacy:
+                found.append(('privacy_open', f'{name}: reads outside, web or extra tools not denied '
+                                              f'({"; ".join(privacy)})'))
         if found:
             findings[name] = found
     return findings

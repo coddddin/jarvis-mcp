@@ -101,7 +101,7 @@ def digest_due(now, *, hour, last_sent_day):
 
 # Korean labels for worker_adapters.PROBLEM_CODES; unknown codes are left out of user-facing text.
 PROBLEM_LABELS = {'no_roster': '명부에 없음', 'retired': '퇴사', 'probation_can_edit': '수습인데 파일 수정 가능',
-                  'label_mismatch': '수정 불가 표시와 실제 명령 불일치'}
+                  'label_mismatch': '수정 불가 표시와 실제 명령 불일치', 'privacy_open': '외부 읽기·웹 차단 안 됨'}
 
 
 def _blocked_line(blocked):
