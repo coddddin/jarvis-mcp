@@ -31,7 +31,81 @@ async function loadProcesses(){
 }
 window.addEventListener('jarvis-connection',event=>{if(event.detail.token)loadProcesses();else processNotice();});
 setInterval(loadProcesses,30000);
-function connection(text, mode=''){ $('connectionLabel').textContent=text; $('connectionDot').className='dot '+mode; }
+// Service roles use only existing read APIs. A missing observation is never an offline verdict.
+const serviceOverview = (() => {
+  const panel=element('section','collaboration-panel panel');
+  panel.id='serviceOverview'; panel.setAttribute('aria-label','서비스별 역할과 확인 상태');
+  panel.append(element('h2','','자비스가 일하려면'), element('p','muted small',
+    'Ollama만 켜면 자동 업무가 시작되는 것은 아니에요. 모델 서버, 대화·작업 화면, 자동 배정은 각각 준비되어야 해요.'));
+  const cards=element('div','collaboration-agents');
+  function card(title, role, reason, action) {
+    const box=element('article','collaboration-agent'), status=element('p','status','미확인');
+    const detail=element('p','muted small',reason), next=element('p','small',action);
+    box.append(element('h3','',title),element('p','muted small',role),status,detail,next); cards.append(box);
+    return {status,detail,next};
+  }
+  card('Ollama · 모델 서버','로컬 AI가 답변을 만드는 데 필요해요.',
+    '이 화면에는 모델 서버를 직접 확인하는 정보가 없어요. 모델 이름이나 설치 기록으로 실행 여부를 판단하지 않아요.',
+    '다음: Ollama 실행 상태와 사용할 모델 준비 여부를 확인하세요.');
+  const hudCard=card('자비스 · 대화와 작업 화면','대화하고 작업 기록을 확인하는 창이에요.',
+    '아직 작업 기록에 연결하지 않았어요. 채팅 응답 가능 여부는 별도로 확인해야 해요.',
+    '다음: 자비스 화면을 실행한 뒤 연결 파일을 선택하세요.');
+  const dispatchCard=card('디스패처 · 자동 배정','받은 일을 직원에게 자동으로 배정해요.',
+    '연결 후 서비스 기록을 조회할 수 있어요. 설정의 켜짐과 실제 실행은 달라요.',
+    '다음: 연결 후 자동 배정 서비스와 설정을 확인하세요.');
+  panel.append(cards,element('p','muted small','표시된 상태는 마지막 확인 근거입니다. 직원 가용성, 작업 성공, 검증 통과를 보장하지 않아요.'));
+  $('processNotice').after(panel);
+  let token=null, version=0, pending=null;
+  function unknown(reason) {
+    dispatchCard.status.textContent='미확인'; dispatchCard.status.className='status';
+    dispatchCard.detail.textContent=reason;
+    dispatchCard.next.textContent='다음: 연결 파일과 자비스 실행 상태를 확인하고 새로고침하세요.';
+  }
+  async function refresh() {
+    if(!token||document.hidden||pending)return;
+    const selected=token, revision=version, request=new AbortController(); pending=request;
+    unknown('서비스 기록을 확인하고 있어요.');
+    const timeout=setTimeout(()=>request.abort(),8000);
+    try {
+      const response=await fetch('/api/dispatcher',{headers:{Authorization:'Bearer '+selected},
+        cache:'no-store',credentials:'omit',signal:request.signal});
+      if(!response.ok)throw new Error('unavailable');
+      const data=await response.json();
+      if(selected!==token||revision!==version)return;
+      if(typeof data?.service?.running!=='boolean'||typeof data.config_enabled!=='boolean'
+        ||typeof data.paused!=='boolean'||!Number.isFinite(data.read_at))throw new Error('invalid_snapshot');
+      const setting=!data.config_enabled?'자동 배정 설정 꺼짐':data.paused?'자동 배정 일시정지':'자동 배정 설정 켜짐';
+      dispatchCard.status.textContent=data.service.running?'서비스 실행 관찰':'실행 확인 안 됨';
+      dispatchCard.status.className='status '+(data.service.running?'completed':'needs_user_input');
+      dispatchCard.detail.textContent=setting+' · 마지막 조회 '+stamp(data.read_at)
+        +(data.service.running?' · 서비스 프로세스가 관찰됐어요. 실제 업무 진행은 작업 기록에서 확인하세요.'
+          :' · 실행 중인 서비스 기록을 확인하지 못했어요. 미등록 또는 중지 상태일 수 있어요.');
+      dispatchCard.next.textContent=!data.service.running?'다음: 자동 배정 서비스의 등록·실행 여부를 확인하세요. Ollama 실행만으로 시작되지 않아요.'
+        :!data.config_enabled?'다음: 자동 배정을 원하면 담당자에게 설정 확인을 요청하세요.'
+        :data.paused?'다음: 작업 현황의 자동 순환 패널에서 재개 여부를 결정하세요.'
+        :'다음: 작업 현황에서 배정 결과와 직원별 제한을 확인하세요.';
+    } catch(error) {
+      if(selected===token&&revision===version)unknown('조회하지 못했어요. 이전 상태는 현재 실행 근거로 사용할 수 없어요. 서비스가 꺼졌다고 단정할 수는 없어요.');
+    } finally {clearTimeout(timeout);if(pending===request)pending=null;}
+  }
+  window.addEventListener('jarvis-connection',event=>{
+    const next=event.detail.token||null;
+    if(next!==token){version++;pending?.abort();pending=null;token=next;}
+    if(token)refresh();else unknown('실제 서비스에 연결하지 않았어요. 샘플 기록으로 실행 여부를 알 수 없어요.');
+  });
+  document.addEventListener('visibilitychange',()=>{if(!document.hidden)refresh();});
+  setInterval(refresh,30000);
+  return {hud(text,mode){
+    hudCard.status.textContent=mode==='connected'?'작업 기록 연결 확인':mode==='demo'?'샘플 · 실제 상태 미확인':'미확인';
+    hudCard.status.className='status';
+    hudCard.detail.textContent=mode==='connected'?'최근 연결 확인 '+stamp(Date.now()/1000)+' · 작업 기록 연결의 근거예요. 모델 서버와 채팅 응답 준비를 확인한 것은 아니에요.'
+      :mode==='demo'?'예시 화면이에요. 실제 자비스나 직원의 실행 상태를 나타내지 않아요.'
+      :'화면 연결: '+text+' · 서비스가 꺼졌다고 단정할 수는 없어요.';
+    hudCard.next.textContent=mode==='connected'?'다음: 대화 탭에서 채팅 연결 안내를 확인하세요. 자동 업무는 디스패처 상태도 확인해야 해요.'
+      :'다음: 자비스 화면을 실행한 뒤 연결 파일을 선택하세요.';
+  }};
+})();
+function connection(text, mode=''){ $('connectionLabel').textContent=text; $('connectionDot').className='dot '+mode; serviceOverview.hud(text, mode); }
 function stopStream(){state.generation++;stream.stop();}
 function resetTimings(){state.timings=new JarvisDisplayTimings();$('latencyMetric').textContent='새 기록이 도착하면 갱신 속도를 측정합니다. 과거 기록은 제외해요.';}
 function disconnect(){stopStream(); state.token=null; state.demo=false; state.jobs=[]; state.cursors.clear(); state.feeds.clear(); state.recovery.clear();state.selected=null;resetTimings(); $('connectionFile').value=''; $('workspace').hidden=true; $('welcome').hidden=false; $('refresh').hidden=true; $('disconnect').hidden=true; connection('연결 전'); notice(); window.dispatchEvent(new CustomEvent('jarvis-connection',{detail:{token:null}}));}
