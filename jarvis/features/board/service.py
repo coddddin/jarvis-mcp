@@ -295,6 +295,18 @@ class BoardStore:
             db.execute('DELETE FROM reads WHERE message_id NOT IN (SELECT id FROM messages)')
             return {'id': cursor.lastrowid, 'to': to, 'task_id': task_id or None}
 
+    def pending_for_employee(self, employee):
+        """Messages to an employee or its auto session that no session of that employee has read yet.
+
+        Used by the dispatcher to decide whether to wake the employee; broadcasts never wake anyone."""
+        if employee not in self._prefixes() or employee in ('user', 'local'):
+            raise BoardError('Unknown employee.')
+        with self.connection() as db:
+            return db.execute(
+                'SELECT COUNT(*) FROM messages m WHERE m.recipient IN (?,?) AND m.sender NOT LIKE ? '
+                'AND NOT EXISTS (SELECT 1 FROM reads r WHERE r.message_id=m.id AND r.reader LIKE ?)',
+                (employee, employee + ':auto', employee + ':%', employee + ':%')).fetchone()[0]
+
     def activity_snapshot(self):
         """Read-only HUD projection. Board declarations never imply a live process."""
         self.guard.check_running()
@@ -377,7 +389,6 @@ class BoardStore:
         finally:
             if db is not None:
                 db.close()
-
 
     def inbox(self, agent, *, limit=20, mark_read=True):
         """Unread messages for this agent, oldest first. Reading marks them read unless mark_read is False."""

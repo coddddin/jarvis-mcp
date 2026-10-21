@@ -1,0 +1,170 @@
+'use strict';
+// W5 dispatcher panel. Builds its own DOM inside #workspace (no index.html markup needed) and reuses
+// hud.css classes, since the page CSP allows only same-origin stylesheets. The connection token comes
+// from hud.js through the 'jarvis-connection' event, like chat.js.
+(() => {
+  const byId = id => document.getElementById(id);
+  const REFRESH_MS = 10000;
+  const runLabels = {running:'실행 중', ok:'완료', error:'오류', failed:'실패', limit:'한도 도달', eligibility:'사용 자격 없음',
+    timeout:'시간 초과', stopped:'중지됨', lost:'추적 끊김'};
+  const runClass = {running:'running', ok:'completed', limit:'needs_user_input', eligibility:'needs_user_input',
+    timeout:'timed_out', error:'needs_user_input', failed:'needs_user_input'};
+  const errors = {401:'연결이 만료됐어요. 연결 파일을 다시 선택해주세요.', 403:'이 연결로는 디스패처를 바꿀 수 없어요.',
+    503:'디스패처 상태를 지금 읽을 수 없어요. 자비스 실행 상태를 확인해주세요.'};
+  const stamp = seconds => new Intl.DateTimeFormat('ko-KR', {timeZone:'Asia/Seoul', month:'2-digit', day:'2-digit',
+    hour:'2-digit', minute:'2-digit', second:'2-digit', hour12:false}).format(new Date(seconds * 1000));
+  const count = value => typeof value === 'number' ? new Intl.NumberFormat('ko-KR').format(value) : '—';
+  const isTime = value => typeof value === 'number' && Number.isFinite(value);
+
+  function element(tag, className, text) {
+    const node = document.createElement(tag);
+    if (className) node.className = className;
+    if (text !== undefined) node.textContent = text;
+    return node;
+  }
+
+  const workspace = byId('workspace');
+  if (!workspace) return;
+  const panel = element('section', 'detail-panel panel');
+  panel.id = 'dispatcherPanel'; panel.hidden = true; panel.setAttribute('aria-label', '자동 순환 디스패처');
+  if (panel.style) panel.style.marginTop = '24px';  // CSSOM assignment is allowed by the CSP
+  const heading = element('div', 'detail-heading');
+  const titleBox = element('div');
+  titleBox.append(element('p', 'eyebrow', 'AUTO DISPATCH'), element('h2', '', '자동 순환 (디스패처)'));
+  const state = element('span', 'status', '확인 중');
+  heading.append(titleBox, state);
+  const summary = element('p', 'muted small', '');
+  const notice = element('p', 'notice', ''); notice.hidden = true; notice.setAttribute('role', 'status');
+  const actions = element('div', 'heading-actions');
+  const toggle = element('button', 'button secondary', '일시정지'); toggle.type = 'button'; toggle.disabled = true;
+  const reload = element('button', 'button text-button', '새로고침'); reload.type = 'button';
+  actions.append(toggle, reload);
+  const employees = element('ul', 'activity'); employees.setAttribute('aria-label', '직원별 누적');
+  const recent = element('ol', 'activity'); recent.setAttribute('aria-label', '최근 실행');
+  panel.append(heading, summary, notice, actions, element('h3', '', '직원별 누적'), employees,
+    element('h3', '', '최근 실행 (최대 10개)'), recent);
+  workspace.append(panel);
+
+  let token = null, generation = 0, loading = false, acting = false, snapshot = null;
+
+  function showNotice(message = '') { notice.textContent = message; notice.hidden = !message; }
+  const visible = () => Boolean(token) && !document.hidden && !workspace.hidden;
+
+  function valid(data) {
+    return data && typeof data === 'object' && typeof data.effective_enabled === 'boolean'
+      && typeof data.paused === 'boolean' && typeof data.config_enabled === 'boolean'
+      && data.employees && typeof data.employees === 'object' && Array.isArray(data.recent)
+      && data.service && typeof data.service === 'object';
+  }
+
+  async function request(method, path) {
+    const selected = token, version = generation;
+    const options = {method, headers:{Authorization:'Bearer ' + selected}, cache:'no-store', credentials:'omit'};
+    if (typeof AbortSignal !== 'undefined' && AbortSignal.timeout) options.signal = AbortSignal.timeout(10000);
+    const response = await fetch(path, options);
+    if (token !== selected || generation !== version) return null;  // connection changed meanwhile
+    if (!response.ok) throw new Error(errors[response.status] || '디스패처 요청이 실패했어요.');
+    const data = await response.json();
+    if (token !== selected || generation !== version) return null;
+    if (!valid(data)) throw new Error('디스패처 응답 형식을 확인할 수 없어요.');
+    return data;
+  }
+
+  function render(data) {
+    snapshot = data;
+    const [label, kind] = data.effective_enabled ? ['켜짐', 'completed']
+      : data.paused ? ['일시정지', 'needs_user_input'] : ['설정에서 꺼짐', 'cancelled'];
+    state.textContent = label; state.className = 'status ' + kind;
+    const service = data.service.running
+      ? '서비스 실행 중' + (data.service.pid ? ' (PID ' + data.service.pid + ')' : '')
+        + (isTime(data.service.started) ? ' · 시작 ' + stamp(data.service.started) : '')
+      : '서비스 멈춤';
+    const parts = [service, count(data.interval_minutes) + '분마다', '직원당 하루 ' + count(data.daily_runs) + '회'];
+    if (data.paused && isTime(data.paused_at)) parts.push('일시정지 ' + stamp(data.paused_at));
+    if (!data.config_enabled) parts.push('설정 파일(config/dispatcher.json)에서 꺼져 있음');
+    if (isTime(data.read_at)) parts.push('확인 ' + stamp(data.read_at));
+    summary.textContent = parts.join(' · ');
+    toggle.textContent = data.paused ? '재개' : '일시정지';
+    toggle.disabled = acting;
+
+    const now = Date.now() / 1000;
+    employees.replaceChildren();
+    const names = Object.keys(data.employees);
+    if (!names.length) employees.append(element('li', 'empty-feed', '아직 실행 기록이 없습니다.'));
+    for (const name of names) {
+      const item = data.employees[name] || {};
+      const row = element('li');
+      const waiting = isTime(item.exhausted_until) && item.exhausted_until > now
+        ? ' · 한도 대기 ' + stamp(item.exhausted_until) + '까지' : '';
+      row.append(element('span', '', name + ' · 실행 ' + count(item.runs) + '회' + waiting),
+        element('span', 'muted small', '입력 ' + count(item.total_input_tokens) + ' · 출력 '
+          + count(item.total_output_tokens) + ' 토큰'));
+      employees.append(row);
+    }
+
+    recent.replaceChildren();
+    const runs = data.recent.slice(0, 10);
+    if (!runs.length) recent.append(element('li', 'empty-feed', '최근 실행이 없습니다.'));
+    for (const run of runs) {
+      const row = element('li'), left = element('span');
+      const details = [];
+      if (run.input_tokens != null || run.output_tokens != null)
+        details.push('입력 ' + count(run.input_tokens) + ' · 출력 ' + count(run.output_tokens));
+      if (run.exit_code != null) details.push('종료 코드 ' + run.exit_code);
+      if (isTime(run.ended) && isTime(run.started)) details.push(Math.max(0, Math.round((run.ended - run.started) / 60)) + '분');
+      left.append(element('span', 'status ' + (runClass[run.status] || 'cancelled'), runLabels[run.status] || '상태 확인'),
+        element('span', '', ' ' + String(run.employee || '?') + (details.length ? ' · ' + details.join(' · ') : '')));
+      const time = element('time', '', isTime(run.started) ? stamp(run.started) : '—');
+      if (isTime(run.started)) time.dateTime = new Date(run.started * 1000).toISOString();
+      row.append(left, time);
+      recent.append(row);
+    }
+  }
+
+  async function load(force = false) {
+    if (loading || acting || (!force && !visible()) || !token) return;
+    const version = generation;
+    loading = true;
+    try {
+      const data = await request('GET', '/api/dispatcher');
+      if (data && version === generation) { render(data); showNotice(); }
+    } catch (error) {
+      if (version === generation) showNotice(error.message);
+    } finally {
+      loading = false;
+    }
+  }
+
+  async function act() {
+    if (acting || !token || !snapshot) return;
+    const resume = snapshot.paused;
+    if (resume && !window.confirm('디스패처를 재개할까요? 받은 일이 있는 직원이 자동으로 실행됩니다.')) return;
+    const version = generation;
+    acting = true; toggle.disabled = true;
+    try {
+      const data = await request('POST', resume ? '/api/dispatcher/resume' : '/api/dispatcher/pause');
+      if (data && version === generation) { acting = false; render(data); showNotice(resume ? '재개했어요.' : '일시정지했어요. 진행 중인 실행은 끝까지 갑니다.'); }
+    } catch (error) {
+      if (version === generation) showNotice(error.message);
+    } finally {
+      acting = false;
+      if (version === generation) toggle.disabled = !snapshot;
+    }
+  }
+
+  toggle.addEventListener('click', act);
+  reload.addEventListener('click', () => load(true));
+  window.addEventListener('jarvis-connection', event => {
+    const next = event.detail && event.detail.token || null;
+    if (next === token) { if (token) load(); return; }
+    token = next; generation++; snapshot = null; acting = false; loading = false;
+    panel.hidden = !token; toggle.disabled = true; showNotice();
+    state.textContent = '확인 중'; state.className = 'status'; summary.textContent = '';
+    employees.replaceChildren(); recent.replaceChildren();
+    if (token) load(true);
+  });
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) load(); });
+  const tasksTab = byId('tasksTab');
+  if (tasksTab) tasksTab.addEventListener('click', () => load());
+  setInterval(load, REFRESH_MS);
+})();
