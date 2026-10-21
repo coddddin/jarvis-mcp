@@ -2,6 +2,7 @@
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import hashlib
+import logging
 import os
 import stat
 import re
@@ -14,9 +15,11 @@ import time
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from jarvis.agents.chat import ChatError
+from jarvis.agents.activity import ActivityError, ActivityReporter
 from jarvis.agents.team_routing import select_role_seat
 from jarvis.agents.process_registry import observe_spawned
 from jarvis.core.redaction import redact
+from jarvis.core.guardrails import GuardrailError
 
 
 class TeamContract(BaseModel):
@@ -137,6 +140,24 @@ class HybridTeam:
         except Exception:
             # UI availability must never retry a provider request or change its result.
             return
+
+    def _activity_reporter(self, folder, runtime, process, name):
+        activity = getattr(self, 'activity_store', None)
+        match = re.fullmatch(r'team-([a-f0-9]{32})-([a-f0-9]{32})', folder.name)
+        packet = re.fullmatch(r'(p[1-3])(?:-r[0-3])?', name)
+        pid = getattr(process, 'pid', None)
+        if activity is None or not match or not packet or type(pid) is not int:
+            return None
+        self.guard.check_running()
+        try:
+            registration = activity.register(runtime + ':jarvis-' + packet.group(1), match.group(2), pid=pid)
+            reporter = ActivityReporter(activity, registration, interval=10)
+            reporter.start()
+            return reporter
+        except (ActivityError, GuardrailError, OSError):
+            self.guard.check_running()
+            logging.getLogger(__name__).warning('External worker activity observation unavailable.')
+            return None
 
     def members(self):
         members = []
@@ -277,11 +298,13 @@ class HybridTeam:
         except OSError:
             self._worker_event(folder, runtime, name, 'failed')
             raise
+        reporter = None
+        stop_at = min(deadline, time.monotonic() + 180)
         try:
             self._worker_event(folder, runtime, name, 'start')
+            reporter = self._activity_reporter(folder, runtime, process, name)
             self._notify_worker_view(folder, runtime)
             pending = prompt.encode('utf-8')
-            stop_at = min(deadline, time.monotonic() + 180)
             observe_spawned(self.guard, process, kind='worker', label='native-' + runtime,
                             timeout_seconds=max(1, stop_at - time.monotonic()))
             while True:
@@ -307,15 +330,27 @@ class HybridTeam:
                 value = envelope.get('structured_output')
             result = WorkResult.model_validate(value)
             safe = WorkResult(summary=redact(result.summary), output=redact(result.output))
+            if reporter is not None:
+                reporter.send('result_received', phase='review')
+                reporter.send('completed', phase='finished')
             self._worker_event(folder, runtime, name, 'result')
             return safe
         except Exception:
+            if reporter is not None:
+                reporter.send('failed', phase='finished', reason_code='unknown')
             self._worker_event(folder, runtime, name, 'failed')
             raise
         finally:
-            if process.poll() is None:
-                process.kill()
-            process.communicate()
+            try:
+                if process.poll() is None:
+                    process.kill()
+                try:
+                    process.communicate(timeout=2)
+                except subprocess.TimeoutExpired:
+                    logging.getLogger(__name__).warning('External worker pipe cleanup exceeded its observation deadline.')
+            finally:
+                if reporter is not None:
+                    reporter.close()
 
     def run(self, identity, request_id, message, *, external=True):
         self.store.identifier(identity)

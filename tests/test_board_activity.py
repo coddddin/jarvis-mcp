@@ -81,3 +81,15 @@ def test_stop_and_linked_database_are_refused(board, tmp_path):
     (board.guard.workspace / '.jarvis-stop').touch()
     with pytest.raises(GuardrailError, match='stopped'):
         board.activity_snapshot()
+
+
+def test_another_employee_update_is_not_attributed_to_creator_or_owner(board):
+    task = board.create('claude-code:creator', 'Shared work', '', [])['id']
+    board.clock = lambda: 2000
+    board.claim('codex:owner', task)
+    board.clock = lambda: 3000
+    board.note('cursor:reviewer', task, 'finding', 'Independent review', [])
+    agents = {item['id']: item for item in board.activity_snapshot()['agents']}
+    assert agents['claude-code']['last_activity'] == 1000
+    assert agents['cursor']['last_activity'] == 3000
+    assert agents['codex']['last_activity'] != 3000

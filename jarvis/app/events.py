@@ -43,7 +43,7 @@ def load_event_token(root=AUTH_ROOT):
     return token
 
 
-def create_event_app(tasks, *, token, task_ids, origins, chat=None, processes=None):
+def create_event_app(tasks, *, token, task_ids, origins, chat=None, processes=None, board=None, activity=None):
     if not isinstance(token, str) or not re.fullmatch(r'[A-Za-z0-9_-]{43}', token):
         raise ValueError('A strong local event token is required.')
     task_ids, origins = frozenset(task_ids), frozenset(origins)
@@ -67,7 +67,8 @@ def create_event_app(tasks, *, token, task_ids, origins, chat=None, processes=No
 
     async def asset(request):
         filename = {'/': 'index.html', '/assets/hud.css': 'hud.css', '/assets/hud.js': 'hud.js',
-                    '/assets/task-stream.js': 'task-stream.js', '/assets/chat.js': 'chat.js'}[request.url.path]
+                    '/assets/task-stream.js': 'task-stream.js', '/assets/chat.js': 'chat.js',
+                    '/assets/collaboration.js': 'collaboration.js', '/assets/collaboration.css': 'collaboration.css'}[request.url.path]
         return FileResponse(PROJECT_ROOT / 'frontend' / filename, headers=response_headers)
 
     def summaries():
@@ -115,6 +116,59 @@ def create_event_app(tasks, *, token, task_ids, origins, chat=None, processes=No
             return JSONResponse({'tasks': jobs, 'read_only': True, 'local_only': True}, headers=response_headers)
         except Exception:
             return JSONResponse({'error': 'status_unavailable'}, status_code=503, headers=response_headers)
+
+    async def collaboration(request):
+        if (request.url.query or request.url.netloc not in {urlsplit(item).netloc for item in origins}
+                or request.headers.get('origin') is not None and request.headers['origin'] not in origins):
+            return JSONResponse({'error': 'origin_denied'}, status_code=403, headers=response_headers)
+        header = request.headers.get('authorization', '')
+        if not header.startswith('Bearer ') or not valid(header[7:]):
+            return JSONResponse({'error': 'connection_required'}, status_code=401, headers=response_headers)
+        if board is None:
+            return JSONResponse({'error': 'collaboration_unavailable'}, status_code=503, headers=response_headers)
+        try:
+            snapshot = await asyncio.to_thread(board.activity_snapshot)
+            return JSONResponse(snapshot, headers=response_headers)
+        except Exception:
+            return JSONResponse({'error': 'collaboration_unavailable'}, status_code=503, headers=response_headers)
+
+    async def activity_api(request):
+        if (request.url.query or request.url.netloc not in {urlsplit(item).netloc for item in origins}
+                or request.headers.get('origin') is not None and request.headers['origin'] not in origins):
+            return JSONResponse({'error': 'origin_denied'}, status_code=403, headers=response_headers)
+        header = request.headers.get('authorization', '')
+        if request.method == 'GET':
+            if not header.startswith('Bearer ') or not valid(header[7:]):
+                return JSONResponse({'error': 'connection_required'}, status_code=401, headers=response_headers)
+            if activity is None:
+                return JSONResponse({'error': 'activity_unavailable'}, status_code=503, headers=response_headers)
+            try:
+                return JSONResponse(await asyncio.to_thread(activity.inspect, limit=100), headers=response_headers)
+            except Exception:
+                return JSONResponse({'error': 'activity_unavailable'}, status_code=503, headers=response_headers)
+        # Native run reporters have their own credential, never the HUD connection token.
+        if not header.startswith('Bearer ') or not re.fullmatch(r'[A-Za-z0-9_-]{32,128}', header[7:]):
+            return JSONResponse({'error': 'run_token_required'}, status_code=401, headers=response_headers)
+        if activity is None:
+            return JSONResponse({'error': 'activity_unavailable'}, status_code=503, headers=response_headers)
+        if request.headers.get('content-type', '').split(';')[0].strip() != 'application/json':
+            return JSONResponse({'error': 'json_required'}, status_code=415, headers=response_headers)
+        try:
+            raw = bytearray()
+            async for chunk in request.stream():
+                raw.extend(chunk)
+                if len(raw) > 1024:
+                    return JSONResponse({'error': 'event_too_large'}, status_code=413, headers=response_headers)
+            event = json.loads(raw)
+            run_id = request.path_params['run_id']
+            if not re.fullmatch(r'[a-f0-9]{32}', run_id) or not isinstance(event, dict) or event.get('run_id') != run_id:
+                raise ValueError('Invalid event identity.')
+            result = await asyncio.to_thread(activity.ingest, header[7:], event)
+            return JSONResponse({key: result[key] for key in ('status', 'run_id', 'seq')}, headers=response_headers)
+        except ValueError:
+            return JSONResponse({'error': 'event_rejected'}, status_code=400, headers=response_headers)
+        except Exception:
+            return JSONResponse({'error': 'activity_unavailable'}, status_code=503, headers=response_headers)
 
     async def chat_api(request):
         header = request.headers.get('authorization', '')
@@ -213,4 +267,6 @@ def create_event_app(tasks, *, token, task_ids, origins, chat=None, processes=No
         Route('/api/chat/conversations', chat_api, methods=['GET', 'POST']),
         Route('/api/chat/conversations/{conversation_id}', chat_api, methods=['GET']),
         Route('/api/chat/conversations/{conversation_id}/messages', chat_api, methods=['POST']),
+        Route('/api/activity', activity_api), Route('/api/activity/runs/{run_id}/events', activity_api, methods=['POST']),
+        Route('/assets/collaboration.js', asset), Route('/assets/collaboration.css', asset), Route('/api/collaboration', collaboration),
         Route('/api/tasks', listing), Route('/api/processes', listing), WebSocketRoute('/tasks/{task_id}/events', watch)])

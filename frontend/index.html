@@ -6,9 +6,11 @@
   <meta name="color-scheme" content="dark">
   <title>J.A.R.V.I.S. — 나의 작업 공간</title>
   <link rel="stylesheet" href="/assets/hud.css">
+  <link rel="stylesheet" href="/assets/collaboration.css">
   <script src="/assets/task-stream.js" defer></script>
   <script src="/assets/hud.js" defer></script>
   <script src="/assets/chat.js" defer></script>
+  <script src="/assets/collaboration.js" defer></script>
 </head>
 <body>
   <div class="shell">
@@ -20,6 +22,14 @@
       <section class="page-heading"><div><p class="eyebrow">YOUR PERSONAL ASSISTANT</p><h1>자비스, 여기 있어.</h1><p class="muted">대화하고, 필요한 정보를 찾고, 작업의 흐름을 확인하세요.</p></div><div class="heading-actions"><button id="refresh" class="button secondary" hidden>새로고침</button><button id="disconnect" class="button text-button" hidden>연결 해제</button></div></section>
       <p id="notice" class="notice" role="status" hidden></p>
       <p id="processNotice" class="notice" role="status" hidden></p>
+      <details id="collaborationPanel" class="collaboration-panel panel" hidden open>
+        <summary><span>직원 협업 상황판</span><span id="collaborationUpdated" class="muted small">조회 대기</span></summary>
+        <p class="muted small">게시판 기록 · 직원의 자기 보고입니다. 실제 온라인 여부나 모델 실행 상태를 뜻하지 않습니다. 화면을 보고 있을 때 5초마다 갱신합니다.</p>
+        <p id="collaborationNotice" class="chat-turn-status" role="status"></p>
+        <section class="execution-observations"><h3>등록 실행 관찰</h3><p id="activityNotice" class="muted small" role="status"></p><div id="activityRuns" class="collaboration-agents"></div></section>
+        <div id="collaborationAgents" class="collaboration-agents" aria-label="직원별 담당 작업"></div>
+        <div class="collaboration-columns"><section><h3>최근 주고받은 내용</h3><div id="collaborationMessages" class="collaboration-feed"></div></section><section><h3>최근 작업 기록</h3><div id="collaborationNotes" class="collaboration-feed"></div></section></div>
+      </details>
       <nav id="workspaceTabs" class="workspace-tabs" aria-label="작업 공간" hidden><button id="chatTab" class="tab active" type="button" aria-pressed="true">자비스와 대화</button><button id="tasksTab" class="tab" type="button" aria-pressed="false">작업 현황</button></nav>
       <section id="chatPanel" class="chat-layout" aria-label="자비스 채팅" hidden>
         <aside class="chat-sidebar"><button id="newChat" class="button secondary" type="button">+ 새 대화</button><p class="eyebrow">MY CONVERSATIONS</p><div id="chatConversations" class="conversation-list" aria-label="이전 대화"></div><p class="muted small">대화 기록은 이 PC에 보관됩니다.<br>비밀번호나 인증 키는 보내지 마세요.</p></aside>

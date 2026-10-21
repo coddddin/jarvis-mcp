@@ -354,7 +354,7 @@ class BoardStore:
                 'lease_until': row['lease_until'], 'updated': int(row['updated']), 'source': 'self_reported'}
                 for row in rows[:50]]
             # Aggregate by employee, not by unbounded session IDs. Incoming mail is not activity.
-            for table, column, timestamp in [('tasks', 'creator', 'updated'), ('tasks', 'owner', 'updated'),
+            for table, column, timestamp in [('tasks', 'creator', 'created'),
                                               ('messages', 'sender', 'created'), ('notes', 'author', 'created')]:
                 query = (f'SELECT substr({column},1,instr({column},":")-1) AS employee, '
                          f'MAX({timestamp}) AS latest FROM {table} GROUP BY employee')
