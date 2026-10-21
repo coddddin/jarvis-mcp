@@ -169,3 +169,80 @@ def test_browser_opens_only_after_successful_bind(monkeypatch):
     server = HUDServer(uvicorn.Config('unused'), open_url='http://127.0.0.1:8787')
     asyncio.run(server.startup())
     assert seen == ['http://127.0.0.1:8787']
+
+
+def test_activity_events_require_run_token_and_fixed_bounded_identity(setup):
+    store, selected, _, _ = setup
+    class Activity:
+        calls = []
+        def ingest(self, token, event):
+            self.calls.append((token, event))
+            if token != 'r' * 43:
+                raise ValueError('private-token-detail')
+            return {'status': 'accepted', 'run_id': event['run_id'], 'seq': event['seq'], 'private': 'not exposed'}
+        def inspect(self, **kwargs):
+            return {'runs': [], 'read_only': True}
+    activity = Activity()
+    client = TestClient(create_event_app(store, token='x' * 43, task_ids=[selected.task_id],
+        origins=['http://127.0.0.1:8787'], activity=activity))
+    run_id = 'a' * 32
+    url = 'http://127.0.0.1:8787/api/activity/runs/' + run_id + '/events'
+    event = {'run_id': run_id, 'epoch': 1, 'seq': 1, 'kind': 'start', 'phase': 'working', 'reason_code': 'none', 'result_ref': None}
+    headers = {'Authorization': 'Bearer ' + 'r' * 43}
+    assert client.post(url, json=event).status_code == 401
+    assert client.post(url, json=event, headers={**headers, 'Origin': 'https://evil.example'}).status_code == 403
+    assert client.post(url + '?token=bad', json=event, headers=headers).status_code == 403
+    assert client.post(url, json={**event, 'run_id': 'b' * 32}, headers=headers).status_code == 400
+    assert client.post(url, json={**event, 'extra': 'a' * 1025}, headers=headers).status_code == 413
+    assert activity.calls == []
+    response = client.post(url, json=event, headers={'Authorization': 'Bearer ' + 'x' * 43})
+    assert response.status_code == 400
+    assert response.json() == {'error': 'event_rejected'}
+    response = client.post(url, json=event, headers=headers)
+    assert response.json() == {'status': 'accepted', 'run_id': run_id, 'seq': 1}
+    assert response.headers['cache-control'] == 'no-store'
+    assert client.get('http://127.0.0.1:8787/api/activity', headers=headers).status_code == 401
+    assert client.get('http://127.0.0.1:8787/api/activity', headers={'Authorization': 'Bearer ' + 'x' * 43}).status_code == 200
+
+
+def test_activity_collector_failure_is_not_empty_success(setup):
+    store, selected, _, _ = setup
+    class Broken:
+        def inspect(self, **kwargs):
+            raise RuntimeError('private-error')
+    for activity in (None, Broken()):
+        client = TestClient(create_event_app(store, token='x' * 43, task_ids=[selected.task_id],
+            origins=['http://127.0.0.1:8787'], activity=activity))
+        response = client.get('http://127.0.0.1:8787/api/activity', headers={'Authorization': 'Bearer ' + 'x' * 43})
+        assert response.status_code == 503
+        assert response.json() == {'error': 'activity_unavailable'}
+
+
+def test_real_activity_store_http_reports_are_not_verification(setup):
+    from jarvis.agents.activity import ActivityStore
+    store, selected, _, _ = setup
+    activity = ActivityStore(store.guard)
+    registration = activity.register(owner='local:http-test', task_id='c' * 32)
+    client = TestClient(create_event_app(store, token='x' * 43, task_ids=[selected.task_id],
+        origins=['http://127.0.0.1:8787'], activity=activity))
+    url = 'http://127.0.0.1:8787/api/activity/runs/' + registration['run_id'] + '/events'
+    headers = {'Authorization': 'Bearer ' + registration['token']}
+    event = {'run_id': registration['run_id'], 'epoch': registration['epoch'], 'seq': 1,
+        'kind': 'start', 'phase': 'working', 'reason_code': 'none', 'result_ref': None}
+    assert client.post(url, json=event, headers=headers).json()['status'] == 'accepted'
+    assert client.post(url, json=event, headers=headers).json()['status'] == 'duplicate'
+    assert client.post(url, json={**event, 'seq': 2, 'kind': 'verification_passed'}, headers=headers).status_code == 400
+    assert client.post(url, json={**event, 'seq': 2, 'epoch': registration['epoch'] + 1}, headers=headers).status_code == 400
+    assert client.post(url, json={**event, 'seq': 3, 'kind': 'completed', 'phase': 'finished'}, headers=headers).status_code == 200
+    response = client.get('http://127.0.0.1:8787/api/activity', headers={'Authorization': 'Bearer ' + 'x' * 43})
+    data = response.json()
+    run = data['runs'][0]
+    assert data['control_supported'] is False
+    assert run['report']['source'] == 'self_reported'
+    assert run['report']['event']['kind'] == 'completed'
+    assert run['process']['source'] == 'observed'
+    assert run['process']['status'] == 'running'
+    assert run['heartbeat']['status'] == 'recent'
+    assert run['sequence_gap'] is True
+    assert run['verified'] == []
+    assert registration['token'] not in response.text

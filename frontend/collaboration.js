@@ -6,7 +6,7 @@
   let token=null, generation=0, busy=false, controller=null, fingerprint=null;
   const node=(tag, cls, text)=>{const n=document.createElement(tag);n.className=cls;if(text!==undefined)n.textContent=text;return n;};
   const time=value=>Number.isFinite(value)?new Intl.DateTimeFormat('ko-KR',{timeZone:'Asia/Seoul',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false}).format(new Date(value*1000)):'기록 없음';
-  function clear(){fingerprint=null;for(const id of ['collaborationAgents','collaborationMessages','collaborationNotes'])$(id).replaceChildren();$('collaborationNotice').textContent='';$('collaborationUpdated').textContent='조회 대기';}
+  function clear(){fingerprint=null;runFingerprint=null;$('activityNotice').textContent='';for(const id of ['collaborationAgents','collaborationMessages','collaborationNotes','activityRuns'])$(id).replaceChildren();$('collaborationNotice').textContent='';$('collaborationUpdated').textContent='조회 대기';}
   function render(data){
     if(data.schema_version!==1||data.source!=='self_reported'||data.read_only!==true||!Array.isArray(data.agents)||!Array.isArray(data.tasks)||!Array.isArray(data.timeline))throw new Error('invalid_snapshot');
     $('collaborationUpdated').textContent='최근 조회 '+time(data.observed_at);
@@ -61,12 +61,47 @@
     }catch(error){if(selected===token&&version===generation){$('collaborationNotice').textContent='갱신하지 못했습니다. 이전 표시가 있다면 과거 기록입니다. 현재 상태는 미확인입니다.';$('collaborationUpdated').textContent='갱신 중단';}}
     finally{clearTimeout(timeout);controller=null;busy=false;}
   }
+  let runBusy=false,runController=null,runFingerprint=null;
+  async function loadRuns(){
+    if(!token||document.hidden||!$('collaborationPanel').open||runBusy)return;
+    runBusy=true;const selected=token,version=generation;runController=new AbortController();
+    const timeout=setTimeout(()=>runController?.abort(),8000);
+    try{
+      const response=await fetch('/api/activity',{headers:{Authorization:'Bearer '+selected},cache:'no-store',credentials:'omit',signal:runController.signal});
+      if(selected!==token||version!==generation)return;
+      if(!response.ok)throw new Error('unavailable');
+      const data=await response.json();if(selected!==token||version!==generation)return;
+      if(!Array.isArray(data.runs)||data.control_supported!==false)throw new Error('invalid_activity');
+      $('activityNotice').textContent='프로세스와 보고 수신은 직접 관찰, 작업 단계는 자기 보고입니다. 작업 성공·검증 통과와 별개입니다. 최근 조회 '+time(data.observed_at)+(data.has_more?' · 일부 실행만 표시':'');
+      const next=JSON.stringify(data.runs);if(next===runFingerprint)return;runFingerprint=next;
+      const list=$('activityRuns');list.replaceChildren();
+      const heartbeatLabels={recent:'최근 보고 수신',delayed:'보고 지연 · 연결 미확인',unknown:'보고 수신 상태 미확인'};
+      const processLabels={running:'프로세스 생존 관찰',exited:'프로세스 종료 관찰',identity_mismatch:'프로세스 신원 불일치',unknown:'프로세스 확인 불가'};
+      const phaseLabels={queued:'대기 보고',working:'작업 중 보고',review:'검토 중 보고',summarizing:'정리 중 보고',finished:'종료 단계 보고'};
+      const kindLabels={start:'시작 보고',heartbeat:'생존 신호',progress:'진행 보고',result_received:'결과 수신 보고',completed:'실행 완료 보고',failed:'실패 보고'};
+      for(const run of data.runs.slice(0,20)){
+        const card=node('article','collaboration-agent');
+        card.append(node('h3','',run.owner+' · 실행 '+String(run.run_id).slice(0,8)));
+        card.append(node('p','muted small','직접 관찰: '+(heartbeatLabels[run.heartbeat?.status]||'확인 불가')+' · '+(processLabels[run.process?.status]||'확인 불가')));
+        const event=run.report?.event;
+        card.append(node('p','',event?'자기 보고: '+(phaseLabels[event.phase]||'단계 미확인')+' / '+(kindLabels[event.kind]||'종류 미확인'):'자기 보고 없음'));
+        card.append(node('p','muted small','검증: '+(Array.isArray(run.verified)&&run.verified.length?'별도 검증 기록 있음':'검증 근거 없음')));
+        if(run.fenced)card.append(node('p','collaboration-warning','이전 실행 · 새로운 담당 세대에 보고를 반영하지 않습니다.'));
+        if(run.sequence_gap)card.append(node('p','collaboration-warning','보고 순번 누락 · 일부 기록 미확인'));
+        list.append(card);
+      }
+      if(!data.runs.length)list.append(node('p','muted small','등록된 실행이 없습니다. 직원이 쉬고 있다는 뜻은 아닙니다.'));
+      if(data.runs.length>20)list.append(node('p','muted small','추가 실행 '+(data.runs.length-20)+'건은 표시 범위 밖입니다.'));
+    }catch(error){if(selected===token&&version===generation)$('activityNotice').textContent='실행 관찰을 갱신하지 못했습니다. 이전 표시가 있다면 과거 기록이며, 현재 상태는 미확인입니다.';}
+    finally{clearTimeout(timeout);runController=null;runBusy=false;}
+  }
+  function refresh(){load();loadRuns();}
   window.addEventListener('jarvis-connection',event=>{
     const next=event.detail.token||null;
-    if(next!==token){generation++;controller?.abort();clear();token=next;}
-    $('collaborationPanel').hidden=!token;if(token)load();
+    if(next!==token){generation++;controller?.abort();runController?.abort();clear();token=next;}
+    $('collaborationPanel').hidden=!token;if(token)refresh();
   });
-  $('collaborationPanel').addEventListener('toggle',load);
-  document.addEventListener('visibilitychange',()=>{if(!document.hidden)load();});
-  setInterval(load,5000);
+  $('collaborationPanel').addEventListener('toggle',refresh);
+  document.addEventListener('visibilitychange',()=>{if(!document.hidden)refresh();});
+  setInterval(refresh,5000);
 })();
