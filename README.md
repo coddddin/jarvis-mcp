@@ -16,7 +16,7 @@
 
 ## 현재 상태
 
-Phase 1/2와 Phase 2.5 핵심 초기 구현을 검증했습니다. 기존 MCP 도구 27개를 보존하고 [REA 정적 분석·Agent Reach 등록 RSS](docs/guides/rea-agent-reach.md) 2개를 추가해 현재 29개입니다. 로컬 모델/격리 QA·명시적 백업 적용·영속 예산/기억·인증 이벤트는 운영자 CLI로 제공합니다. Phase 2.5 전체 검사는 [344개 통과/건너뜀 0개](docs/reports/phase-02-5.md)입니다. Phase 3의 [읽기 전용 작업 HUD](docs/guides/local-hud.md)도 실제 기록에 연결했습니다. 일반 프로젝트 자동 개발과 3D/음성 HUD는 후속 범위입니다.
+Phase 1/2와 Phase 2.5 핵심 초기 구현을 검증했습니다. 기존 MCP 도구 27개를 보존하고 [REA 정적 분석·Agent Reach 등록 RSS](docs/guides/rea-agent-reach.md) 2개를 추가해 현재 29개입니다. 로컬 모델/격리 QA·명시적 백업 적용·영속 예산/기억·인증 이벤트는 운영자 CLI로 제공합니다. Phase 2.5 전체 검사는 [344개 통과/건너뜀 0개](docs/archive/reports/phase-02-5.md)입니다. Phase 3의 [읽기 전용 작업 HUD](docs/guides/local-hud.md)도 실제 기록에 연결했습니다. 일반 프로젝트 자동 개발과 3D/음성 HUD는 후속 범위입니다.
 
 작업 화면은 `scripts/start-hud.cmd`를 실행한 뒤 연결 파일을 선택합니다. 설치된 Ollama/Docker와 화면 서버의 실행은 별개입니다.
 

@@ -1,6 +1,6 @@
 # 에이전트 QA·예산·기억·이벤트 운영
 
-[문서 안내](../README.md) · [작업 및 적용 안내](agent-tasks.md) · [실제 검증 기록](../reports/phase-02-5.md)
+[문서 안내](../README.md) · [작업 및 적용 안내](agent-tasks.md) · [실제 검증 기록](../archive/reports/phase-02-5.md)
 
 ## 세 가지 QA 범위
 

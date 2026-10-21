@@ -22,7 +22,7 @@ from jarvis.agents.lead_planner import LeadLedger, plan_next
 from jarvis.agents import process_watch
 from jarvis.agents.dispatch_service import DispatchService, KillOnCloseJob, codex_workload_gate, read_pause, read_usage_sample
 from jarvis.agents.process_registry import ProcessRegistry, observe_spawned
-from jarvis.agents.worker_adapters import ADAPTERS, roster_problems
+from jarvis.agents.worker_adapters import ADAPTERS, employed, roster_problem_codes, roster_problems
 from jarvis.agents.dispatch_policy import Decision
 from jarvis.app.runtime import load_guardrails
 from jarvis.core.paths import CONFIG_ROOT, PROJECT_ROOT
@@ -181,7 +181,19 @@ def run_lead(guard, board, roster, config, now):
         return {'action': 'none', 'reason': 'lead_error', 'error': type(exc).__name__}
 
 
-def send_digest_if_due(guard, board, ledger, config, now):
+def blocked_now(roster, config, board):
+    """[(employee, problem codes, pending)] for enabled, employed employees the adapter check keeps asleep.
+
+    Recomputed when needed rather than logged: the check depends only on code and roster, so it gives the
+    same answer tick does. It reflects the current state, not a history of the day."""
+    codes = roster_problem_codes(roster)
+    working = employed(roster)
+    return [(name, codes[name], board.pending_for_employee(name))
+            for name, settings in config.employees.items()
+            if settings.enabled and name in working and codes.get(name)]
+
+
+def send_digest_if_due(guard, board, ledger, config, now, roster=None):
     if not digest_due(now, hour=config.digest_hour, last_sent_day=ledger.last_digest_day()):
         return False
     day = time.strftime('%Y-%m-%d', time.localtime(now))
@@ -190,8 +202,14 @@ def send_digest_if_due(guard, board, ledger, config, now):
         done = [t for t in board.list(status='done', limit=100)['tasks'] if t['updated'] >= day_start]
         review = board.list(status='review', limit=50)['tasks']
         stale = [t for t in board.list(status='claimed', limit=50)['tasks'] if t['stale']]
+        try:  # the blocked line is extra information; its failure must not hold back the digest
+            roster = roster if roster is not None else load_roster(workspace=guard.workspace)
+            blocked = blocked_now(roster, config, board)
+        except Exception as exc:
+            log_service_error(exc)
+            blocked = None
         text = build_digest(day=day, done=done, review=review, stale=stale, runs=ledger.runs_today_by_status(),
-                            exhausted=ledger.exhausted_all(), pause=read_pause(guard))
+                            exhausted=ledger.exhausted_all(), pause=read_pause(guard), blocked=blocked)
         board.send(DISPATCHER_ID, 'user:heejun', text)
         ledger.mark_digest(day)
         return True
@@ -244,7 +262,7 @@ def tick(dry_run=False):
     if blocked:
         log_service_error(RuntimeError('Adapter check failed; not woken: '
                                        + ' | '.join(p for name in blocked for p in problems[name])))
-    send_digest_if_due(guard, board, ledger, config, now)
+    send_digest_if_due(guard, board, ledger, config, now, roster)
     threads = []
     for decision in decisions:
         if not decision.wake:

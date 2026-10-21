@@ -1,6 +1,6 @@
 # W5 디스패처 (자동 순환 v1)
 
-[문서 안내](../README.md) · [게시판](board.md) · [소통 규약](communication.md) · [직원 명부](agents-roster.md)
+[문서 안내](../README.md) · [게시판·소통](board.md) · [직원 명부](agents-roster.md)
 
 게시판에서 직원 앞으로 온 일이 있으면 그 직원을 자동 실행(헤드리스)으로 깨운다. 직원은 우편함을 읽고 일하고, 다음 사람에게 넘긴다. 사람은 방향과 머지 승인만 한다.
 
@@ -20,7 +20,7 @@
    - Claude Code: `claude -p --setting-sources "" --strict-mcp-config`(자비스만) `--permission-mode acceptEdits`, 허용 도구는 파일 편집·git 상태/커밋·프로젝트 pytest·게시판 9개. 권한 우회 옵션은 쓰지 않는다.
    - Codex: `codex -a never exec --sandbox workspace-write -C <worktree> --add-dir <.git>`. 네트워크 push는 디스패처가 한다.
    - Cursor(수습): `agent -p --approve-mcps --trust`, `--force` 없음. 파일 수정·커밋 없이 검토·제안만. 프로젝트 `.cursor/cli.json`이 게시판 도구만 허용한다.
-   - OpenCode(수습, 무료 모델): `opencode-cli run --standalone -m <무료 모델> --format json`, 설정은 `OPENCODE_CONFIG_CONTENT`(파일 수정·웹·셸 금지, 게시판 도구만). 403 FreeTierError는 `eligibility`로 기록하고 대기. 자세히는 [직원 명부](agents-roster.md).
+   - OpenCode(수습, 무료 모델): `opencode-cli run --standalone -m <무료 모델> --format json`, 설정은 `OPENCODE_CONFIG_CONTENT`(파일 수정·웹·셸·작업 폴더 밖 접근 금지, 게시판 도구만). 403 FreeTierError는 `eligibility`로 기록하고 대기. 자세히는 [직원 명부](agents-roster.md).
 5. 끝나면 장부(`작업공간/.jarvis-dispatch/ledger.sqlite3`)에 상태·종료 코드·토큰을 기록한다. 로그는 `%LOCALAPPDATA%\JarvisDispatch\logs`.
 6. 한도 오류(usage/rate limit, quota, 429 등)면 1시간 대기 후 다시 시도하고, 연속이면 2배씩 최대 6시간. 회복은 다음 실행 결과로 확인한다(시간으로 추정하지 않음).
 7. 브랜치에 새 커밋이 있으면 `origin`에 push. 실패·시간 초과·한도는 `user:heejun`에게 게시판 메시지로 알린다.
@@ -50,7 +50,7 @@
 ## 순환 닫기: 로컬 팀장과 하루 요약
 
 - 로컬 팀장: 모든 직원에게 처리할 메시지도 실행 중인 일도 없을 때만 tick이 `lead_planner.plan_next`를 부른다. 팀장은 `docs/PLAN.md`의 미체크 항목 하나를 작업으로 만들고 담당 직원에게 메시지로 배정한다. 같은 tick에서 그 직원을 바로 깨운다. 판단은 로컬 Ollama(`lead_judge.ollama_judge`)가 하고, Ollama가 꺼져 있거나 판단 함수가 없으면 팀장만 쉬고 직원 깨우기는 계속한다. 하루 생성 상한은 `lead.daily_tasks`(기본 3). 민감 작업은 작업을 만들지 않고 사용자에게 승인 요청만 보낸다.
-- 하루 요약: `digest_hour`(기본 21시) 이후 첫 tick에서 하루 한 번 `user:heejun`에게 게시판 메시지를 보낸다. 내용은 오늘 완료한 작업, 머지·검토 대기, 멈춘 담당, 직원별 깨운 횟수와 결과, 한도 대기, 일시정지 여부(최대 1000자).
+- 하루 요약: `digest_hour`(기본 21시) 이후 첫 tick에서 하루 한 번 `user:heejun`에게 게시판 메시지를 보낸다. 내용은 오늘 완료한 작업, 머지·검토 대기, 멈춘 담당, 직원별 깨운 횟수와 결과, 한도 대기, 일시정지 여부, 현재 어댑터 점검으로 깨우지 않는 직원과 사유(명령 조각 없이 분류만, 지금 기준이며 하루 이력은 아님)(최대 1000자).
 
 ## 명령
 

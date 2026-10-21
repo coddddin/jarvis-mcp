@@ -87,7 +87,7 @@ flowchart TD
 
 최종 전체 검사 `212 passed in 15.58s`, 건너뜀 0개입니다. 임의 cwd의 기존 stdio 명령, python -m jarvis, OAuth 도움말(인증 실행 없음), 두 독립 작업자, 공통 보안·저장·검색·도구 동작을 확인했습니다. scripts/check_architecture.py와 scripts/check_docs.py도 통과했습니다. 전체 import 이동이므로 서버를 재연결해 새 코드를 불러와야 합니다. 이 결과는 Claude UI에서 재연결됐음을 의미하지 않습니다.
 
-이전 전 85개 코드/설정/문서 파일은 artifacts/refactor/before-feature-layout.zip에 보관했습니다. 이 백업에는 .jarvis-auth, JarvisWorkspace, sources, .venv가 없음을 확인했습니다. 새 도구·모델·비서 기능은 이번에 추가하지 않았습니다. 상세 검증 이력은 [Phase 2 보고서](reports/phase-02.md)를 따릅니다.
+이전 전 85개 코드/설정/문서 파일은 artifacts/refactor/before-feature-layout.zip에 보관했습니다. 이 백업에는 .jarvis-auth, JarvisWorkspace, sources, .venv가 없음을 확인했습니다. 새 도구·모델·비서 기능은 이번에 추가하지 않았습니다. 상세 검증 이력은 [Phase 2 보고서](archive/reports/phase-02.md)를 따릅니다.
 
 ## Phase 2.5 첫 확장 (2026-10-18)
 

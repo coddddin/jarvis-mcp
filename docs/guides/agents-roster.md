@@ -58,12 +58,18 @@
 ## OpenCode (무료 모델 직원)
 
 - 실행 파일: OpenCode Desktop에 들어 있는 `%LOCALAPPDATA%\Programs\@opencodedesktop\resources\opencode-cli.exe`(v2.0.32). 로그인 없이 `opencode/*-free` 모델 9개.
-- 디스패처 실행: `opencode-cli run --standalone -m opencode/glm-5.3-flash-free --format json "<지시>"`, 설정은 환경 변수 `OPENCODE_CONFIG_CONTENT`로 넣는다(파일 수정·웹 접속·셸 금지, `git status/diff/log`만 허용, 자비스 MCP 연결).
+- 디스패처 실행: `opencode-cli run --standalone -m opencode/glm-5.3-flash-free --format json "<지시>"`, 설정은 환경 변수 `OPENCODE_CONFIG_CONTENT`로 넣는다(파일 수정·웹 접속·셸·작업 폴더 밖 접근·하위 에이전트 금지, `git status/diff/log`만 허용, 자비스 MCP 연결).
 - `--standalone`이 필요하다. 없으면 OpenCode Desktop의 백그라운드 서버에 붙어 넣은 설정(MCP)이 적용되지 않는다. 입력은 반드시 막아서(stdin 없음) 실행한다. 터미널 입력이 붙어 있으면 자체 서버 기동 단계에서 멈춘다.
 - 자비스 도구는 `tools: {"jarvis_*": false, "jarvis_board_*": true}`로 게시판만 연다. 2026-10-21 실측: 밑줄 패턴은 다른 자비스 도구(시스템 상태 등)를 막고, 점 패턴(`jarvis.*`)은 막지 못했다.
 - 403 `FreeTierError`: 2026-10-20 실패는 직접 만든 제한 에이전트(`--agent jarvis-proposal`)로 실행한 것이 원인으로 보인다(공개 이슈와 같은 양상). 기본 에이전트에 권한만 제한하면 2026-10-21 시험 7가지 모두 정상 응답했다. 실행 중 403이 나오면 장부에 `eligibility`로 기록하고 한도와 같이 1시간부터 대기한다.
 - 무료 모델은 입력이 학습에 쓰일 수 있다는 지적이 있어 개인정보(메일·일정·화면·개인 문서)는 맡기지 않는다. 지시문과 도구 제한 양쪽으로 막는다.
+- 권한 기본값(opencode.ai/docs/permissions): 대부분 allow, `external_directory`는 ask, `read`는 allow(.env만 거부). `--auto` 없는 `opencode run`에서 ask가 어떻게 처리되는지는 문서에 없다. 그래서 `external_directory`·`websearch`·`webfetch`·`task`(하위 에이전트)를 명시적으로 deny한다. 작업 폴더 안 읽기는 검토·제안에 필요해 허용한다. 셸 규칙은 문서의 새 이름 `shell`과 v2.0.32 스키마의 `bash`에 같이 넣는다.
+- 경계 점검: `worker_adapters.privacy_markers`가 위 deny와 게시판 전용 도구가 풀린 것을 찾고, 디스패처는 그 직원을 수습·정식 상관없이 깨우지 않는다(사유 `privacy_open`, 하루 요약 '외부 읽기·웹 차단 안 됨'). 실제 실행으로 deny를 확인하는 단계는 사용자 승인 후 진행한다(2026-10-22 기준 미검증).
 - 사용량: OpenCode JSON 출력에 토큰 수가 항상 담기지 않아 장부에는 실행 횟수만 남을 수 있다.
+
+## 업무 평가 (W4-5 1단계)
+
+`python -m jarvis.cli.evaluation [--days N]`은 게시판을 읽기 전용으로 열어 직원별(세션 합침) 작업 수, 상태별 개수, 다른 에이전트의 finding 수, finding 뒤 재인계(재작업), 완료 작업의 생성부터 마지막 인계까지 시간을 JSON으로 낸다. 생성부터 현재 상태까지 상태 변경 기록(`status_events`)이 다 있는 작업은 정확히 센다(재작업 주기, 지적 뒤 재검토, 첫 claim부터 done까지 시간, done 처리자 귀속). 기록이 없는 옛 작업만 노트 기반 근사치로 세고, 그런 작업이 있으면 출력에 `approximate: true`가 붙는다. 배정 반영은 2단계에서 한다.
 
 ## 한계 (다음 단계)
 

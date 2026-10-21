@@ -3,13 +3,17 @@ from pathlib import Path
 import re
 from urllib.parse import unquote, urlsplit
 
-REQUIRED = ('README.md', 'AGENTS_CONTEXT.md', 'docs/README.md', 'docs/PLAN.md',
-            'docs/DEVELOPMENT.md', 'docs/guides/system-tools.md',
-            'docs/guides/knowledge-and-google.md', 'docs/reports/phase-01.md',
-            'docs/reports/phase-02.md', 'docs/guides/agent-tasks.md',
-            'docs/reports/phase-02-5.md', 'docs/guides/agent-controls.md',
-            'docs/reports/phase-03.md', 'docs/guides/local-hud.md',
-            'docs/guides/rea-agent-reach.md', 'docs/reports/rea-agent-reach.md')
+REQUIRED = ('README.md',
+            'AGENTS_CONTEXT.md',
+            'docs/README.md',
+            'docs/PLAN.md',
+            'docs/DEVELOPMENT.md',
+            'docs/guides/system-tools.md',
+            'docs/guides/knowledge-and-google.md',
+            'docs/guides/agent-tasks.md',
+            'docs/guides/agent-controls.md',
+            'docs/guides/local-hud.md',
+            'docs/guides/rea-agent-reach.md')
 
 
 def targets(text):

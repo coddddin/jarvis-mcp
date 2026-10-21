@@ -99,8 +99,27 @@ def digest_due(now, *, hour, last_sent_day):
     return local.tm_hour >= hour and time.strftime('%Y-%m-%d', local) != last_sent_day
 
 
-def build_digest(*, day, done, review, stale, runs, exhausted, pause):
-    """Short Korean daily report for user:heejun (board message, max 1000 chars, no double quotes)."""
+# Korean labels for worker_adapters.PROBLEM_CODES; unknown codes are left out of user-facing text.
+PROBLEM_LABELS = {'no_roster': '명부에 없음', 'retired': '퇴사', 'probation_can_edit': '수습인데 파일 수정 가능',
+                  'label_mismatch': '수정 불가 표시와 실제 명령 불일치', 'privacy_open': '외부 읽기·웹 차단 안 됨'}
+
+
+def _blocked_line(blocked):
+    """'- 현재 점검으로 깨우지 않음: cursor(수습인데 파일 수정 가능, 받은 일 2건)' or None."""
+    parts = []
+    for employee, codes, pending in blocked[:10]:
+        labels = [PROBLEM_LABELS[code] for code in codes if code in PROBLEM_LABELS]
+        if not labels:
+            continue
+        reason = '·'.join(labels) + (f', 받은 일 {pending}건' if pending else '')
+        parts.append(f'{employee}({reason})')
+    return '- 현재 점검으로 깨우지 않음: ' + ', '.join(parts) if parts else None
+
+
+def build_digest(*, day, done, review, stale, runs, exhausted, pause, blocked=None):
+    """Short Korean daily report for user:heejun (board message, max 1000 chars, no double quotes).
+
+    blocked: [(employee, problem codes, pending messages)] for employees the adapter check keeps asleep now."""
     def names(items, limit):
         shown = [f"{i['title'][:60]}({(i.get('owner') or '-').split(':')[0]})" for i in items[:limit]]
         more = f' 외 {len(items) - limit}건' if len(items) > limit else ''
@@ -118,6 +137,9 @@ def build_digest(*, day, done, review, stale, runs, exhausted, pause):
             f"{who} {time.strftime('%H:%M', time.localtime(until))}까지" for who, until in sorted(exhausted.items())))
     if pause.get('paused'):
         lines.append('- 디스패처 일시정지 중' + (f": {pause['reason']}" if pause.get('reason') else ''))
+    line = _blocked_line(blocked or [])
+    if line:
+        lines.append(line[:300])
     return '\n'.join(lines).replace('"', "'")[:1000]
 
 

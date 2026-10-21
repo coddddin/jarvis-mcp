@@ -274,3 +274,28 @@ def test_missing_session_adapter_is_unavailable_not_idle(setup):
     response = client.get('http://127.0.0.1:8787/api/sessions', headers={'Authorization': 'Bearer '+'x'*43})
     assert response.status_code == 503
     assert response.json() == {'error': 'sessions_unavailable'}
+
+
+def test_dispatcher_panel_is_served_and_its_api_is_wired(tmp_path):
+    # W5 integration-4: the HUD serves dispatcher.js and mounts the token-gated dispatcher routes.
+    import json
+    guard = Guardrails(tmp_path)
+    store = TaskStore(guard)
+    selected = store.create(TaskRequest(summary='Selected local task'))
+    config = tmp_path / 'dispatcher.json'
+    config.write_text(json.dumps({'version': 1, 'enabled': True, 'interval_minutes': 10, 'daily_runs': 10,
+                                  'run_timeout_minutes': 30, 'employees': {'codex': {'enabled': True}}}),
+                      encoding='utf-8')
+    origin = 'http://127.0.0.1:8787'
+    client = TestClient(create_event_app(store, token='x' * 43, task_ids=[selected.task_id], origins=[origin],
+                                         dispatcher=(guard, config)), base_url=origin)
+    assert client.get('/assets/dispatcher.js').status_code == 200
+    assert '/assets/dispatcher.js' in client.get('/').text
+    assert client.get('/api/dispatcher').status_code == 401
+    ok = client.get('/api/dispatcher', headers={'Authorization': 'Bearer ' + 'x' * 43, 'Origin': origin})
+    assert ok.status_code == 200 and ok.json()['config_enabled'] is True
+
+
+def test_dispatcher_routes_absent_without_dispatcher(setup):
+    _, _, _, client = setup
+    assert client.get('/api/dispatcher').status_code == 404

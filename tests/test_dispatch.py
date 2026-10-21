@@ -367,3 +367,79 @@ def test_unverifiable_owner_holds_only_until_stale_after(tmp_path):
     row = [r for r in ledger.summary()['recent'] if r['id'] == run][0]
     assert row['status'] == 'lost' and row['note'] == 'owner_unverifiable'
     assert ledger.try_start('codex', daily_runs=5, stale_after=1800) is not None
+
+
+def test_digest_lists_employees_currently_blocked_by_the_adapter_check():
+    from jarvis.agents.dispatch_policy import build_digest
+    base = dict(day='2026-10-21', done=[], review=[], stale=[], runs={}, exhausted={}, pause={'paused': False})
+    assert '점검' not in build_digest(**base)
+    assert '점검' not in build_digest(**base, blocked=[])
+    text = build_digest(**base, blocked=[('cursor', ['probation_can_edit'], 2),
+                                         ('opencode', ['label_mismatch', 'probation_can_edit'], 0)])
+    line = [l for l in text.splitlines() if '점검' in l][0]
+    assert line == ('- 현재 점검으로 깨우지 않음: cursor(수습인데 파일 수정 가능, 받은 일 2건), '
+                    'opencode(수정 불가 표시와 실제 명령 불일치·수습인데 파일 수정 가능)')
+    assert '--' not in text and len(text) <= 1000
+
+
+def test_digest_ignores_unknown_codes_and_stays_bounded():
+    from jarvis.agents.dispatch_policy import build_digest
+    many = [(f'worker{i}', ['probation_can_edit', 'mystery'], 99) for i in range(200)]
+    text = build_digest(day='d', done=[], review=[], stale=[], runs={}, exhausted={}, pause={}, blocked=many)
+    assert 'mystery' not in text and len(text) <= 1000
+
+
+def test_send_digest_includes_blocked_employees(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from jarvis.agents import worker_adapters as wa
+    from jarvis.cli import dispatch as cli_dispatch
+    from jarvis.core.roster import load_roster
+    from jarvis.features.board.service import BoardStore
+    guard = Guardrails(tmp_path)
+    roster = load_roster()
+    board = BoardStore(guard, roster=roster)
+    board.send('user:heejun', 'cursor', 'review please')
+    ledger = DispatchLedger(guard, alive=lambda pid: True)
+    config = DispatcherConfig.model_validate({
+        'version': 1, 'enabled': True, 'interval_minutes': 10, 'daily_runs': 10, 'run_timeout_minutes': 30,
+        'digest_hour': 0, 'employees': {'cursor': {}, 'claude-code': {}, 'opencode': {'enabled': False}}})
+    original = wa.ADAPTERS['cursor'].work_command
+    from dataclasses import replace
+    monkeypatch.setitem(wa.ADAPTERS, 'cursor', replace(wa.ADAPTERS['cursor'], work_command=lambda r: original(r) + ['-f']))
+    opencode = wa.ADAPTERS['opencode'].work_command
+    monkeypatch.setitem(wa.ADAPTERS, 'opencode', replace(wa.ADAPTERS['opencode'], work_command=lambda r: opencode(r) + ['--yolo']))
+    sent = []
+    monkeypatch.setattr(board, 'send', lambda sender, to, body, **kw: sent.append(body))
+    assert cli_dispatch.send_digest_if_due(guard, board, ledger, config, NOW, roster=roster)
+    line = [l for l in sent[0].splitlines() if '점검' in l][0]
+    assert line == '- 현재 점검으로 깨우지 않음: cursor(수습인데 파일 수정 가능, 받은 일 1건)'   # opencode disabled in config
+    assert '-f' not in sent[0]
+
+
+def test_digest_is_still_sent_when_the_blocked_check_fails(tmp_path, monkeypatch):
+    # Main review: the blocked line is extra information; its failure must not hold back the digest.
+    from jarvis.cli import dispatch as cli_dispatch
+    from jarvis.core.roster import load_roster
+    from jarvis.features.board.service import BoardStore
+    guard = Guardrails(tmp_path)
+    roster = load_roster()
+    board = BoardStore(guard, roster=roster)
+    ledger = DispatchLedger(guard, alive=lambda pid: True)
+    config = DispatcherConfig.model_validate({
+        'version': 1, 'enabled': True, 'interval_minutes': 10, 'daily_runs': 10, 'run_timeout_minutes': 30,
+        'digest_hour': 0, 'employees': {'cursor': {}}})
+    sent, logged = [], []
+    monkeypatch.setattr(board, 'send', lambda sender, to, body, **kw: sent.append(body))
+    monkeypatch.setattr(cli_dispatch, 'blocked_now', lambda *a: (_ for _ in ()).throw(RuntimeError('roster gone')))
+    monkeypatch.setattr(cli_dispatch, 'log_service_error', logged.append)
+    assert cli_dispatch.send_digest_if_due(guard, board, ledger, config, NOW, roster)
+    assert sent and sent[0].startswith('[알림] 자비스 하루 요약') and '점검' not in sent[0]
+    assert len(logged) == 1 and 'roster gone' in str(logged[0])
+    assert ledger.last_digest_day() is not None          # marked sent: no retry every tick
+
+
+def test_digest_labels_privacy_open():
+    from jarvis.agents.dispatch_policy import build_digest
+    text = build_digest(day='d', done=[], review=[], stale=[], runs={}, exhausted={}, pause={},
+                        blocked=[('opencode', ['privacy_open'], 1)])
+    assert '- 현재 점검으로 깨우지 않음: opencode(외부 읽기·웹 차단 안 됨, 받은 일 1건)' in text

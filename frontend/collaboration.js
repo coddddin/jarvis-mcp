@@ -106,7 +106,8 @@
       if(!response.ok)throw new Error('unavailable');
       const data=await response.json();if(selected!==token||version!==generation)return;
       if(data.schema_version!==1||data.source!=='self_reported'||data.read_only!==true||data.identity_verified!==false||!Array.isArray(data.sessions))throw new Error('invalid_sessions');
-      $('sessionNotice').textContent='플랫폼 접점의 자기 보고 · 신원과 모델 내부 상태를 확인한 정보가 아닙니다. 수신 시각만 관찰합니다. 최근 조회 '+time(data.observed_at);
+      const capacityWarning=(data.capacity?.events?.reached?' 이벤트 저장 한도 도달 · 새 보고 저장 중단.':'')+(data.capacity?.sessions?.reached?' 세션 저장 한도 도달 · 새 세션 등록 중단.':'');
+      $('sessionNotice').textContent='플랫폼 접점의 자기 보고 · 신원과 모델 내부 상태를 확인한 정보가 아닙니다. 수신 시각만 관찰합니다. 최근 조회 '+time(data.observed_at)+(capacityWarning?' 저장 기록은 자동 삭제하지 않습니다.'+capacityWarning:'');
       const next=JSON.stringify(data.sessions);if(next===sessionFingerprint)return;sessionFingerprint=next;
       const list=$('sessionCards');list.replaceChildren();
       const labels={unknown:'상태 미확인',started:'세션 시작 보고',turn_started:'응답 시작 보고',tool_started:'도구 시작 보고',tool_finished:'도구 종료 보고',permission_requested:'승인 대기 보고',turn_stopped:'응답 종료 보고',interrupted:'중단 보고',ended:'세션 종료 보고'};

@@ -315,3 +315,76 @@ def test_pending_for_employee_ignores_broadcasts_and_messages_any_session_read(b
     assert board.pending_for_employee('codex') == 1
     board.inbox('codex:auto')
     assert board.pending_for_employee('codex') == 0
+
+
+def _events(board):
+    import sqlite3
+    db = sqlite3.connect(board.guard.workspace / BoardStore.DATABASE)
+    try:
+        return [tuple(row) for row in db.execute(
+            'SELECT task_id,from_status,to_status,agent,at FROM status_events ORDER BY id')]
+    finally:
+        db.close()
+
+
+def test_status_events_record_transitions_but_not_renewals_or_text(board, clock):
+    task = make(board)
+    board.claim(CODEX, task)
+    board.claim(CODEX, task)               # renewal: same owner, status unchanged
+    board.heartbeat(CODEX, task)
+    board.note(CODEX, task, 'handoff', 'secret-free summary text')
+    clock.now += 60
+    board.release(CODEX, task, 'review', 'summary text stays in notes')
+    board.claim(CLAUDE, task)
+    board.release(CLAUDE, task, 'done', 'merged', verification='pytest ok')
+    t = clock.now
+    assert _events(board) == [(task, None, 'open', CODEX, t - 60), (task, 'open', 'claimed', CODEX, t - 60),
+                              (task, 'claimed', 'review', CODEX, t), (task, 'review', 'claimed', CLAUDE, t),
+                              (task, 'claimed', 'done', CLAUDE, t)]
+    assert not any('summary' in str(part) for row in _events(board) for part in row)
+
+
+def test_stale_takeover_is_recorded_with_the_new_owner(board, clock):
+    task = make(board)
+    board.claim(CODEX, task, lease_minutes=5)
+    clock.now += 6 * 60
+    board.claim(CLAUDE, task)
+    assert _events(board)[-1] == (task, 'claimed', 'claimed', CLAUDE, clock.now)
+
+
+def test_status_events_keep_only_the_newest_rows(board, monkeypatch):
+    import jarvis.features.board.service as service
+    monkeypatch.setattr(service, 'MAX_EVENTS', 3)
+    task = make(board)
+    for _ in range(3):
+        board.claim(CODEX, task)
+        board.release(CODEX, task, 'open', 'again')
+    events = _events(board)
+    assert len(events) == 3 and events[-1][2] == 'open' and events[0][1] is not None
+
+
+def test_deleting_a_task_removes_its_status_events(board):
+    import sqlite3
+    keep, gone = make(board), make(board, paths=('other.py',))
+    board.claim(CODEX, gone)
+    db = sqlite3.connect(board.guard.workspace / BoardStore.DATABASE)
+    with db:
+        db.execute('DELETE FROM tasks WHERE id=?', (gone,))
+    db.close()
+    assert {row[0] for row in _events(board)} == {keep}
+
+
+def test_existing_board_without_status_events_is_migrated_in_place(tmp_path, clock):
+    import sqlite3
+    (tmp_path / BoardStore.DIRECTORY).mkdir()
+    db = sqlite3.connect(tmp_path / BoardStore.DATABASE)
+    with db:
+        db.execute('CREATE TABLE tasks (id TEXT PRIMARY KEY, title TEXT NOT NULL, detail TEXT NOT NULL, '
+                   'status TEXT NOT NULL, creator TEXT NOT NULL, owner TEXT, lease_until REAL, paths TEXT NOT NULL, '
+                   'depends_on TEXT NOT NULL, created REAL NOT NULL, updated REAL NOT NULL)')
+        db.execute("INSERT INTO tasks VALUES (?,'Old','','open',?,NULL,NULL,'[\"old.py\"]','[]',1,1)", ('a' * 32, CODEX))
+    db.close()
+    board = BoardStore(Guardrails(tmp_path), clock=clock)
+    claimed = board.claim(CLAUDE, 'a' * 32)
+    assert claimed['owner'] == CLAUDE and board.get('a' * 32)['title'] == 'Old'
+    assert _events(board) == [('a' * 32, 'open', 'claimed', CLAUDE, clock.now)]

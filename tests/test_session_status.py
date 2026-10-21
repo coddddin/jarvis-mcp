@@ -78,7 +78,7 @@ def test_session_end_is_terminal_until_explicit_resume_and_old_turn_stays_termin
     assert store.inspect()['sessions'][0]['turn_id'] == 'new'
 
 
-@pytest.mark.parametrize('change', [dict(employee='claude-code'), dict(source='observed'),
+@pytest.mark.parametrize('change', [dict(employee='cursor'), dict(source='observed'),
     dict(event='verification_passed'), dict(session_id='../private'), dict(event_id='invalid'),
     dict(turn_id='x'*81), dict(command='secret-command'), dict(tool_output='private-output')])
 def test_rejects_unknown_content_and_unsafe_ids(store, change):
@@ -155,3 +155,51 @@ def test_short_timeout_reports_lock_failure_without_changing_prior_state(tmp_pat
 def test_invalid_lock_timeout_is_rejected(tmp_path, timeout):
     with pytest.raises(ValueError, match='timeout'):
         SessionStatusStore(Guardrails(tmp_path), busy_timeout=timeout)
+
+
+@pytest.mark.parametrize('first,last', [('turn_stopped','interrupted'), ('interrupted','turn_stopped')])
+def test_first_terminal_report_is_stable_in_both_tables(store, first, last):
+    store.report(signal())
+    store.report(signal(first))
+    assert store.report(signal(last))['status'] == 'ignored'
+    assert store.inspect()['sessions'][0]['state'] == first
+    with store.connection(write=False) as db:
+        assert db.execute('SELECT terminal FROM turns').fetchone()[0] == first
+
+
+def test_old_stop_after_explicit_session_resume_cannot_become_current(store):
+    store.report(signal())
+    store.report(signal('session_ended', None))
+    store.report(signal('session_started', None))
+    assert store.report(signal('turn_stopped'))['status'] == 'ignored'
+    current = store.inspect()['sessions'][0]
+    assert current['state'] == 'started' and current['turn_id'] is None
+
+
+def test_claude_and_codex_sessions_are_isolated(store):
+    first = signal()
+    store.report(first)
+    store.report({**signal('turn_started'), 'employee': 'claude-code'})
+    store.report({**signal('turn_stopped'), 'employee': 'claude-code'})
+    rows = {row['employee']: row for row in store.inspect()['sessions']}
+    assert rows['codex']['state'] == 'turn_started'
+    assert rows['claude-code']['state'] == 'turn_stopped'
+
+
+def test_capacity_remains_readable_and_records_are_not_deleted(store):
+    store.MAX_EVENTS = store.MAX_SESSIONS = 1
+    store.report(signal())
+    with pytest.raises(SessionStatusError):
+        store.report(signal('tool_started'))
+    capacity = store.inspect()['capacity']
+    assert capacity['events'] == {'used': 1, 'limit': 1, 'reached': True}
+    assert capacity['sessions'] == {'used': 1, 'limit': 1, 'reached': True}
+    assert capacity['automatic_deletion'] is False
+    assert store.inspect()['sessions'][0]['state'] == 'turn_started'
+
+
+def test_repeated_start_does_not_regress_current_tool_report(store):
+    store.report(signal())
+    store.report(signal('tool_started'))
+    assert store.report(signal())['status'] == 'ignored'
+    assert store.inspect()['sessions'][0]['state'] == 'tool_started'

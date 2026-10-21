@@ -29,7 +29,7 @@ ollama pull qwen2.5-coder:7b
 - 요청당 출력 1,024/컨텍스트 8,192토큰을 예약하고 작업별 출력/합산 예약 한도를 영속화합니다. 입력 64KiB/응답 256KiB, 모델 120초·제한 QA 10초·컨테이너 실행 15초와 작업 마감을 적용합니다. 취소를 감시해 소유 자식/컨테이너를 종료하지만 Ollama 내부 GPU의 즉시 회수나 실제 청구 토큰 계측은 보장하지 않습니다.
 - 구문 오류는 기존 최대 3회 수정 흐름으로 연결합니다. 전송 실패·잘못된 JSON·증거 해시 불일치는 needs_user_input으로 중단하며 자동 전송 재시도하지 않습니다. running 상태는 재시작 후 자동 재실행하지 않습니다. CLI 작업 마감은 생성 시점부터 600초입니다.
 
-API 근거: [Ollama chat](https://docs.ollama.com/api/chat), [구조화된 응답](https://docs.ollama.com/capabilities/structured-outputs). 기존 47개 관련 검사는 모의 모델+실제 정적 QA의 경계 검사이며, 별도의 실제 모델 연결 결과와 구분해 [보고서](../reports/phase-02-5.md)에 기록합니다.
+API 근거: [Ollama chat](https://docs.ollama.com/api/chat), [구조화된 응답](https://docs.ollama.com/capabilities/structured-outputs). 기존 47개 관련 검사는 모의 모델+실제 정적 QA의 경계 검사이며, 별도의 실제 모델 연결 결과와 구분해 [보고서](../archive/reports/phase-02-5.md)에 기록합니다.
 
 작업마다 Planner → Coder → QA 순서를 강제합니다. QA 실패 후 Coder 수정 → QA를 최대 3번 허용하므로 QA는 최초 포함 최대 4회입니다. 세 번째 수정도 실패하면 needs_user_input으로 끝나며 다음 수정은 거부합니다. 재시도는 Coder 수정 시작 시 차감합니다. 도중에 프로세스가 죽어도 이미 시작한 수정 횟수를 돌려주지 않습니다.
 

@@ -19,7 +19,7 @@ class SessionStatusError(ValueError):
 
 class SessionSignal(BaseModel):
     model_config = ConfigDict(strict=True, extra='forbid')
-    employee: Literal['codex']
+    employee: Literal['codex', 'claude-code']
     session_id: str = Field(pattern=r'^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$')
     event_id: str = Field(pattern=r'^[a-f0-9]{32}$')
     turn_id: str | None = Field(pattern=r'^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$')
@@ -130,16 +130,16 @@ class SessionStatusStore:
                 if parsed.event in ('turn_stopped', 'interrupted'):
                     db.execute('INSERT INTO turns VALUES(?,?,?,?) ON CONFLICT(employee,session_id,turn_id) '
                         'DO UPDATE SET terminal=COALESCE(turns.terminal,excluded.terminal)', (*key, parsed.turn_id, parsed.event))
-                    if turn is None or turn == parsed.turn_id:
+                    if not (turn_row and turn_row['terminal']) and (turn == parsed.turn_id or (turn is None and turn_row is None)):
                         state, turn, applied = parsed.event, parsed.turn_id, True
                 elif not (turn_row and turn_row['terminal']):
-                    if parsed.event == 'turn_started':
+                    if parsed.event == 'turn_started' and turn_row is None:
                         if turn and turn != parsed.turn_id:
                             db.execute('UPDATE turns SET terminal=COALESCE(terminal,?) WHERE employee=? AND session_id=? AND turn_id=?',
                                 ('superseded', *key, turn))
                         db.execute('INSERT OR IGNORE INTO turns VALUES(?,?,?,NULL)', (*key, parsed.turn_id))
                         state, turn, applied = 'turn_started', parsed.turn_id, True
-                    elif turn == parsed.turn_id and turn_row:
+                    elif parsed.event != 'turn_started' and turn == parsed.turn_id and turn_row:
                         state, applied = parsed.event, True
             db.execute('INSERT INTO events VALUES(?,?,?,?,?,?,?,?)', (parsed.event_id, *key, parsed.turn_id,
                 parsed.event, digest, now, int(applied)))
@@ -153,6 +153,13 @@ class SessionStatusStore:
         now = self._now()
         with self.connection(write=False) as db:
             rows = db.execute('SELECT * FROM sessions ORDER BY received_at DESC,session_id LIMIT ?', (self.MAX_SESSIONS,)).fetchall()
+            event_count = db.execute('SELECT count(*) FROM events').fetchone()[0]
+            session_count = db.execute('SELECT count(*) FROM sessions').fetchone()[0]
+            capacity = {
+                'events': {'used': event_count, 'limit': self.MAX_EVENTS, 'reached': event_count >= self.MAX_EVENTS},
+                'sessions': {'used': session_count, 'limit': self.MAX_SESSIONS, 'reached': session_count >= self.MAX_SESSIONS},
+                'automatic_deletion': False,
+            }
             sessions = []
             for row in rows:
                 sessions.append({'employee': row['employee'], 'session_id': row['session_id'], 'turn_id': row['turn_id'],
@@ -161,4 +168,4 @@ class SessionStatusStore:
                         'status': 'clock_unknown' if now < row['received_at'] else 'recent' if now-row['received_at'] <= 60 else 'old'},
                     'connection_status': 'unknown', 'verified': []})
         return {'schema_version': 1, 'sessions': sessions, 'observed_at': now, 'source': 'self_reported',
-            'read_only': True, 'control_supported': False, 'identity_verified': False}
+            'read_only': True, 'control_supported': False, 'identity_verified': False, 'capacity': capacity}
