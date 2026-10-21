@@ -8,7 +8,6 @@ import argparse
 import json
 import os
 from pathlib import Path
-import shutil
 import subprocess
 import sys
 import threading
@@ -16,13 +15,14 @@ import time
 
 import psutil
 
-from jarvis.agents.dispatch_policy import (DispatchLedger, DispatcherConfig, EmployeeState, build_command, build_env,
-                                           build_digest, detect_eligibility, detect_limit, digest_due, due, parse_usage,
-                                           should_run_lead, wake_prompt)
+from jarvis.agents.dispatch_policy import (DispatchLedger, DispatcherConfig, EmployeeState, block_unsafe, build_command,
+                                           build_env, build_digest, detect_eligibility, detect_limit, digest_due, due,
+                                           parse_usage, should_run_lead, wake_prompt)
 from jarvis.agents.lead_planner import LeadLedger, plan_next
 from jarvis.agents import process_watch
 from jarvis.agents.dispatch_service import DispatchService, KillOnCloseJob, codex_workload_gate, read_pause, read_usage_sample
 from jarvis.agents.process_registry import ProcessRegistry, observe_spawned
+from jarvis.agents.worker_adapters import ADAPTERS, roster_problems
 from jarvis.agents.dispatch_policy import Decision
 from jarvis.app.runtime import load_guardrails
 from jarvis.core.paths import CONFIG_ROOT, PROJECT_ROOT
@@ -66,22 +66,9 @@ def ensure_worktree(employee):
 
 
 def executable(employee):
-    if employee == 'claude-code':
-        found = shutil.which('claude')
-        return [found] if found else None
-    if employee == 'codex':
-        base = Path(os.environ.get('LOCALAPPDATA', '')) / 'OpenAI' / 'Codex' / 'bin'
-        candidates = sorted(base.glob('*/codex.exe'), key=lambda p: p.stat().st_mtime, reverse=True)
-        return [str(candidates[0])] if candidates else None
-    if employee == 'cursor':
-        script = Path(os.environ.get('LOCALAPPDATA', '')) / 'cursor-agent' / 'cursor-agent.ps1'
-        if script.is_file():
-            return ['powershell.exe', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', str(script)]
-    if employee == 'opencode':
-        bundled = Path(os.environ.get('LOCALAPPDATA', '')) / 'Programs' / '@opencodedesktop' / 'resources' / 'opencode-cli.exe'
-        found = str(bundled) if bundled.is_file() else shutil.which('opencode')
-        return [found] if found else None
-    return None
+    """argv prefix that starts the employee's CLI in work mode, or None (discovery lives in worker_adapters)."""
+    item = ADAPTERS.get(employee)
+    return item.discover_work() if item else None
 
 
 def mcp_config():
@@ -245,9 +232,16 @@ def tick(dry_run=False):
     allowed, workload = codex_workload_gate(read_usage_sample(guard, 'codex'), now)
     decisions = [Decision(d.employee, False, workload) if d.employee == 'codex' and d.wake and not allowed else d
                  for d in decisions]
+    # An adapter that disagrees with the roster (e.g. a probation employee whose command can edit) is never woken.
+    problems = roster_problems(roster)
+    blocked = [d.employee for d in decisions if d.wake and problems.get(d.employee)]
+    decisions = block_unsafe(decisions, problems)
     report = {'decisions': [d.__dict__ for d in decisions], 'launched': {}, 'codex_workload': workload, 'lead': lead}
     if dry_run:
         return report
+    if blocked:
+        log_service_error(RuntimeError('Adapter check failed; not woken: '
+                                       + ' | '.join(p for name in blocked for p in problems[name])))
     send_digest_if_due(guard, board, ledger, config, now)
     threads = []
     for decision in decisions:
