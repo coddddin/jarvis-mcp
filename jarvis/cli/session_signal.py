@@ -33,7 +33,7 @@ def read_event(stream):
 def _report(workspace, signal):
     # The shared store is implemented by the HUD owner; no parent PID registration.
     from jarvis.agents.session_status import SessionStatusStore
-    SessionStatusStore(Guardrails(Path(workspace))).report(signal)
+    SessionStatusStore(Guardrails(Path(workspace)), busy_timeout=0.2).report(signal)
 
 
 def main(argv=None, *, stream=None, report=None):
