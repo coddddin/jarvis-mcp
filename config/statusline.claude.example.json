@@ -1,0 +1,7 @@
+{
+  "description": "Example only, not installed. Render real paths with jarvis/cli/claude_statusline_usage.py --workspace <workspace> --render-config, review, and add statusLine to the Claude Code settings only with the user's approval. Stores the 5-hour and weekly usage numbers only (.jarvis-dispatch/usage/claude-code.json); transcript_path, cwd and other input are ignored. Data appears only for claude.ai Pro and Max after the first response in a session.",
+  "statusLine": {
+    "type": "command",
+    "command": "\"__ABSOLUTE_PYTHON__\" \"__ABSOLUTE_REPO__/jarvis/cli/claude_statusline_usage.py\" --workspace \"__ABSOLUTE_WORKSPACE__\""
+  }
+}

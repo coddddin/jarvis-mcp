@@ -443,3 +443,42 @@ def test_digest_labels_privacy_open():
     text = build_digest(day='d', done=[], review=[], stale=[], runs={}, exhausted={}, pause={},
                         blocked=[('opencode', ['privacy_open'], 1)])
     assert '- 현재 점검으로 깨우지 않음: opencode(외부 읽기·웹 차단 안 됨, 받은 일 1건)' in text
+
+
+def _digest_setup(tmp_path, monkeypatch, block):
+    import json as _json
+    from jarvis.cli import dispatch as cli_dispatch
+    from jarvis.core.roster import ROSTER_PATH, load_roster
+    from jarvis.features.board.service import BoardStore
+    data = _json.loads(ROSTER_PATH.read_text(encoding='utf-8'))
+    data['promotion'] = block
+    (tmp_path / 'agents.json').write_text(_json.dumps(data), encoding='utf-8')
+    roster = load_roster(tmp_path / 'agents.json')
+    (tmp_path / 'ws').mkdir()
+    guard = Guardrails(tmp_path / 'ws')
+    board = BoardStore(guard, roster=roster)
+    task = board.create('cursor:auto', 'Review', '', ['a.py'])['id']
+    board.claim('cursor:auto', task)
+    board.release('cursor:auto', task, 'done', 'reviewed', verification='read diff')
+    config = DispatcherConfig.model_validate({
+        'version': 1, 'enabled': True, 'interval_minutes': 10, 'daily_runs': 10, 'run_timeout_minutes': 30,
+        'digest_hour': 0, 'employees': {'cursor': {}}})
+    sent = []
+    monkeypatch.setattr(board, 'send', lambda sender, to, body, **kw: sent.append(body))
+    return cli_dispatch, guard, board, DispatchLedger(guard, alive=lambda pid: True), config, roster, sent
+
+
+def test_send_digest_includes_promotion_candidates(tmp_path, monkeypatch):
+    cli_dispatch, guard, board, ledger, config, roster, sent = _digest_setup(
+        tmp_path, monkeypatch, {'min_exact_done': 1, 'blocking_problems': []})
+    assert cli_dispatch.send_digest_if_due(guard, board, ledger, config, NOW, roster=roster)
+    assert '- 승격 후보: cursor(done 1, 재작업 0)' in sent[0].splitlines()
+
+
+def test_digest_is_still_sent_when_the_promotion_check_fails(tmp_path, monkeypatch):
+    cli_dispatch, guard, board, ledger, config, roster, sent = _digest_setup(tmp_path, monkeypatch, {'min_exact_done': 1})
+    logged = []
+    monkeypatch.setattr(cli_dispatch, 'evaluate', lambda *a, **k: (_ for _ in ()).throw(RuntimeError('board gone')))
+    monkeypatch.setattr(cli_dispatch, 'log_service_error', logged.append)
+    assert cli_dispatch.send_digest_if_due(guard, board, ledger, config, NOW, roster=roster)
+    assert sent and '승격' not in sent[0] and 'board gone' in str(logged[-1])

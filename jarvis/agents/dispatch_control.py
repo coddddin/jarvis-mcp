@@ -99,8 +99,18 @@ def snapshot(guard, config_path, *, clock=time.time):
         'employees': employees,
         'recent': [{key: row.get(key) for key in RUN_FIELDS} for row in recent[:RECENT]],
         'watch': _watch(guard, config_path),
+        'usage': _usage(guard),
         'read_at': clock(),
     }
+
+
+def _usage(guard):
+    """Last observed 5-hour and weekly usage per employee, display only (W3)."""
+    from jarvis.agents import usage_collector
+    try:
+        return usage_collector.usage_overview(guard)
+    except Exception:
+        return {}
 
 
 def _watch(guard, config_path):

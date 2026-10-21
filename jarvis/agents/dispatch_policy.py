@@ -116,10 +116,26 @@ def _blocked_line(blocked):
     return '- 현재 점검으로 깨우지 않음: ' + ', '.join(parts) if parts else None
 
 
-def build_digest(*, day, done, review, stale, runs, exhausted, pause, blocked=None):
+def _usage_line(usage):
+    """'- 사용량(마지막 관찰): codex 5h 81%·주간 44% (10-22 13:05)' with stale samples marked; display only."""
+    parts = []
+    for employee, item in sorted((usage or {}).items())[:5]:
+        if not isinstance(item, dict) or not isinstance(item.get('five_hour'), (int, float)):
+            continue
+        text = f"{employee} 5h {round(item['five_hour'])}%"
+        if isinstance(item.get('weekly'), (int, float)):
+            text += f"·주간 {round(item['weekly'])}%"
+        when = item.get('sampled_at')
+        stamp = time.strftime('%m-%d %H:%M', time.localtime(when)) if isinstance(when, (int, float)) else '?'
+        parts.append(text + (f' ({stamp})' if item.get('fresh') else f' ({stamp}, 오래됨)'))
+    return '- 사용량(마지막 관찰): ' + ', '.join(parts) if parts else None
+
+
+def build_digest(*, day, done, review, stale, runs, exhausted, pause, blocked=None, promotion=None, usage=None):
     """Short Korean daily report for user:heejun (board message, max 1000 chars, no double quotes).
 
-    blocked: [(employee, problem codes, pending messages)] for employees the adapter check keeps asleep now."""
+    blocked: [(employee, problem codes, pending messages)] for employees the adapter check keeps asleep now.
+    promotion: the '- 승격 후보: ...' line from agents.promotion.digest_line, or None."""
     def names(items, limit):
         shown = [f"{i['title'][:60]}({(i.get('owner') or '-').split(':')[0]})" for i in items[:limit]]
         more = f' 외 {len(items) - limit}건' if len(items) > limit else ''
@@ -137,9 +153,14 @@ def build_digest(*, day, done, review, stale, runs, exhausted, pause, blocked=No
             f"{who} {time.strftime('%H:%M', time.localtime(until))}까지" for who, until in sorted(exhausted.items())))
     if pause.get('paused'):
         lines.append('- 디스패처 일시정지 중' + (f": {pause['reason']}" if pause.get('reason') else ''))
+    usage_line = _usage_line(usage)
+    if usage_line:
+        lines.append(usage_line[:300])
     line = _blocked_line(blocked or [])
     if line:
         lines.append(line[:300])
+    if promotion:
+        lines.append(promotion[:200])
     return '\n'.join(lines).replace('"', "'")[:1000]
 
 

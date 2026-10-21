@@ -20,14 +20,17 @@ from jarvis.agents.dispatch_policy import (DispatchLedger, DispatcherConfig, Emp
                                            parse_usage, should_run_lead, wake_prompt)
 from jarvis.agents.lead_planner import LeadLedger, plan_next
 from jarvis.agents import process_watch
+from jarvis.agents import promotion as promotion_review
 from jarvis.agents.dispatch_service import DispatchService, KillOnCloseJob, codex_workload_gate, read_pause, read_usage_sample
 from jarvis.agents.process_registry import ProcessRegistry, observe_spawned
+from jarvis.agents.usage_collector import collect_codex, usage_overview
 from jarvis.agents.worker_adapters import ADAPTERS, employed, roster_problem_codes, roster_problems
 from jarvis.agents.dispatch_policy import Decision
 from jarvis.app.runtime import load_guardrails
 from jarvis.core.paths import CONFIG_ROOT, PROJECT_ROOT
 from jarvis.core.roster import load_roster
 from jarvis.features.board.service import BoardStore
+from jarvis.features.evaluation.service import evaluate
 
 WORKTREES = Path(os.environ.get('LOCALAPPDATA', Path.home())) / 'JarvisWorktrees'
 LOGS = Path(os.environ.get('LOCALAPPDATA', Path.home())) / 'JarvisDispatch' / 'logs'
@@ -208,8 +211,20 @@ def send_digest_if_due(guard, board, ledger, config, now, roster=None):
         except Exception as exc:
             log_service_error(exc)
             blocked = None
+        try:  # suggestion only, same rule: never holds back the digest
+            promotion = promotion_review.digest_line(promotion_review.review(
+                roster, evaluate(guard, now=now), roster_problem_codes(roster))) if roster is not None else None
+        except Exception as exc:
+            log_service_error(exc)
+            promotion = None
+        try:  # display only, like the blocked line
+            usage = usage_overview(guard)
+        except Exception as exc:
+            log_service_error(exc)
+            usage = None
         text = build_digest(day=day, done=done, review=review, stale=stale, runs=ledger.runs_today_by_status(),
-                            exhausted=ledger.exhausted_all(), pause=read_pause(guard), blocked=blocked)
+                            exhausted=ledger.exhausted_all(), pause=read_pause(guard), blocked=blocked,
+                            promotion=promotion, usage=usage)
         board.send(DISPATCHER_ID, 'user:heejun', text)
         ledger.mark_digest(day)
         return True
@@ -229,6 +244,12 @@ def tick(dry_run=False):
     now = time.time()
     # W2 stage 2: a pid-less running row older than the run limit no longer blocks its employee forever.
     stale_after = config.run_timeout_minutes * 60
+    if not dry_run:
+        # W3: refresh the observed Codex usage sample before the workload gate reads it (no model call).
+        try:
+            collect_codex(guard)
+        except Exception as exc:  # usage is advisory; a failed read never stops the tick
+            log_service_error(exc)
 
     def collect():
         states = []

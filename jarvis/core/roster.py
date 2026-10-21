@@ -53,10 +53,24 @@ class Agent(BaseModel):
         return value
 
 
+# Adapter check codes (worker_adapters.PROBLEM_CODES; a test keeps the two lists equal).
+ProblemCode = Literal['no_roster', 'retired', 'probation_can_edit', 'label_mismatch', 'privacy_open']
+
+
+class Promotion(BaseModel):
+    """Operator-set thresholds for suggesting probation -> active. Suggestions only; nothing changes status."""
+    model_config = ConfigDict(strict=True, extra='forbid')
+    min_exact_done: int = Field(default=5, ge=1, le=1000)
+    max_rework_ratio: float = Field(default=0.2, ge=0, le=1)
+    blocking_problems: list[ProblemCode] = Field(
+        default_factory=lambda: ['privacy_open', 'probation_can_edit'], max_length=5)
+
+
 class Roster(BaseModel):
     model_config = ConfigDict(strict=True, extra='forbid')
     version: Literal[1]
     agents: dict[str, Agent] = Field(min_length=1, max_length=50)
+    promotion: Promotion = Field(default_factory=Promotion)   # optional block; older files get the defaults
 
     @field_validator('agents')
     @classmethod

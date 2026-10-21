@@ -1,5 +1,10 @@
 {
   "version": 1,
+  "promotion": {
+    "min_exact_done": 5,
+    "max_rework_ratio": 0.2,
+    "blocking_problems": ["privacy_open", "probation_can_edit"]
+  },
   "agents": {
     "codex": {
       "label": "OpenAI Codex",
