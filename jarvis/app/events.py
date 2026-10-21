@@ -43,7 +43,7 @@ def load_event_token(root=AUTH_ROOT):
     return token
 
 
-def create_event_app(tasks, *, token, task_ids, origins, chat=None, processes=None, board=None, activity=None):
+def create_event_app(tasks, *, token, task_ids, origins, chat=None, processes=None, board=None, activity=None, sessions=None):
     if not isinstance(token, str) or not re.fullmatch(r'[A-Za-z0-9_-]{43}', token):
         raise ValueError('A strong local event token is required.')
     task_ids, origins = frozenset(task_ids), frozenset(origins)
@@ -131,6 +131,20 @@ def create_event_app(tasks, *, token, task_ids, origins, chat=None, processes=No
             return JSONResponse(snapshot, headers=response_headers)
         except Exception:
             return JSONResponse({'error': 'collaboration_unavailable'}, status_code=503, headers=response_headers)
+
+    async def session_status(request):
+        if (request.url.query or request.url.netloc not in {urlsplit(item).netloc for item in origins}
+                or request.headers.get('origin') is not None and request.headers['origin'] not in origins):
+            return JSONResponse({'error': 'origin_denied'}, status_code=403, headers=response_headers)
+        header = request.headers.get('authorization', '')
+        if not header.startswith('Bearer ') or not valid(header[7:]):
+            return JSONResponse({'error': 'connection_required'}, status_code=401, headers=response_headers)
+        if sessions is None:
+            return JSONResponse({'error': 'sessions_unavailable'}, status_code=503, headers=response_headers)
+        try:
+            return JSONResponse(await asyncio.to_thread(sessions.inspect), headers=response_headers)
+        except Exception:
+            return JSONResponse({'error': 'sessions_unavailable'}, status_code=503, headers=response_headers)
 
     async def activity_api(request):
         if (request.url.query or request.url.netloc not in {urlsplit(item).netloc for item in origins}
@@ -267,6 +281,6 @@ def create_event_app(tasks, *, token, task_ids, origins, chat=None, processes=No
         Route('/api/chat/conversations', chat_api, methods=['GET', 'POST']),
         Route('/api/chat/conversations/{conversation_id}', chat_api, methods=['GET']),
         Route('/api/chat/conversations/{conversation_id}/messages', chat_api, methods=['POST']),
-        Route('/api/activity', activity_api), Route('/api/activity/runs/{run_id}/events', activity_api, methods=['POST']),
+        Route('/api/sessions', session_status), Route('/api/activity', activity_api), Route('/api/activity/runs/{run_id}/events', activity_api, methods=['POST']),
         Route('/assets/collaboration.js', asset), Route('/assets/collaboration.css', asset), Route('/api/collaboration', collaboration),
         Route('/api/tasks', listing), Route('/api/processes', listing), WebSocketRoute('/tasks/{task_id}/events', watch)])
