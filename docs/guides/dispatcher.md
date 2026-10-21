@@ -41,7 +41,9 @@
 `dispatch watch`와 HUD 디스패처 패널의 "확인이 필요한 기록"은 디스패처 장부와 `service.json`만 본다. 아무것도 종료하거나 고치지 않는다.
 
 - service_down: 설정이 켜져 있고 일시정지가 아닌데 서비스 프로세스가 없음. service_record_stale: `service.json`의 pid가 죽었거나 다른 프로그램에 재사용됨.
-- owner_dead: 장부에 실행 중인데 pid가 죽었거나 재사용됨(생성 시각이 장부의 시작 시각보다 2분 넘게 늦음. 작업 폴더 준비 시간을 허용). owner_unknown: pid 없이 2분 넘게 실행 중. 이 기록이 남으면 그 직원은 다시 실행되지 않는다.
+- owner_dead: 장부에 실행 중인데 pid가 죽었거나 재사용됨(생성 시각이 pid를 적은 시각(pid_at)보다 5초 넘게 늦음. pid_at이 없는 옛 기록은 시작 시각 + 2분). owner_unknown: pid 없이 2분 넘게 실행 중.
+- 정리(2단계): 디스패처는 같은 기준으로 주인이 없거나 재사용된 실행을 lost로 닫는다. pid 없는 실행 기록은 `run_timeout_minutes`가 지나면 lost(note no_pid)로 닫아 그 직원이 다시 깨어날 수 있게 한다. pid는 있지만 생성 시각을 읽을 수 없는 실행(권한 거부)도 그 시간까지만 살아 있다고 보고, 지나면 lost(note owner_unverifiable)로 닫는다. 프로세스는 종료하지 않는다.
+- 주의: `dispatch dry-run`은 직원을 깨우지 않지만, 상태 확인 과정에서 위 기준에 걸린 실행 기록은 lost로 닫는다(장부만 바뀜).
 - overdue: 실행 중으로 `run_timeout_minutes` + 2분을 넘김.
 - 범용 실행 감시는 활동 수집기 몫이다. 알림 전송과 정리는 2단계다.
 

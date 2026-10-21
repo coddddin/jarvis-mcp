@@ -218,3 +218,152 @@ def test_ledger_reports_runs_today_by_status_and_tracks_digest(tmp_path):
     assert ledger.last_digest_day() is None
     ledger.mark_digest('2026-10-21')
     assert ledger.last_digest_day() == '2026-10-21'
+
+
+# --- W2 stage 2: owner liveness by pid_at, and pid-less rows that would block an employee forever ---
+
+class _Proc:
+    def __init__(self, created):
+        self._created = created
+
+    def create_time(self):
+        return self._created
+
+
+def _ledger(tmp_path, clock, created, *, alive=True):
+    """Ledger whose liveness is fully injected: alive(pid) and the process creation time."""
+    import psutil
+
+    def lookup(pid):
+        if created.get(pid) is None:
+            raise psutil.NoSuchProcess(pid)
+        return _Proc(created[pid])
+    return DispatchLedger(Guardrails(tmp_path), clock=lambda: clock[0], alive=lambda pid: alive, lookup=lookup)
+
+
+def test_pid_less_running_row_blocks_until_stale_then_is_closed_as_lost(tmp_path):
+    clock = [NOW]
+    ledger = _ledger(tmp_path, clock, {})
+    first = ledger.try_start('codex', daily_runs=5, stale_after=1800)   # service died before set_pid
+    clock[0] = NOW + 600                                                 # worktree setup may still be running
+    assert ledger.running('codex', stale_after=1800) == first
+    assert ledger.try_start('codex', daily_runs=5, stale_after=1800) is None
+    clock[0] = NOW + 1801
+    assert ledger.running('codex', stale_after=1800) is None
+    second = ledger.try_start('codex', daily_runs=5, stale_after=1800)
+    assert second is not None and second != first
+    row = [r for r in ledger.summary()['recent'] if r['id'] == first][0]
+    assert row['status'] == 'lost' and row['note'] == 'no_pid'
+
+
+def test_without_stale_after_a_pid_less_row_keeps_blocking(tmp_path):
+    clock = [NOW]
+    ledger = _ledger(tmp_path, clock, {})
+    first = ledger.try_start('codex', daily_runs=5)
+    clock[0] = NOW + 10 ** 6
+    assert ledger.running('codex') == first and ledger.try_start('codex', daily_runs=5) is None
+
+
+def test_set_pid_records_when_and_a_later_created_pid_is_reused(tmp_path):
+    clock = [NOW]
+    created = {}
+    ledger = _ledger(tmp_path, clock, created)
+    run = ledger.try_start('codex', daily_runs=5, stale_after=1800)
+    clock[0] = NOW + 30
+    ledger.set_pid(run, 4321)
+    created[4321] = NOW + 29                 # Popen precedes set_pid: created before pid_at
+    assert ledger.running('codex', stale_after=1800) == run
+    created[4321] = NOW + 30 + 6             # created after pid_at + 5: someone else's process now
+    assert ledger.running('codex', stale_after=1800) is None
+    assert [r for r in ledger.summary()['recent'] if r['id'] == run][0]['status'] == 'lost'
+
+
+def test_legacy_row_without_pid_at_allows_setup_time(tmp_path):
+    clock = [NOW]
+    created = {77: NOW + 60}
+    ledger = _ledger(tmp_path, clock, created)
+    run = ledger.start('cursor', pid=77)     # old rows carry pid but no pid_at
+    assert ledger.running('cursor') == run   # started + 120 tolerance
+    created[77] = NOW + 121
+    assert ledger.running('cursor') is None
+
+
+def test_unreadable_creation_time_counts_as_alive(tmp_path):
+    import psutil
+    clock = [NOW]
+
+    def denied(pid):
+        raise psutil.AccessDenied(pid)
+    ledger = DispatchLedger(Guardrails(tmp_path), clock=lambda: clock[0], alive=lambda pid: True, lookup=denied)
+    run = ledger.try_start('codex', daily_runs=5)
+    ledger.set_pid(run, 5)
+    assert ledger.running('codex') == run    # never start a second run on a doubt
+
+
+def test_old_ledger_file_gains_pid_at(tmp_path):
+    import sqlite3
+    folder = tmp_path / '.jarvis-dispatch'
+    folder.mkdir()
+    db = sqlite3.connect(folder / 'ledger.sqlite3')
+    db.execute('CREATE TABLE runs (id INTEGER PRIMARY KEY AUTOINCREMENT, employee TEXT NOT NULL, pid INTEGER, '
+               'started REAL NOT NULL, ended REAL, status TEXT NOT NULL, exit_code INTEGER, input_tokens INTEGER, '
+               'output_tokens INTEGER, note TEXT NOT NULL DEFAULT "")')
+    db.execute('INSERT INTO runs(employee, pid, started, status) VALUES ("codex", NULL, ?, "running")', (NOW,))
+    db.commit()
+    db.close()
+    clock = [NOW + 5]
+    ledger = DispatchLedger(Guardrails(tmp_path), clock=lambda: clock[0], alive=lambda pid: True, lookup=lambda pid: _Proc(NOW))
+    ledger.set_pid(1, 42)
+    db = sqlite3.connect(folder / 'ledger.sqlite3')
+    assert db.execute('SELECT pid, pid_at FROM runs WHERE id=1').fetchone() == (42, NOW + 5)
+    db.close()
+
+
+def test_concurrent_processes_migrate_the_ledger_once(tmp_path):
+    import subprocess
+    import sys
+    import sqlite3
+    folder = tmp_path / '.jarvis-dispatch'
+    folder.mkdir()
+    db = sqlite3.connect(folder / 'ledger.sqlite3')
+    db.execute('CREATE TABLE runs (id INTEGER PRIMARY KEY AUTOINCREMENT, employee TEXT NOT NULL, pid INTEGER, '
+               'started REAL NOT NULL, ended REAL, status TEXT NOT NULL, exit_code INTEGER, input_tokens INTEGER, '
+               'output_tokens INTEGER, note TEXT NOT NULL DEFAULT "")')
+    db.commit()
+    db.close()
+    code = ('import sys, time\nfrom pathlib import Path\nfrom jarvis.agents.dispatch_policy import DispatchLedger\n'
+            'from jarvis.core.guardrails import Guardrails\n'
+            'ledger = DispatchLedger(Guardrails(Path(sys.argv[1])))\n'
+            'deadline = float(sys.argv[2])\n'
+            'while time.time() < deadline: time.sleep(0.005)\n'
+            'for _ in range(20): ledger.summary()\n')
+    start_at = str(__import__('time').time() + 1.5)
+    workers = [subprocess.Popen([sys.executable, '-c', code, str(tmp_path), start_at], stderr=subprocess.PIPE, text=True)
+               for _ in range(4)]
+    errors = [w.communicate(timeout=60)[1] for w in workers]
+    assert all(w.returncode == 0 for w in workers), errors
+    db = sqlite3.connect(folder / 'ledger.sqlite3')
+    columns = [row[1] for row in db.execute('PRAGMA table_info(runs)')]
+    db.close()
+    assert columns.count('pid_at') == 1
+
+
+def test_unverifiable_owner_holds_only_until_stale_after(tmp_path):
+    # Main review: a reused pid that belongs to a protected process cannot be inspected (access denied).
+    # That doubt may hold the slot only within the run limit; afterwards the row is closed as lost.
+    import psutil
+    clock = [NOW]
+
+    def denied(pid):
+        raise psutil.AccessDenied(pid)
+    ledger = DispatchLedger(Guardrails(tmp_path), clock=lambda: clock[0], alive=lambda pid: True, lookup=denied)
+    run = ledger.try_start('codex', daily_runs=5, stale_after=1800)
+    ledger.set_pid(run, 4)
+    clock[0] = NOW + 1800
+    assert ledger.running('codex', stale_after=1800) == run
+    assert ledger.try_start('codex', daily_runs=5, stale_after=1800) is None
+    clock[0] = NOW + 10 * 3600
+    assert ledger.running('codex', stale_after=1800) is None
+    row = [r for r in ledger.summary()['recent'] if r['id'] == run][0]
+    assert row['status'] == 'lost' and row['note'] == 'owner_unverifiable'
+    assert ledger.try_start('codex', daily_runs=5, stale_after=1800) is not None
