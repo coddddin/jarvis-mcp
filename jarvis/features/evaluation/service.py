@@ -27,7 +27,8 @@ def employee(agent):
 
 def _empty():
     return {'tasks': 0, **{status: 0 for status in STATUSES}, 'stale': 0,
-            'exact_tasks': 0, 'approximate_tasks': 0, 'findings_received': 0, 'reworked_tasks': 0,
+            'exact_tasks': 0, 'approximate_tasks': 0, 'exact_done': 0, 'exact_reworked_done': 0,
+            'findings_received': 0, 'reworked_tasks': 0,
             'rework_cycles': 0, 'verification_failures': 0, 'work_hours': [], 'lead_hours': []}
 
 
@@ -102,6 +103,9 @@ def summarize(tasks, notes, events=(), *, now, since=None):
             cycles = list(zip(reviews, reviews[1:]))
             row['rework_cycles'] += len(cycles)
             row['reworked_tasks'] += int(bool(cycles))
+            if task['status'] == 'done':
+                row['exact_done'] += 1
+                row['exact_reworked_done'] += int(bool(cycles))
             row['verification_failures'] += sum(
                 any(start <= note['created'] <= stop for note in findings) for start, stop in cycles)
             claims = [event['at'] for event in history if event['to_status'] == 'claimed']

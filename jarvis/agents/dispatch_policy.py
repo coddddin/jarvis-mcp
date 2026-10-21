@@ -116,10 +116,11 @@ def _blocked_line(blocked):
     return '- 현재 점검으로 깨우지 않음: ' + ', '.join(parts) if parts else None
 
 
-def build_digest(*, day, done, review, stale, runs, exhausted, pause, blocked=None):
+def build_digest(*, day, done, review, stale, runs, exhausted, pause, blocked=None, promotion=None):
     """Short Korean daily report for user:heejun (board message, max 1000 chars, no double quotes).
 
-    blocked: [(employee, problem codes, pending messages)] for employees the adapter check keeps asleep now."""
+    blocked: [(employee, problem codes, pending messages)] for employees the adapter check keeps asleep now.
+    promotion: the '- 승격 후보: ...' line from agents.promotion.digest_line, or None."""
     def names(items, limit):
         shown = [f"{i['title'][:60]}({(i.get('owner') or '-').split(':')[0]})" for i in items[:limit]]
         more = f' 외 {len(items) - limit}건' if len(items) > limit else ''
@@ -140,6 +141,8 @@ def build_digest(*, day, done, review, stale, runs, exhausted, pause, blocked=No
     line = _blocked_line(blocked or [])
     if line:
         lines.append(line[:300])
+    if promotion:
+        lines.append(promotion[:200])
     return '\n'.join(lines).replace('"', "'")[:1000]
 
 

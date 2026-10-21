@@ -20,6 +20,7 @@ from jarvis.agents.dispatch_policy import (DispatchLedger, DispatcherConfig, Emp
                                            parse_usage, should_run_lead, wake_prompt)
 from jarvis.agents.lead_planner import LeadLedger, plan_next
 from jarvis.agents import process_watch
+from jarvis.agents import promotion as promotion_review
 from jarvis.agents.dispatch_service import DispatchService, KillOnCloseJob, codex_workload_gate, read_pause, read_usage_sample
 from jarvis.agents.process_registry import ProcessRegistry, observe_spawned
 from jarvis.agents.worker_adapters import ADAPTERS, employed, roster_problem_codes, roster_problems
@@ -28,6 +29,7 @@ from jarvis.app.runtime import load_guardrails
 from jarvis.core.paths import CONFIG_ROOT, PROJECT_ROOT
 from jarvis.core.roster import load_roster
 from jarvis.features.board.service import BoardStore
+from jarvis.features.evaluation.service import evaluate
 
 WORKTREES = Path(os.environ.get('LOCALAPPDATA', Path.home())) / 'JarvisWorktrees'
 LOGS = Path(os.environ.get('LOCALAPPDATA', Path.home())) / 'JarvisDispatch' / 'logs'
@@ -208,8 +210,15 @@ def send_digest_if_due(guard, board, ledger, config, now, roster=None):
         except Exception as exc:
             log_service_error(exc)
             blocked = None
+        try:  # suggestion only, same rule: never holds back the digest
+            promotion = promotion_review.digest_line(promotion_review.review(
+                roster, evaluate(guard, now=now), roster_problem_codes(roster))) if roster is not None else None
+        except Exception as exc:
+            log_service_error(exc)
+            promotion = None
         text = build_digest(day=day, done=done, review=review, stale=stale, runs=ledger.runs_today_by_status(),
-                            exhausted=ledger.exhausted_all(), pause=read_pause(guard), blocked=blocked)
+                            exhausted=ledger.exhausted_all(), pause=read_pause(guard), blocked=blocked,
+                            promotion=promotion)
         board.send(DISPATCHER_ID, 'user:heejun', text)
         ledger.mark_digest(day)
         return True

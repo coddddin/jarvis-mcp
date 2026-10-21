@@ -71,6 +71,10 @@
 
 `python -m jarvis.cli.evaluation [--days N]`은 게시판을 읽기 전용으로 열어 직원별(세션 합침) 작업 수, 상태별 개수, 다른 에이전트의 finding 수, finding 뒤 재인계(재작업), 완료 작업의 생성부터 마지막 인계까지 시간을 JSON으로 낸다. 생성부터 현재 상태까지 상태 변경 기록(`status_events`)이 다 있는 작업은 정확히 센다(재작업 주기, 지적 뒤 재검토, 첫 claim부터 done까지 시간, done 처리자 귀속). 기록이 없는 옛 작업만 노트 기반 근사치로 세고, 그런 작업이 있으면 출력에 `approximate: true`가 붙는다. 배정 반영은 2단계에서 한다.
 
+## 수습 검토와 승격 후보 (W4-3)
+
+`python -m jarvis.cli.promotion`은 수습(`probation`) 직원마다 정확 집계(상태 이력이 다 있는 작업)의 done 수, 재작업이 있던 done 비율, 어댑터 점검 코드를 보고 승격 후보와 미달 이유를 JSON으로 낸다. 기준값은 `config/agents.json`의 `promotion` 블록(`min_exact_done`, `max_rework_ratio`, `blocking_problems`)이고, 블록이 없으면 기본값 5건, 0.2, `privacy_open`·`probation_can_edit`를 쓴다. 후보가 있으면 하루 요약에 `- 승격 후보: cursor(done 5, 재작업 0)` 한 줄이 붙는다. 제안만 하며 명부 status는 사용자가 직접 바꾼다.
+
 ## 한계 (다음 단계)
 
 - 신원은 아직 자기 신고다. 누구든 `codex:main`을 쓸 수 있다. `status`와 `max_tier`는 기록일 뿐 서버가 직원별로 강제하지 않는다. 직원별 출입 토큰과 등급·예산 강제는 W4-2에서 한다.
