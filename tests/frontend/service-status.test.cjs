@@ -69,3 +69,28 @@ test('HUD connection and demo never assert chat or model readiness',()=>{
   h.context.overview.hud('샘플 모드','demo');assert.match(text(h.panel),/샘플 · 실제 상태 미확인/);
   assert.doesNotMatch(text(h.panel),/작업 기록 연결 확인/);
 });
+test('new observed status contract separates stopped, absent records, unknown and reused identity',async()=>{
+  const cases=[['running','matching_pid','서비스 실행 관찰'],['stopped','process_missing','등록 프로세스 종료 관찰'],
+    ['not_registered','missing_record','등록 기록 없음 · 실행 미확인'],['unknown','invalid_record','기록의 형식'],
+    ['unknown','unreadable_record','기록을 읽을 수 없'],['unknown','process_unreadable','프로세스를 확인할 수 없'],
+    ['identity_mismatch','pid_reused','실행 신원 미확인']];
+  for(const [status,reason,label] of cases){
+    const h=harness();h.setReply(async()=>({ok:true,json:async()=>({
+      service:{running:status==='running',status,reason,source:'observed'},config_enabled:true,paused:false,read_at:1000})}));
+    await h.connect('synthetic');const body=text(h.panel);assert.ok(body.includes(label),status+': '+body);
+    if(status!=='running')assert.doesNotMatch(body,/서비스 실행 관찰/);
+    if(status!=='stopped')assert.doesNotMatch(body,/등록 프로세스 종료 관찰/);
+  }
+});
+test('explicit unknown, inconsistent or future status cannot fall back to a positive running flag',async()=>{
+  for(const service of [
+    {running:true,status:'unknown',reason:'process_unreadable',source:'observed'},
+    {running:true,status:'future',reason:'matching_pid',source:'observed'},
+    {running:true,status:'running',reason:'pid_reused',source:'observed'},
+    {running:true,status:'running',reason:'matching_pid',source:'self_reported'},
+    {running:true,status:null},
+  ]){
+    const h=harness();h.setReply(async()=>({ok:true,json:async()=>({service,config_enabled:true,paused:false,read_at:1000})}));
+    await h.connect('synthetic');assert.match(text(h.panel),/응답을 해석할 수 없/);assert.doesNotMatch(text(h.panel),/서비스 실행 관찰/);
+  }
+});

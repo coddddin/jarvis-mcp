@@ -74,13 +74,33 @@ const serviceOverview = (() => {
       if(selected!==token||revision!==version)return;
       if(typeof data?.service?.running!=='boolean'||typeof data.config_enabled!=='boolean'
         ||typeof data.paused!=='boolean'||!Number.isFinite(data.read_at))throw new Error('invalid_snapshot');
+      const service=data.service;
+      const reasons={matching_pid:'등록 기록에 맞는 프로세스가 관찰됐어요.',
+        process_missing:'등록 기록의 프로세스가 종료된 것으로 관찰됐어요.',
+        missing_record:'서비스 등록 기록이 없어요. 별도로 실행한 프로그램의 상태는 알 수 없어요.',
+        invalid_record:'서비스 기록의 형식을 확인할 수 없어요.',
+        unreadable_record:'서비스 기록을 읽을 수 없어요.',
+        process_unreadable:'등록된 프로세스를 확인할 수 없어요.',
+        pid_reused:'프로세스 번호가 다른 실행에 사용되어 자비스 서비스인지 확인할 수 없어요.'};
+      const allowed={running:['matching_pid'],stopped:['process_missing'],not_registered:['missing_record'],
+        unknown:['invalid_record','unreadable_record','process_unreadable'],identity_mismatch:['pid_reused']};
+      // Old servers expose only the boolean. Explicit new statuses must never fall back to it.
+      const legacy=!Object.prototype.hasOwnProperty.call(service,'status');
+      const validStatus=!legacy&&service.source==='observed'&&allowed[service.status]?.includes(service.reason)
+        &&service.running===(service.status==='running');
+      const observedRunning=legacy?service.running:validStatus&&service.status==='running';
+      const label=legacy?(service.running?'서비스 실행 관찰':'실행 확인 안 됨')
+        :!validStatus?'미확인':({running:'서비스 실행 관찰',stopped:'등록 프로세스 종료 관찰',
+          not_registered:'등록 기록 없음 · 실행 미확인',unknown:'미확인',identity_mismatch:'실행 신원 미확인'})[service.status];
+      const reason=legacy?(service.running?'서비스 프로세스가 관찰됐어요.'
+        :'실행 중인 서비스 기록을 확인하지 못했어요. 미등록 또는 중지 상태일 수 있어요.')
+        :validStatus?reasons[service.reason]:'서비스 상태 응답을 해석할 수 없어요. 실행 여부는 미확인이에요.';
       const setting=!data.config_enabled?'자동 배정 설정 꺼짐':data.paused?'자동 배정 일시정지':'자동 배정 설정 켜짐';
-      dispatchCard.status.textContent=data.service.running?'서비스 실행 관찰':'실행 확인 안 됨';
-      dispatchCard.status.className='status '+(data.service.running?'completed':'needs_user_input');
+      dispatchCard.status.textContent=label;
+      dispatchCard.status.className='status '+(observedRunning?'completed':'needs_user_input');
       dispatchCard.detail.textContent=setting+' · 마지막 조회 '+stamp(data.read_at)
-        +(data.service.running?' · 서비스 프로세스가 관찰됐어요. 실제 업무 진행은 작업 기록에서 확인하세요.'
-          :' · 실행 중인 서비스 기록을 확인하지 못했어요. 미등록 또는 중지 상태일 수 있어요.');
-      dispatchCard.next.textContent=!data.service.running?'다음: 자동 배정 서비스의 등록·실행 여부를 확인하세요. Ollama 실행만으로 시작되지 않아요.'
+        +' · '+reason+(observedRunning?' 실제 업무 진행은 작업 기록에서 확인하세요.':'');
+      dispatchCard.next.textContent=!observedRunning?'다음: 자동 배정 서비스의 등록·실행 여부를 확인하세요. Ollama 실행만으로 시작되지 않아요.'
         :!data.config_enabled?'다음: 자동 배정을 원하면 담당자에게 설정 확인을 요청하세요.'
         :data.paused?'다음: 작업 현황의 자동 순환 패널에서 재개 여부를 결정하세요.'
         :'다음: 작업 현황에서 배정 결과와 직원별 제한을 확인하세요.';
