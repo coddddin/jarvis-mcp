@@ -66,6 +66,12 @@ def service_state(guard, *, lookup=psutil.Process):
     running stays boolean for older clients. New clients must read status: False can mean
     not registered, stopped, identity mismatch or unknown. The record is not authenticated.
     """
+    def valid_time(value):
+        try:
+            return _number(value) is not None and value > 0 and math.isfinite(value)
+        except OverflowError:
+            return False
+
     def result(status, reason, *, pid=None, started=None):
         return {'running': status == 'running', 'pid': pid if status == 'running' else None,
                 'started': started, 'status': status, 'reason': reason, 'source': 'observed'}
@@ -84,7 +90,7 @@ def service_state(guard, *, lookup=psutil.Process):
     if not isinstance(info, dict):
         return result('unknown', 'invalid_record')
     pid, started = info.get('pid'), _number(info.get('started'))
-    if type(pid) is not int or pid <= 0 or started is None or not math.isfinite(started) or started <= 0:
+    if type(pid) is not int or pid <= 0 or not valid_time(started):
         return result('unknown', 'invalid_record')
     try:
         created = lookup(pid).create_time()
@@ -92,7 +98,7 @@ def service_state(guard, *, lookup=psutil.Process):
         return result('stopped', 'process_missing', started=started)
     except (psutil.Error, OSError):
         return result('unknown', 'process_unreadable', started=started)
-    if _number(created) is None or not math.isfinite(created) or created <= 0:
+    if not valid_time(created):
         return result('unknown', 'process_unreadable', started=started)
     if created > started + 5:
         return result('identity_mismatch', 'pid_reused', started=started)

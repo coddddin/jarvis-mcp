@@ -227,3 +227,26 @@ def test_enabled_snapshot_does_not_imply_registered_service(client):
     assert data['config_enabled'] is True and data['effective_enabled'] is True
     assert data['service']['status'] == 'not_registered'
     assert data['service']['running'] is False
+
+
+def test_oversized_or_nonfinite_service_record_is_unknown(guard):
+    info = guard.workspace / '.jarvis-dispatch/service.json'
+    info.parent.mkdir(parents=True)
+    for body in ('x'*16385, json.dumps({'pid':42,'started':10**400})):
+        info.write_text(body, encoding='utf-8')
+        assert dispatch_control.service_state(guard)['status'] == 'unknown'
+
+
+def test_unreadable_record_is_unknown_without_raw_error(guard, monkeypatch):
+    from pathlib import Path
+    info = guard.workspace / '.jarvis-dispatch/service.json'
+    info.parent.mkdir(parents=True)
+    info.write_text('{"pid":42,"started":100}', encoding='utf-8')
+    original = Path.read_text
+    def unreadable(path, *args, **kwargs):
+        if path == info: raise PermissionError('PRIVATE read failure')
+        return original(path, *args, **kwargs)
+    monkeypatch.setattr(Path, 'read_text', unreadable)
+    state = dispatch_control.service_state(guard)
+    assert state['status'] == 'unknown' and state['reason'] == 'unreadable_record'
+    assert 'PRIVATE' not in json.dumps(state)
