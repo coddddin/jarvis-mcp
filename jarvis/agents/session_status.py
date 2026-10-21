@@ -34,7 +34,10 @@ class SessionStatusStore:
     MAX_SESSIONS = 200
     MAX_EVENTS = 20000
 
-    def __init__(self, guard, *, clock=time.time):
+    def __init__(self, guard, *, clock=time.time, busy_timeout=2):
+        if isinstance(busy_timeout, bool) or not isinstance(busy_timeout, (int, float)) or not math.isfinite(busy_timeout) or not 0 <= busy_timeout <= 2:
+            raise ValueError("Invalid session storage timeout.")
+        self.busy_timeout = busy_timeout
         self.guard, self.clock = guard, clock
         guard.check_running()
         guard.validate_path(self.DIRECTORY, must_exist=False).mkdir(exist_ok=True)
@@ -61,7 +64,7 @@ class SessionStatusStore:
         db = None
         try:
             db = sqlite3.connect(str(path) if write else path.as_uri()+'?mode=ro',
-                uri=not write, timeout=2, isolation_level=None)
+                uri=not write, timeout=self.busy_timeout, isolation_level=None)
             db.row_factory = sqlite3.Row
             if write:
                 size = db.execute('PRAGMA page_size').fetchone()[0]

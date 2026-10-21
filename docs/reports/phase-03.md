@@ -184,3 +184,13 @@ Communication: user explicitly authorized messaging collaboration thread 01a1591
 - 사용자 요청으로 Claude 완료 검토 파일을 옆 패널에 열고, 보이는 PowerShell 상태 창을 추가했다(artifacts/watch-claude.ps1). 실제 Claude CLI 프로세스 유무/PID와 이전 완료 결과를 구분한다. 이 창이 Claude 대화/실시간 모델 출력 자체인 것은 아니다. 이후 실제 Claude 호출은 보이는 창/로그를 제공하도록 담당에게 전달했다.
 - 실제 한도 회복을 확인한 다음 신규 작업부터 원래 Codex 역할로 복귀하고, 진행 중 작업/결과는 유지하는 조건을 workload 정책 담당에게 전달했다. 날짜 변경만으로 리셋을 확정하지 않는다. 이 배정 연결부 자체가 계정 한도 모니터를 구현한 것은 아니다.
 - 다음: 진행 중 요청 확인 후8788 반영 및 후보 없음의 실제 화면 확인. 검증된 무료 후보/실행 어댑터의 실제 연결은 gateway 담당의 접근 검증 후 진행한다. 현재 무료 실제 모델 호출은 미완료다.
+
+
+## 2026-10-21 — 내용 없는 Codex 세션 상태 수집과 HUD
+
+- `codex/session-status`, 기준 main `b88e900`: session_status 저장소, 인증 GET /api/sessions, HUD의 외부 세션 보고를 추가했다. 다른 담당의 session_signals/session_signal 정규화 CLI를 통합했다. 공개 쓰기 API·프로세스 제어·모델 내용 수집은 추가하지 않았다. 기존 도구와 협업 접점은 보존했다.
+- 멱등 이벤트, 턴 종료/교체 후 늦은 이벤트 차단, 조회 전용 DB, 파일 경계·용량 제한, 고정 오류 응답을 검사했다. 보고는 자기 선언, 수신만 관찰이며 검증 근거는 빈 목록이다. 순번 없는 새로운 턴의 순서, 로컬 동일 사용자에 의한 위조, 파일 검사와 사용 사이 경쟁 조건은 보장 범위 밖이다.
+- 실제 CLI 시험에서 문자열 workspace가 Guardrails에 전달돼 조용히 종료하고 저장하지 못하는 결함을 발견했다. Path 변환과 실제 subprocess 영속성 검사로 수정했다. 초기 exit=0만으로 성공을 판단하지 않았다.
+- 통합 검사 `tests/test_session_status.py tests/test_session_signals.py tests/test_hud.py`: 69 passed, 기존 Starlette 경고 1개. 저장소 잠금 시 이전 상태 보존과 해제 후 재저장을 포함한다. 전체 회귀 검사는 아니다. 이후 CLI 짧은 대기 연결은 별도 검증한다.
+- ego-lite의 합성 전용 workspace/8793에서 실제 CLI→DB→인증 HUD의 승인 대기 표시를 확인했다. Stop 다음 PreToolUse도 응답 종료 표시를 유지했고 연결 해제 시 카드 제거·패널 숨김을 확인했다. 테스트 창은 종료했다. 프롬프트와 명령의 시험 문자열은 정규화 경계에서 제외했다. 실제 desktop hook은 설치/신뢰/자동 활성화하지 않았고, 8788/8791 운영 서버는 이 작업에서 변경하지 않았다.
+- 설치됨 / 연결됨 / 실제 검증됨: hook 기능을 가진 Codex가 설치돼 있다는 다른 담당의 진단과, 이 CLI/저장/API의 연결 및 합성 입력 화면 확인은 구분한다. 실제 플랫폼의 이벤트 자동 수신은 아직 미검증이다. 다음은 독립 검토 및 PR 승인 후 반영, 별도 신뢰 절차를 거친 실제 세션 확인이다.

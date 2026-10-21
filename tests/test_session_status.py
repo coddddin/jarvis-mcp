@@ -139,3 +139,19 @@ def test_stop_and_hardlinked_storage_are_refused(tmp_path):
     os.link(path, tmp_path/'linked.sqlite3')
     with pytest.raises(GuardrailError):
         store.inspect()
+
+
+def test_short_timeout_reports_lock_failure_without_changing_prior_state(tmp_path):
+    store = SessionStatusStore(Guardrails(tmp_path), busy_timeout=0.02)
+    store.report(signal())
+    with store.connection() as locked:
+        with pytest.raises(SessionStatusError, match='unavailable'):
+            store.report(signal('turn_stopped'))
+    assert store.inspect()['sessions'][0]['state'] == 'turn_started'
+    assert store.report(signal('turn_stopped'))['status'] == 'accepted'
+
+
+@pytest.mark.parametrize('timeout', [True, -1, 3, float('nan'), '0.2'])
+def test_invalid_lock_timeout_is_rejected(tmp_path, timeout):
+    with pytest.raises(ValueError, match='timeout'):
+        SessionStatusStore(Guardrails(tmp_path), busy_timeout=timeout)
