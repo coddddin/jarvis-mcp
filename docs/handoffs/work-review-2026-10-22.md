@@ -51,3 +51,11 @@
 - 합성 Vault를 기존 backup staging에 포함하고, 실행 중 WAL SQLite의 커밋을 online backup API로 보존했다. 별도 임시 경로에 복원하여 Markdown SHA256·SQLite integrity_check·검색 재개를 확인했다. 기존 백업 코드/설정은 수정하지 않았고 restic/R2 네트워크·암호화·실제 사용자 백업은 검증하지 않았다.
 - 최신 관련 회귀 명령: `python -m pytest -q tests/test_process_env.py tests/test_dispatch_cli.py tests/test_dispatch.py tests/test_dispatch_service.py tests/test_hybrid_team.py tests/test_obsidian.py tests/test_backup_vault.py tests/test_phase2.py tests/test_plugins.py tests/test_architecture.py` → **178 passed, 1 skipped**, 6.96초. Windows Job Object 검사는 이 Linux 환경에서 미실행이다. 이전 203개 검사와 겹치므로 합산하지 않는다.
 - `python scripts/check_docs.py`, `python scripts/check_architecture.py`, `git diff --check`를 후속 변경에 다시 적용한다. 실제 Windows CLI 로그인·환경 상속·예약 작업/토큰 수신·실제 Vault/백업 정책 확인 시 사용자 PC가 필요하다. 그 전에는 병합·설치·등록을 하지 않는다.
+
+## 협업 구조 참고 요청 — 설계 반영 (2026-10-22)
+
+- 사용자 요청: Threads는 사용하지 않으므로 영상의 협업 구조를 참고한다. 한국어 자동 자막을 확보한 영상 `YAdZ-_mDeoo`의 역할·검수·기억·완료 기준 사례를 기존 코드와 비교했다. 영상/자막/사용자 자료는 저장소에 업로드하지 않고 적용안만 가이드에 기록했다.
+- 현재 PR 목록과 별도 PR #12의 `docs/proposals/roadmap-consolidation-2026-10-22.md` @ `22ef525191858a78863cb0c99eb1b8900d5bba90`를 읽었다. 해당 제안은 설계 상태로 유지하고 그 브랜치/파일은 수정하지 않았다.
+- 리드/명부/Board/Dispatcher/HybridTeam/MemoryStore/Vault 검색을 재사용한다. 빈 부분은 업무별 산출물·완료 조건·검증 방법/근거 계약이며 P-06에 연결한다. 위험도에 따른 선택적 검토, 권고와 강제 실패 조건 분리, 요약/출처/버전 기반 승인 기억을 제안했다.
+- `docs/guides/hybrid-team.md`와 PLAN의 미완료 항목만 갱신했다. 새 직원·새 오케스트레이터·SNS·브라우저 게시·모델 호출·자동 승인·실행 코드 변경은 없다. PR #12의 기존 구현 선후 관계를 바꾸지 않는다.
+- 문서만 변경하여 문서 검사와 diff 검사만 수행한다. 이전 코드 테스트를 이번 설계의 실행 검증으로 표시하지 않는다.

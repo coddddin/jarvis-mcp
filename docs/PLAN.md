@@ -22,6 +22,7 @@
 - [x] 직원 subprocess 환경변수 허용 목록 적용, Vault 중복 ID·동시 변경 검증, 기존 staging을 이용한 합성 Vault/WAL SQLite 백업·별도 복원 후 검색 검증. [후속 근거](handoffs/work-review-2026-10-22.md).
 - [ ] Windows 로그인 작업·실제 토큰 수신·실제 디스패처 및 사용자 Vault 현장 검증. PC의 미커밋 변경 확인 전 동기화·설치하지 않는다.
 - [ ] Vault 쓰기·동기화·백업 범위와 복구 검증. 자동 업로드·유료 서비스·Actions 활성화·main 병합 미수행.
+- [ ] 협업 구조 참고안의 업무별 산출물/완료 조건/검증 증거 계약을 기존 P-06 품질 게이트에 통합. [설계](guides/hybrid-team.md), [통합 제안 PR #12](https://github.com/coddddin/jarvis-mcp/pull/12). SNS 연동·전원 토론·상시 추가 모델 호출은 제외하며 이번에는 설계만 반영.
 
 ## 남은 과제 (이전 단계에서 이월)
 
