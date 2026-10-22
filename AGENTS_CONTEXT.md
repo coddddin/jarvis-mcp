@@ -1,7 +1,7 @@
 # AGENTS_CONTEXT.md (Project J.A.R.V.I.S. Map)
 ## 1. Project Overview & Vision
 - Goal: Personal AI with guarded tools, personal knowledge, planned multi-agent collaboration and 3D/voice HUD.
-- Current basis: [docs/PLAN.md](docs/PLAN.md); rules: [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
+- Current basis: [docs/PLAN.md](docs/PLAN.md); rules: [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md). On user request “최신화하고 작업시작해”, inspect latest PR #13 and PLAN “한 문장 재개 계약”; preserve dirty work, coordinate through Board, start H-01A only.
 - Documentation: [docs/README.md](docs/README.md); V5 preserved at [docs/master_blueprint_v5.md](docs/master_blueprint_v5.md).
 ## 2. Directory Structure (actual project root)
 - server.py / google_auth_setup.py: stable launcher wrappers; existing client commands unchanged.
