@@ -36,3 +36,20 @@ def test_distinct_issues_have_distinct_tasks(tmp_path):
     a = import_issue(board, issue(12), repo="coddddin/jarvis-mcp")
     b = import_issue(board, issue(13), repo="coddddin/jarvis-mcp")
     assert a["task_id"] != b["task_id"]
+
+
+def test_long_issue_title_stays_within_board_limit(tmp_path):
+    board = BoardStore(Guardrails(tmp_path))
+    item = issue()
+    item["title"] = "A" * 180
+    imported = import_issue(board, item, repo="coddddin/jarvis-mcp")
+    assert len(board.get(imported["task_id"])["title"]) <= 200
+
+
+def test_pull_request_and_malformed_payloads_are_not_eligible():
+    assert not eligible({**issue(), "pull_request": {}},
+                        owner="coddddin", label="jarvis-approved")
+    assert not eligible({**issue(), "labels": "jarvis-approved"},
+                        owner="coddddin", label="jarvis-approved")
+    assert not eligible({**issue(), "user": "coddddin"},
+                        owner="coddddin", label="jarvis-approved")
