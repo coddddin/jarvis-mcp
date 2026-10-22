@@ -10,7 +10,6 @@ from pathlib import Path
 import sqlite3
 import sys
 from urllib.error import HTTPError, URLError
-from urllib.parse import quote
 from urllib.request import Request, urlopen
 from uuid import uuid4
 
@@ -37,7 +36,7 @@ def fetch_issues(repo, token, *, max_pages=3):
         page_items = json.loads(raw)
         if not isinstance(page_items, list):
             raise ValueError("Unexpected GitHub response")
-        result.extend(x for x in page_items if "pull_request" not in x)
+        result.extend(x for x in page_items if isinstance(x, dict) and "pull_request" not in x)
         if len(page_items) < 100:
             break
     return result
@@ -45,10 +44,12 @@ def fetch_issues(repo, token, *, max_pages=3):
 
 def eligible(issue, *, owner, label):
     """An Issue is data, never authorization by itself."""
-    if not isinstance(issue, dict):
+    if not isinstance(issue, dict) or "pull_request" in issue:
         return False
     author = issue.get("user") or {}
     labels = issue.get("labels") or []
+    if not isinstance(author, dict) or not isinstance(labels, list):
+        return False
     return (issue.get("state") == "open"
             and author.get("login", "").casefold() == owner.casefold()
             and any(isinstance(x, dict) and x.get("name") == label for x in labels)
@@ -60,7 +61,7 @@ def import_issue(board, issue, *, repo):
     """Atomically create the board task and dedup mapping in one SQLite transaction."""
     number = issue["number"]
     key = f"{repo}#{number}"
-    title = _text(str(issue.get("title") or ""), "title", 190)
+    title = _text(str(issue.get("title") or ""), "title", 180)
     # Deliberately omit untrusted body; humans can read the canonical Issue.
     detail = _text(f"Imported approved GitHub Issue: https://github.com/{repo}/issues/{number}",
                    "detail", 2000)
