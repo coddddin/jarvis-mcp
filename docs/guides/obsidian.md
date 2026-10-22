@@ -7,6 +7,7 @@ Obsidian 앱/플러그인 없이 Markdown을 읽는다. 서버 작업공간 내�
 - `index_obsidian_vault(directory="JARVIS-Vault")`: 검토 승인된 `.md`만 스캔해 별도 `.jarvis-obsidian/knowledge.sqlite3` 인덱스를 만든다. 소스 노트는 수정하지 않는다.
 - `search_obsidian_vault(query="검색어", limit=5)`: 경로·줄번호·발췌·메타데이터·유사도 반환. 기존 로컬 lexical hashing 검색을 재사용하며 의미 임베딩 검색은 아니다.
 - 일반 문서의 `.jarvis-index`는 유지한다. Vault 재인덱싱은 이전 Vault 인덱스 전체를 대체한다. 빌드 상한 초과 시 기존 인덱스를 유지한다.
+- 같은 ID를 가진 승인 노트가 둘 이상이거나 인덱싱 중 노트가 바뀌면 빌드를 중단하고 이전 인덱스를 유지한다. ID는 대소문자를 구분한다. 검색은 발췌와 메타데이터가 같은 원본 버전인지 다시 확인하고 `source_sha256`을 함께 반환한다.
 
 ## 지원하는 frontmatter
 
@@ -38,5 +39,6 @@ review_status: "approved"
 - JARVIS 채팅의 자동 도구 선택에는 이번 Vault 도구를 추가하지 않았다. MCP에서 명시적으로 인덱싱·조회하며, 개인 노트의 자동 프롬프트 삽입은 별도 범위다.
 - 기존 범용 문서 검색 도구의 작업공간 읽기 권한은 그대로다. Vault 승인 필터는 이 어댑터의 검색 정책이며 서버 전체의 파일 접근 ACL은 아니다. 직원별 신원·권한(W4-2)은 별도 미완료 과제다.
 - 기존 백업 범위·설정은 바꾸지 않았다. 작업공간 내부 Vault는 기존 작업공간 백업에 포함될 가능성이 있으므로 실제 사용 전에 포함/제외 범위와 복원 정책을 확인한다. 자동으로 검증되거나 별도 백업이 보장된 것으로 간주하지 않는다.
+- 합성 Vault·실행 중 WAL SQLite를 기존 `stage_data.stage`로 staging하고 별도 임시 경로에 복원한 검사에서 Markdown 해시·SQLite 무결성·복원 후 검색을 확인했다. 기본 작업공간 내부 Vault와 인덱스가 staging에 포함됐다. 실제 restic/R2 업로드·암호화·자격증명·일정·기존 백업 복구 검증은 수행하지 않았다. 사용자 데이터로 적용 전에 포함 범위를 확인한다.
 
 모의검증은 `python -m pytest -q tests/test_obsidian.py tests/test_phase2.py tests/test_plugins.py tests/test_architecture.py`. 실제 노트·Windows 환경 검증은 별도다.

@@ -143,6 +143,7 @@ class KnowledgeStore:
                         offset += 1000
                 if visited > self.MAX_ENTRIES:
                     raise KnowledgeError('Scan limit exceeded; previous index retained.')
+            self._validate_snapshot(rows)
             updated = datetime.now(timezone.utc).isoformat()
             # A failed build never replaces the last committed snapshot.
             with closing(self._db()) as db, db:
@@ -153,6 +154,13 @@ class KnowledgeStore:
             return {'indexed_files': files, 'chunks': len(rows), 'skipped': skipped,
                     'updated_at': updated, 'method': 'local lexical hashing cosine v1',
                     'scope': 'Replaces the whole previous index with this directory snapshot.'}
+
+    def _validate_snapshot(self, rows):
+        """Feature-specific validation before replacing the committed snapshot."""
+
+    def _search_hit(self, path, digest, line, text, score):
+        return {'path': path, 'line': line, 'score': round(score, 6),
+                'excerpt': text[:800], 'untrusted_content': True}
 
     def search(self, query: str, limit: int = 5) -> dict:
         if not isinstance(query, str) or not query.strip() or len(query) > 500:
@@ -180,8 +188,7 @@ class KnowledgeStore:
                 vector = json.loads(stored_vector)
                 score = sum(value * vector.get(key, 0) for key, value in query_vector.items())
                 if score > 0:
-                    results.append({'path': path, 'line': line, 'score': round(score, 6),
-                                    'excerpt': text[:800], 'untrusted_content': True})
+                    results.append(self._search_hit(path, digest, line, text, score))
             results.sort(key=lambda item: (-item['score'], item['path'], item['line']))
             return {'results': results[:limit], 'stale_documents': sorted(stale),
                     'indexed_at': updated[0], 'method': 'lexical similarity, not semantic embeddings',

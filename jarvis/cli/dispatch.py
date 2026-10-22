@@ -28,6 +28,7 @@ from jarvis.agents.worker_adapters import ADAPTERS, employed, roster_problem_cod
 from jarvis.agents.dispatch_policy import Decision
 from jarvis.app.runtime import load_guardrails
 from jarvis.core.paths import CONFIG_ROOT, PROJECT_ROOT
+from jarvis.core.process_env import worker_environment
 from jarvis.core.roster import load_roster
 from jarvis.features.board.service import BoardStore
 from jarvis.features.evaluation.service import evaluate
@@ -107,8 +108,10 @@ def run_employee(employee, run_id, config, guard, ledger, board):
     log_path = LOGS / f'{employee}-{run_id}.log'
     timeout = config.run_timeout_minutes * 60
     with log_path.open('w', encoding='utf-8', errors='replace') as log:
-        workspace = os.environ.get('JARVIS_WORKSPACE', str(PROJECT_ROOT / 'JarvisWorkspace'))
-        env = {**os.environ, **build_env(employee, project_root=PROJECT_ROOT, workspace=workspace)}
+        env = worker_environment(overrides={
+            **build_env(employee, project_root=PROJECT_ROOT, workspace=guard.workspace),
+            'JARVIS_WORKSPACE': str(guard.workspace), 'JARVIS_DOWNLOADS_READONLY': '1',
+        })
         process = subprocess.Popen(argv, cwd=worktree, env=env, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
                                    creationflags=NO_WINDOW)
         if not job().assign(process) and os.name == 'nt':  # bind before anything else can spawn
@@ -338,3 +341,4 @@ def main():
 
 if __name__ == '__main__':
     raise SystemExit(main())
+

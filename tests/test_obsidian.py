@@ -114,3 +114,52 @@ def test_tools_registered_guarded_and_old_contracts_preserved(tmp_path):
     for name, kwargs in [('index_obsidian_vault', {}), ('search_obsidian_vault', {'query': '검색'})]:
         with pytest.raises(ToolError):
             funcs[name](**kwargs)
+
+
+def test_duplicate_note_ids_abort_rebuild_without_replacing_previous_snapshot(tmp_path):
+    store, vault, path = setup(tmp_path)
+    store.index()
+    database = tmp_path / '.jarvis-obsidian/knowledge.sqlite3'
+    before = database.read_bytes()
+    (vault / 'duplicate.md').write_text(note(), encoding='utf-8')
+    with pytest.raises(KnowledgeError, match='Duplicate'):
+        store.index()
+    assert database.read_bytes() == before
+    assert store.search('검색')['results'][0]['path'] == 'JARVIS-Vault/note.md'
+
+
+def test_mid_build_changes_abort_without_replacing_index(tmp_path, monkeypatch):
+    store, vault, path = setup(tmp_path)
+    store.index()
+    database = tmp_path / '.jarvis-obsidian/knowledge.sqlite3'
+    before = database.read_bytes()
+    original = store._validate_snapshot
+    def changed(rows):
+        path.write_text(note(title='Changed during build'), encoding='utf-8')
+        return original(rows)
+    monkeypatch.setattr(store, '_validate_snapshot', changed)
+    with pytest.raises(KnowledgeError, match='changed during indexing'):
+        store.index()
+    assert database.read_bytes() == before
+
+
+def test_changed_approved_note_during_search_cannot_mix_old_excerpt_with_new_metadata(tmp_path, monkeypatch):
+    store, vault, path = setup(tmp_path)
+    store.index()
+    original = store._read
+    reads = []
+    def changed(relative):
+        reads.append(relative)
+        if len(reads) == 2:
+            path.write_text(note(title='Changed while reading'), encoding='utf-8')
+        return original(relative)
+    monkeypatch.setattr(store, '_read', changed)
+    result = store.search('검색')
+    assert result['results'] == []
+    assert result['stale_documents'] == ['JARVIS-Vault/note.md']
+
+
+def test_search_source_hash_identifies_exact_note_version(tmp_path):
+    store, vault, path = setup(tmp_path)
+    store.index()
+    assert store.search('검색')['results'][0]['source_sha256'] == hashlib.sha256(path.read_bytes()).hexdigest()

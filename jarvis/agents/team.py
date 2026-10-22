@@ -21,6 +21,7 @@ from jarvis.agents.team_routing import select_role_seat
 from jarvis.agents.process_registry import observe_spawned
 from jarvis.core.redaction import redact
 from jarvis.core.guardrails import GuardrailError
+from jarvis.core.process_env import worker_environment
 
 
 class TeamContract(BaseModel):
@@ -272,8 +273,7 @@ class HybridTeam:
                   'Do not claim tests you did not run. No hidden reasoning.\n' + json.dumps(context, ensure_ascii=False))
         if len(prompt) > 22000:
             raise ChatError('External context exceeds limit.')
-        env = {key: value for key, value in os.environ.items() if key.upper() in {
-            'SYSTEMROOT', 'WINDIR', 'TEMP', 'TMP', 'USERPROFILE', 'HOME', 'APPDATA', 'LOCALAPPDATA', 'PATH', 'CODEX_HOME'}}
+        env = worker_environment()
         try:
             process = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                 cwd=folder, env=env, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
@@ -586,3 +586,4 @@ class HybridTeam:
             state['status'] = 'failed'
             save()
             raise
+

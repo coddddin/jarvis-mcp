@@ -79,6 +79,9 @@ Windows Claude 발견은 PATH와 사용자 `.local/bin/claude.exe`, 고정 WinGe
 
 ## 참고 소스
 
+외부 제안 subprocess도 디스패처와 같은 환경변수 허용 목록을 사용한다. Inbox·모델 API 키·임의 비밀값을 넘기지 않으며 저장된 CLI 로그인과 OS 기본 경로만 유지한다. 계정 파일 접근까지 격리하는 기능은 아니다. [환경변수 경계](dispatcher.md)를 참고한다.
+
 [mvschwarz/openrig](https://github.com/mvschwarz/openrig) commit `0b1d8b3dc1b418f1568e571b1df174041fed77f2`의 workflow-role-resolver.ts를 team_routing.py로 이식했습니다. queue-repository.ts·workflow-types.ts·workflow-runtime.ts·독립 QA 역할 문서는 작업 소유권·선행 조건·검수 분리 설계에 참고했습니다. Apache-2.0 원문과 변경 고지는 프로젝트 third_party/openrig에 보존합니다. OpenRig의 tmux daemon 전체를 설치한 것은 아닙니다.
 
 Codex 실행 계약은 [공식 비대화형 실행 문서](https://learn.chatgpt.com/docs/non-interactive-mode), Claude 옵션은 [공식 CLI 문서](https://code.claude.com/docs/en/cli-reference)를 확인했습니다. 실제 설치된 Codex 도움말에 있는 옵션을 사용합니다.
+

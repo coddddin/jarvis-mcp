@@ -4,6 +4,7 @@ Supports a deliberately small, flat YAML frontmatter subset, never YAML objects.
 No plugin execution, wiki-link traversal, note writes, sync or model transmission.
 """
 from datetime import datetime
+import hashlib
 import json
 from pathlib import Path
 import re
@@ -93,15 +94,34 @@ class ObsidianStore(KnowledgeStore):
         return {**result, 'approved_only': True, 'source_notes_unchanged': True,
                 'external_transmission': False}
 
+    def _validate_snapshot(self, rows):
+        identities = set()
+        for path, digest in sorted({(row[0], row[1]) for row in rows}):
+            raw = self._read(path)
+            if hashlib.sha256(raw).hexdigest() != digest:
+                raise KnowledgeError('Vault changed during indexing; previous index retained.')
+            metadata = parse_frontmatter(raw.decode('utf-8-sig'))
+            if metadata.id in identities:
+                raise KnowledgeError('Duplicate Vault note ID; previous index retained.')
+            identities.add(metadata.id)
+
+    def _search_hit(self, path, digest, line, text, score):
+        return {**super()._search_hit(path, digest, line, text, score), 'source_sha256': digest}
+
     def search(self, query: str, limit: int = 5) -> dict:
-        result = super().search(query, limit)
-        accepted = []
-        for item in result['results']:
-            try:
-                # Recheck review status and sensitivity at disclosure time.
-                metadata = parse_frontmatter(self._read(item['path']).decode('utf-8-sig'))
-            except (OSError, ValueError):
-                result['stale_documents'] = sorted(set(result['stale_documents']) | {item['path']})
-                continue
-            accepted.append({**item, 'metadata': metadata.model_dump()})
-        return {**result, 'results': accepted, 'external_transmission': False}
+        with self.lock:
+            result = super().search(query, limit)
+            accepted = []
+            for item in result['results']:
+                try:
+                    # Bind both metadata and excerpts to the indexed source version.
+                    raw = self._read(item['path'])
+                    digest = hashlib.sha256(raw).hexdigest()
+                    if digest != item['source_sha256']:
+                        raise KnowledgeError('Vault changed during search.')
+                    metadata = parse_frontmatter(raw.decode('utf-8-sig'))
+                except (OSError, ValueError):
+                    result['stale_documents'] = sorted(set(result['stale_documents']) | {item['path']})
+                    continue
+                accepted.append({**item, 'metadata': metadata.model_dump(), 'source_sha256': digest})
+            return {**result, 'results': accepted, 'external_transmission': False}

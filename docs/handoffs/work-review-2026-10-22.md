@@ -30,8 +30,8 @@
 - 실제 read-only GITHUB_TOKEN 인증·권한/만료·로그인 환경변수 상속·Windows 예약 실행·Job Object 종료·현장 동시 Dispatcher 수신은 미검증이다. StartNow는 스케줄러의 기존 환경을 쓸 수 있으므로 로그아웃/로그인 및 LastTaskResult 확인이 필요하다.
 - Inbox의 open 작업은 리드의 idle 판정을 막는다. 수동 배정/분류가 필요하며 이를 자동 위임으로 바꾸지 않았다. 라벨 부착자 인증·신원 사칭 방지(W4-2)는 기존 한계다.
 - PR #8과 새 Draft PR #11은 생성/최초 조회 응답의 mergeable=false 이후 재조회에서 모두 mergeable=true로 확인됐다. 최초 값을 확정된 충돌로 해석하지 않는다. #8/#10/#9와 #11을 각각 검토하고 병합 순서를 정해야 하며 실제 병합은 수행하지 않았다.
-- 실제 Vault 형식·검색 품질·메타데이터 변환, 노트 쓰기/중복 ID/충돌 처리, 백업 범위·복원은 후속이다. 전체 YAML을 지원하지 않는다. 범용 문서 도구의 workspace 읽기 권한과 직원별 ACL은 별도다.
-- 클라우드 작업자는 현재 OS 환경을 상속하는 기존 구조다. Inbox 토큰을 포함한 사용자 환경의 비밀정보를 무인 직원에게 허용할 범위는 현장 보안 검토가 필요하다. 토큰 저장 정책 변경이나 무인 실행 활성화는 하지 않았다.
+- 실제 Vault 형식·검색 품질·메타데이터 변환, 노트 쓰기·동시 편집 정책과 실제 백업 복구는 후속이다. 중복 ID·중간 변경·합성 staging 복원 검증은 아래 후속 기록을 참조한다. 전체 YAML을 지원하지 않는다. 범용 문서 도구의 workspace 읽기 권한과 직원별 ACL은 별도다.
+- 후속 수정으로 직원 subprocess의 환경변수 전체 상속을 제한했다. 저장된 CLI 계정·사용자 파일까지 격리하지 않으므로 파일 접근·무인 인증 정책의 현장 검토는 여전히 필요하다. 토큰 저장 정책 변경이나 무인 실행 활성화는 하지 않았다.
 - 로컬 보드에 접근하지 못해 board_claim/note/release는 기록하지 못했다. 이 기록과 Draft PR이 원격 검토 증거이며 로컬 이슈 진행 상태로 가장하지 않는다.
 
 ## 최종 실행 기록
@@ -41,3 +41,13 @@
 - 프런트엔드 별도 **22 passed**. 전체 테스트 실행이나 Windows 실연동 성공으로 해석하지 않는다.
 - 새 도구를 포함한 MCP stdio 기동·목록 검사와 기존 계약 보존 검사를 실행했다. PowerShell/pwsh가 설치되어 있지 않아 파서·예약 등록은 실행하지 못했다.
 - 원격 후속 Draft PR의 head 커밋이 배포 전 검토 기준이다. main 및 기존 PR의 원격 ref는 이동시키지 않는다.
+
+## 후속 진행 — 환경변수·Vault 충돌·합성 백업 (2026-10-22)
+
+- 사용자 지시: 다음 개발을 진행하고 사용자가 필요한 단계에서 알린다. 기존 별도 브랜치/PR #11에서 이어서 작업했다. 데스크톱·토큰·Vault·백업 계정에는 접근하지 않았다.
+- `jarvis/core/process_env.py`로 명시적 환경변수 허용 목록을 만들고 디스패처/HybridTeam에 적용했다. Inbox/모델 토큰·임의 환경변수·호스트 OpenCode 설정·프록시/인터프리터 주입 설정을 자식에게 자동 전달하지 않는다. 실제 worker spawn 모의검사와 실제 Python 자식 프로세스의 합성 비밀값 부재를 확인했다.
+- OpenCode 제한 설정은 신뢰된 어댑터가 생성하며 workspace는 guard의 실제 경로를 사용한다. API키·SSH agent 환경만 사용하는 인증은 실패할 수 있다. 전체 환경 상속이나 유료 fallback으로 자동 복구하지 않는다. HOME 등 계정 경로는 유지하므로 OS/자격증명 파일 격리 보장은 아니다.
+- Vault 빌드 최종 검증에서 중복 ID와 빌드 중 원본 변경을 거부한다. 실패 시 기존 인덱스를 유지한다. 검색 발췌에 원본 SHA256을 연결해 읽는 도중 다른 승인 버전으로 바뀌면 결과를 숨긴다. 일반 문서 검색의 기존 출력 계약은 바꾸지 않았다.
+- 합성 Vault를 기존 backup staging에 포함하고, 실행 중 WAL SQLite의 커밋을 online backup API로 보존했다. 별도 임시 경로에 복원하여 Markdown SHA256·SQLite integrity_check·검색 재개를 확인했다. 기존 백업 코드/설정은 수정하지 않았고 restic/R2 네트워크·암호화·실제 사용자 백업은 검증하지 않았다.
+- 최신 관련 회귀 명령: `python -m pytest -q tests/test_process_env.py tests/test_dispatch_cli.py tests/test_dispatch.py tests/test_dispatch_service.py tests/test_hybrid_team.py tests/test_obsidian.py tests/test_backup_vault.py tests/test_phase2.py tests/test_plugins.py tests/test_architecture.py` → **178 passed, 1 skipped**, 6.96초. Windows Job Object 검사는 이 Linux 환경에서 미실행이다. 이전 203개 검사와 겹치므로 합산하지 않는다.
+- `python scripts/check_docs.py`, `python scripts/check_architecture.py`, `git diff --check`를 후속 변경에 다시 적용한다. 실제 Windows CLI 로그인·환경 상속·예약 작업/토큰 수신·실제 Vault/백업 정책 확인 시 사용자 PC가 필요하다. 그 전에는 병합·설치·등록을 하지 않는다.
