@@ -34,6 +34,7 @@ def vectorize(text: str) -> dict[str, float]:
 
 
 class KnowledgeStore:
+    INDEX_DIRECTORY = '.jarvis-index'
     MAX_FILE_BYTES = 512_000
     MAX_TOTAL_BYTES = 5_000_000
     MAX_FILES = 200
@@ -45,12 +46,13 @@ class KnowledgeStore:
         self.lock = threading.RLock()
 
     def _db(self) -> sqlite3.Connection:
-        internal = self.guard.validate_path('.jarvis-index', must_exist=False)
+        self.guard.check_running()
+        internal = self.guard.validate_path(self.INDEX_DIRECTORY, must_exist=False)
         internal.mkdir(exist_ok=True)
-        path = self.guard.validate_path('.jarvis-index/knowledge.sqlite3', must_exist=False)
+        path = self.guard.validate_path(self.INDEX_DIRECTORY + '/knowledge.sqlite3', must_exist=False)
         # The directory is reserved for the index, never document input.
         for suffix in ('', '-journal', '-wal', '-shm'):
-            candidate = self.guard.validate_path('.jarvis-index/knowledge.sqlite3' + suffix, must_exist=False)
+            candidate = self.guard.validate_path(self.INDEX_DIRECTORY + '/knowledge.sqlite3' + suffix, must_exist=False)
             if candidate.exists() and (not candidate.is_file() or candidate.stat().st_nlink > 1):
                 raise KnowledgeError('Index storage must be regular files without hard links.')
         db = sqlite3.connect(path, timeout=5)
@@ -64,6 +66,7 @@ class KnowledgeStore:
             raise
 
     def _read(self, relative: str) -> bytes:
+        self.guard.check_running()
         path = self.guard.validate_path(relative)
         if not path.is_file():
             raise KnowledgeError('Document is not a regular file.')
@@ -78,6 +81,7 @@ class KnowledgeStore:
 
     def index(self, directory: str = 'documents') -> dict:
         with self.lock:
+            self.guard.check_running()
             root = self.guard.validate_path(directory)
             relative_root = root.relative_to(self.guard.workspace)
             if any(part.startswith('.') for part in relative_root.parts):
@@ -193,3 +197,4 @@ class KnowledgeStore:
         with closing(self._db()) as db:
             db.execute('VACUUM')
         return {'removed_chunks': count, 'source_documents_unchanged': True}
+

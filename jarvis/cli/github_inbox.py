@@ -10,19 +10,35 @@ from pathlib import Path
 import sqlite3
 import sys
 from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 from uuid import uuid4
 
 from jarvis.core.guardrails import Guardrails
-from jarvis.features.board.service import BoardError, BoardStore, _text
+from jarvis.features.board.service import BoardError, BoardStore, MAX_TASKS, _text
+
+REPO = "coddddin/jarvis-mcp"
+OWNER = "coddddin"
+LABEL = "jarvis-approved"
+
+
+class NoRedirect(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        # Never forward the authorization header to a redirect destination.
+        raise ValueError("GitHub redirects are not accepted")
+
+
+def urlopen(request, *, timeout):
+    return build_opener(NoRedirect()).open(request, timeout=timeout)
 
 
 def fetch_issues(repo, token, *, max_pages=3):
     """Only open Issues (exclude PRs), bounded pagination and response size."""
+    if repo != REPO or type(max_pages) is not int or not 1 <= max_pages <= 3:
+        raise ValueError("Invalid inbox source or page limit")
     result = []
     for page in range(1, max_pages + 1):
         url = (f"https://api.github.com/repos/{repo}/issues?"
-               f"state=open&per_page=100&page={page}")
+               f"state=open&labels={LABEL}&per_page=100&page={page}")
         req = Request(url, headers={
             "Accept": "application/vnd.github+json",
             "Authorization": f"Bearer {token}",
@@ -39,6 +55,8 @@ def fetch_issues(repo, token, *, max_pages=3):
         result.extend(x for x in page_items if isinstance(x, dict) and "pull_request" not in x)
         if len(page_items) < 100:
             break
+    else:
+        raise ValueError("Inbox page limit reached; no changes applied")
     return result
 
 
@@ -50,8 +68,9 @@ def eligible(issue, *, owner, label):
     labels = issue.get("labels") or []
     if not isinstance(author, dict) or not isinstance(labels, list):
         return False
+    login = author.get("login")
     return (issue.get("state") == "open"
-            and author.get("login", "").casefold() == owner.casefold()
+            and isinstance(login, str) and login.casefold() == owner.casefold()
             and any(isinstance(x, dict) and x.get("name") == label for x in labels)
             and type(issue.get("number")) is int
             and 0 < issue["number"] < 2**31)
@@ -59,9 +78,15 @@ def eligible(issue, *, owner, label):
 
 def import_issue(board, issue, *, repo):
     """Atomically create the board task and dedup mapping in one SQLite transaction."""
+    if repo != REPO or not eligible(issue, owner=OWNER, label=LABEL):
+        raise BoardError("Issue is not approved for this inbox")
     number = issue["number"]
     key = f"{repo}#{number}"
-    title = _text(str(issue.get("title") or ""), "title", 180)
+    # Validate the entire source before truncating, including secrets beyond the prefix.
+    source_title = _text(issue.get("title"), "title", 256)
+    prefix = f"[GitHub #{number}] "
+    title = _text(prefix + source_title[:200 - len(prefix)], "title", 200)
+    creator = board._agent("user:github-inbox")
     # Deliberately omit untrusted body; humans can read the canonical Issue.
     detail = _text(f"Imported approved GitHub Issue: https://github.com/{repo}/issues/{number}",
                    "detail", 2000)
@@ -73,13 +98,13 @@ def import_issue(board, issue, *, repo):
                               (key,)).fetchone()
         if previous:
             return {"issue": key, "task_id": previous[0], "created": False}
-        if db.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] >= 2000:
+        if db.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] >= MAX_TASKS:
             raise BoardError("Board task limit reached")
         task_id = uuid4().hex
-        db.execute("INSERT INTO tasks VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-                   (task_id, f"[GitHub #{number}] {title}", detail, "open",
-                    "user:github-inbox", None, None, "[]", "[]", now, now))
-        board._event(db, task_id, None, "open", "user:github-inbox", now)
+        db.execute("INSERT INTO tasks(id,title,detail,status,creator,owner,lease_until,paths,"
+                   "depends_on,created,updated) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                   (task_id, title, detail, "open", creator, None, None, "[]", "[]", now, now))
+        board._event(db, task_id, None, "open", creator, now)
         db.execute("INSERT INTO github_issue_imports VALUES (?,?,?)", (key, task_id, now))
         return {"issue": key, "task_id": task_id, "created": True}
 
@@ -102,13 +127,15 @@ def main(argv=None):
     if not token:
         parser.error("Set GITHUB_TOKEN with read-only Issues permission")
     try:
+        guard = Guardrails(args.workspace.resolve())
+        guard.check_running()
         issues = fetch_issues(args.repo, token)
         approved = [x for x in issues if eligible(x, owner=args.owner, label=args.label)]
         if not args.apply:
             print(json.dumps({"mode": "preview", "approved_issue_numbers":
                               [x["number"] for x in approved]}, ensure_ascii=False))
             return 0
-        board = BoardStore(Guardrails(args.workspace))
+        board = BoardStore(guard)
         results = [import_issue(board, x, repo=args.repo) for x in approved]
         print(json.dumps({"mode": "apply", "results": results}, ensure_ascii=False))
         return 0
@@ -119,3 +146,4 @@ def main(argv=None):
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

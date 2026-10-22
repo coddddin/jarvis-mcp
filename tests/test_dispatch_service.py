@@ -1,5 +1,6 @@
 """W5 integration-3: the dispatcher as a JARVIS-owned service with workload policy gating."""
 import json
+import os
 
 import pytest
 
@@ -190,6 +191,7 @@ def test_registry_failure_does_not_prevent_the_service(tmp_path):
     assert service.run()['reason'] == 'stopped' and fake.ticks == 3 and len(errors) == 1
 
 
+@pytest.mark.skipif(os.name != 'nt', reason='Windows Job Objects require Windows')
 def test_child_processes_die_with_the_job(tmp_path):
     import subprocess, sys, time
     import psutil
@@ -261,3 +263,4 @@ def test_release_removes_service_record(tmp_path):
     assert record.exists()
     service.release()
     assert not record.exists()
+

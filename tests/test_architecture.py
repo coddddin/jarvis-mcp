@@ -67,7 +67,7 @@ def test_stable_entry_from_unrelated_cwd_and_package_entry(tmp_path):
         async with stdio_client(params) as (read, write):
             async with ClientSession(read, write) as session:
                 await session.initialize()
-                assert len((await session.list_tools()).tools) == 40
+                assert len((await session.list_tools()).tools) == 42
                 assert not (await session.call_tool('get_system_status', {})).isError
     asyncio.run(exercise([str(PROJECT_ROOT / 'server.py')], tmp_path))
     asyncio.run(exercise(['-m', 'jarvis'], PROJECT_ROOT))
@@ -77,3 +77,4 @@ def test_oauth_entry_help_does_not_authenticate(tmp_path):
     result = subprocess.run([sys.executable, str(PROJECT_ROOT / 'google_auth_setup.py'), '--help'],
         cwd=tmp_path, capture_output=True, text=True, timeout=10)
     assert result.returncode == 0 and '--client-secrets' in result.stdout
+
