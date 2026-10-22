@@ -19,7 +19,8 @@ def classify(event):
         return {"accepted": False, "reason": "not_an_issue"}
     author = issue.get("user")
     labels = issue.get("labels")
-    if (not isinstance(author, dict) or not isinstance(author.get("login"), str)\n            or author["login"].casefold() != "coddddin"
+    if (not isinstance(author, dict) or not isinstance(author.get("login"), str)
+            or author["login"].casefold() != "coddddin"
             or not isinstance(labels, list)
             or not any(isinstance(x, dict) and x.get("name") == "jarvis-approved" for x in labels)):
         return {"accepted": False, "reason": "not_approved"}
