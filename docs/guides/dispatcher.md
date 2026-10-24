@@ -70,6 +70,8 @@ tick은 하루 요약을 보낸 뒤 사용자에게 알릴 사건을 골라 `use
 
 `config/dispatcher.json`의 직원 설정에 `daily_tokens`(1000 이상 정수)를 넣으면, 오늘(로컬 자정 이후) 시작한 실행의 토큰 합이 그 값 이상일 때 그 직원을 깨우지 않는다(사유 `token_cap`). 값이 없으면 상한도 없다. 이미 돌고 있는 실행은 끊지 않는다. **`daily_tokens`는 cache 포함 합계다**: input(cache 생성·읽기 포함) + output. Claude는 cache 읽기가 매우 커서 실제 비용보다 훨씬 빨리 찰 수 있으니 값을 넉넉히 잡는다. 장부는 실행마다 cache 몫을 `cache_tokens`로 따로 남기고, `DispatchLedger.tokens_today()`가 합계와 내역(input, output, cache, cache를 모르는 옛 실행 수)을 함께 돌려준다. 토큰을 읽지 못한 실행은 0으로 세며 `daily_runs`가 계속 막는다. Claude 5시간 사용률 규칙은 2단계다.
 
+**사용량 품질(J2)**: 장부 `runs.usage_quality`에 실행마다 사용량을 어떻게 읽었는지 남긴다. `measured`(입력·출력 둘 다 읽음), `partial`(한쪽만, 또는 cache만), `unknown`(사용량 보고는 있으나 읽을 수 없음), `missing`(끝났는데 사용량 보고가 아예 없음). 빈 값(NULL)은 기록 안 됨이다: 이 칸이 생기기 전 실행, 아직 도는 실행, 시작하지 못한 실행, lost·예외로 끝난 실행. 옛 실행은 숫자가 있어도 `measured`로 올리지 않는다. `measured`는 보고된 입력·출력 두 값을 읽었다는 뜻일 뿐 실행 전체를 관측했다는 뜻이 아니다(마지막 보고 이벤트를 쓰고 합산하지 않는다). Cursor의 cache 0은 보고하지 않았다는 뜻일 수 있다. `tokens_today()`는 `partial_runs`와 `unknown_runs`(unknown+missing)를 더 돌려주고, 장부 요약과 HUD 스냅숏은 직원별 `usage_quality_runs`(품질별 실행 수, NULL은 `unrecorded`)와 `known_input_tokens`·`known_output_tokens`(보고된 값만의 합, 하나도 없으면 null) 및 `known_*_runs`를 기존 숫자 옆에 더한다. input에 cache가 이미 들어 있으므로 cache를 다시 더하지 않는다. 기존 `total_*` 숫자와 상한 판단은 그대로다.
+
 ## 같은 입력이면 다시 깨우지 않음 (J2 H-02)
 
 직원을 깨울 때 그 직원의 안 읽은 메시지 id 목록 지문을 장부 `runs.input_key`에 남긴다. 다음 tick에서 지문이 지난 실행과 같으면:

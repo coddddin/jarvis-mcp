@@ -189,3 +189,29 @@ def test_one_alert_when_the_last_usable_model_backs_off(tmp_path, monkeypatch):
     assert _model_of(seen[0]) == models[-1]
     [message] = board.inbox('user:heejun')['messages']
     assert f'모델 {models[-1]}' in message['body']
+
+
+def test_run_employee_keeps_the_parser_quality_and_marks_a_silent_run_missing(tmp_path, monkeypatch):
+    seen = []
+    _fake_worker(tmp_path, monkeypatch, [
+        ('done, no usage printed', 0),
+        ('{"type":"result","usage":{"output_tokens":5}}', 0),
+        ('{"type":"result","usage":{"input_tokens":10,"output_tokens":5}}', 0),
+    ], seen)
+    guard = Guardrails(tmp_path)
+    board, ledger = BoardStore(guard), DispatchLedger(guard)
+    for _ in range(3):
+        run_id = ledger.try_start('opencode', daily_runs=10)
+        assert dispatch.run_employee('opencode', run_id, config(), guard, ledger, board) == 'ok'
+    rows = list(reversed(ledger.summary()['recent']))
+    assert [row['usage_quality'] for row in rows] == ['missing', 'partial', 'measured']
+    assert [(row['input_tokens'], row['output_tokens']) for row in rows] == [(None, None), (None, 5), (10, 5)]
+
+
+def test_a_run_that_never_launched_records_no_quality(tmp_path, monkeypatch):
+    monkeypatch.setattr(dispatch, 'executable', lambda employee: None)
+    guard = Guardrails(tmp_path)
+    board, ledger = BoardStore(guard), DispatchLedger(guard)
+    run_id = ledger.try_start('opencode', daily_runs=10)
+    assert dispatch.run_employee('opencode', run_id, config(), guard, ledger, board) == 'error'
+    assert ledger.summary()['recent'][0]['usage_quality'] is None

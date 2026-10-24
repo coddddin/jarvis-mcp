@@ -607,9 +607,10 @@ def test_tokens_today_sums_todays_runs_with_a_cache_breakdown(tmp_path):
                   output_tokens=None, note='')                                     # unreadable usage counts 0
     ledger.finish(ledger.start('codex', pid=1), status='ok', exit_code=0, input_tokens=9, output_tokens=9, note='')
     assert ledger.tokens_today('claude-code') == {'total': 2050, 'input': 1800, 'output': 250, 'cache': 1400,
-                                                  'cache_unknown_runs': 1}
+                                                  'cache_unknown_runs': 1, 'partial_runs': 0,
+                                                  'unknown_runs': 0}
     assert ledger.tokens_today('opencode') == {'total': 0, 'input': 0, 'output': 0, 'cache': 0,
-                                               'cache_unknown_runs': 0}
+                                               'cache_unknown_runs': 0, 'partial_runs': 0, 'unknown_runs': 0}
 
 
 def test_older_ledger_gains_the_cache_column_in_place(tmp_path):
@@ -625,7 +626,7 @@ def test_older_ledger_gains_the_cache_column_in_place(tmp_path):
     db.close()
     ledger = DispatchLedger(Guardrails(tmp_path), clock=lambda: NOW, alive=lambda pid: True)
     assert ledger.tokens_today('codex') == {'total': 105, 'input': 100, 'output': 5, 'cache': 0,
-                                            'cache_unknown_runs': 1}
+                                            'cache_unknown_runs': 1, 'partial_runs': 0, 'unknown_runs': 0}
 
 
 def test_tick_skips_an_employee_over_its_token_cap(tmp_path, monkeypatch):
@@ -931,3 +932,104 @@ def test_tick_runs_the_lead_past_a_held_employee_and_a_new_message_releases_it(t
     board.send('user:heejun', 'claude-code', 'second request')
     cli_dispatch.tick()                       # new input releases the hold; the lead waits again
     assert launched == ['claude-code', 'claude-code'] and leads == [1]
+
+
+# J2 usage quality (0f1bde4c): the parser's quality is kept per run; NULL means not recorded.
+
+def _quality_run(ledger, employee, quality, inp, out, cache=None):
+    run = ledger.start(employee, pid=1)
+    ledger.finish(run, status='ok', exit_code=0, input_tokens=inp, output_tokens=out, cache_tokens=cache,
+                  note='', usage_quality=quality)
+    return run
+
+
+def test_finish_stores_the_usage_quality_and_rejects_unknown_values(tmp_path):
+    ledger = DispatchLedger(Guardrails(tmp_path), clock=lambda: NOW, alive=lambda pid: True)
+    for quality in ('measured', 'partial', 'unknown', 'missing'):
+        _quality_run(ledger, 'codex', quality, None, None)
+    ledger.finish(ledger.start('codex', pid=1), status='error', exit_code=None, input_tokens=None,
+                  output_tokens=None, note='executable not found')            # older caller: not recorded
+    assert [row['usage_quality'] for row in reversed(ledger.summary()['recent'])] == [
+        'measured', 'partial', 'unknown', 'missing', None]
+    with pytest.raises(ValueError):
+        ledger.finish(ledger.start('codex', pid=1), status='ok', exit_code=0, input_tokens=1, output_tokens=1,
+                      note='', usage_quality='guessed')
+
+
+def test_summary_counts_runs_per_quality_and_keeps_known_sums_apart(tmp_path):
+    ledger = DispatchLedger(Guardrails(tmp_path), clock=lambda: NOW, alive=lambda pid: True)
+    _quality_run(ledger, 'claude-code', 'measured', 1500, 200, cache=1400)   # input already includes the cache
+    _quality_run(ledger, 'claude-code', 'partial', None, 30)
+    _quality_run(ledger, 'claude-code', 'missing', None, None)
+    _quality_run(ledger, 'claude-code', 'unknown', None, None)
+    totals = ledger.summary()['claude-code']
+    # existing fields keep their meaning: unread numbers still add 0
+    assert totals['runs'] == 4 and totals['total_input_tokens'] == 1500 and totals['total_output_tokens'] == 230
+    assert totals['usage_quality_runs'] == {'measured': 1, 'partial': 1, 'unknown': 1, 'missing': 1, 'unrecorded': 0}
+    assert (totals['known_input_tokens'], totals['known_input_runs']) == (1500, 1)   # cache not added again
+    assert (totals['known_output_tokens'], totals['known_output_runs']) == (230, 2)
+
+
+def test_summary_of_runs_with_no_readable_usage_has_no_known_sum(tmp_path):
+    ledger = DispatchLedger(Guardrails(tmp_path), clock=lambda: NOW, alive=lambda pid: True)
+    _quality_run(ledger, 'cursor', 'missing', None, None)
+    _quality_run(ledger, 'cursor', 'unknown', None, None)
+    totals = ledger.summary()['cursor']
+    assert totals['total_input_tokens'] == 0 and totals['total_output_tokens'] == 0   # unchanged legacy view
+    assert totals['known_input_tokens'] is None and totals['known_output_tokens'] is None
+    assert totals['known_input_runs'] == 0 and totals['known_output_runs'] == 0
+    assert totals['usage_quality_runs']['missing'] == 1 and totals['usage_quality_runs']['unknown'] == 1
+
+
+def test_a_measured_zero_is_a_known_zero_not_a_missing_value(tmp_path):
+    ledger = DispatchLedger(Guardrails(tmp_path), clock=lambda: NOW, alive=lambda pid: True)
+    _quality_run(ledger, 'codex', 'measured', 0, 0)
+    totals = ledger.summary()['codex']
+    assert (totals['known_input_tokens'], totals['known_input_runs']) == (0, 1)
+    assert (totals['known_output_tokens'], totals['known_output_runs']) == (0, 1)
+    assert totals['usage_quality_runs']['measured'] == 1
+
+
+def test_tokens_today_counts_partial_and_unreadable_runs_without_changing_the_cap_total(tmp_path):
+    ledger = DispatchLedger(Guardrails(tmp_path), clock=lambda: NOW, alive=lambda pid: True)
+    _quality_run(ledger, 'codex', 'measured', 100, 5, cache=0)
+    before = ledger.tokens_today('codex')['total']
+    _quality_run(ledger, 'codex', 'partial', None, 7)
+    _quality_run(ledger, 'codex', 'missing', None, None)
+    _quality_run(ledger, 'codex', 'unknown', None, None)
+    ledger.finish(ledger.start('codex', pid=1), status='error', exit_code=None, input_tokens=None,
+                  output_tokens=None, note='')                                # not recorded: not counted
+    today = ledger.tokens_today('codex')
+    assert before == 105 and today['total'] == 112                          # known numbers only, no guess
+    assert today['partial_runs'] == 1 and today['unknown_runs'] == 2
+
+
+def test_older_ledger_gains_the_quality_column_and_old_rows_are_never_promoted(tmp_path):
+    import sqlite3
+    (tmp_path / '.jarvis-dispatch').mkdir()
+    db = sqlite3.connect(tmp_path / '.jarvis-dispatch' / 'ledger.sqlite3')
+    with db:
+        db.execute('CREATE TABLE runs (id INTEGER PRIMARY KEY AUTOINCREMENT, employee TEXT NOT NULL, pid INTEGER, '
+                   'started REAL NOT NULL, ended REAL, status TEXT NOT NULL, exit_code INTEGER, input_tokens INTEGER, '
+                   'output_tokens INTEGER, note TEXT NOT NULL DEFAULT "")')
+        db.execute("INSERT INTO runs(employee,started,ended,status,input_tokens,output_tokens) "
+                   "VALUES('codex',?,?,'ok',100,5)", (NOW, NOW))
+        db.execute("INSERT INTO runs(employee,started,ended,status) VALUES('codex',?,?,'ok')", (NOW, NOW))
+    db.close()
+    ledger = DispatchLedger(Guardrails(tmp_path), clock=lambda: NOW, alive=lambda pid: True)
+    totals = ledger.summary()['codex']
+    # both numbers are present on the first row, but nothing recorded how they were read
+    assert totals['usage_quality_runs'] == {'measured': 0, 'partial': 0, 'unknown': 0, 'missing': 0, 'unrecorded': 2}
+    assert (totals['known_input_tokens'], totals['known_input_runs']) == (100, 1)
+    assert totals['total_input_tokens'] == 100 and totals['total_output_tokens'] == 5
+    assert [row['usage_quality'] for row in ledger.summary()['recent']] == [None, None]
+    today = ledger.tokens_today('codex')
+    assert today['total'] == 105 and today['partial_runs'] == 0 and today['unknown_runs'] == 0
+
+
+def test_usage_quality_survives_a_ledger_reopen(tmp_path):
+    ledger = DispatchLedger(Guardrails(tmp_path), clock=lambda: NOW, alive=lambda pid: True)
+    _quality_run(ledger, 'codex', 'partial', None, 3)
+    reopened = DispatchLedger(Guardrails(tmp_path), clock=lambda: NOW, alive=lambda pid: True)
+    assert reopened.summary()['recent'][0]['usage_quality'] == 'partial'
+    assert reopened.summary()['codex']['usage_quality_runs']['partial'] == 1

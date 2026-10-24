@@ -141,12 +141,14 @@ def run_employee(employee, run_id, config, guard, ledger, board):
             time.sleep(2)
         process.wait()
     output = log_path.read_text(encoding='utf-8', errors='replace')
-    usage = parse_usage_detail(output) or {'input': None, 'output': None, 'cache': None}
+    # No usage event at all is 'missing', kept apart from 'unknown' (usage printed but unreadable).
+    usage = parse_usage_detail(output) or {'input': None, 'output': None, 'cache': None, 'quality': 'missing'}
     failed = process.returncode != 0 or '"is_error":true' in output.replace(' ', '')
     if status is None:
         status = run_status(output, failed=failed)
     ledger.finish(run_id, status=status, exit_code=process.returncode, input_tokens=usage['input'],
-                  output_tokens=usage['output'], cache_tokens=usage['cache'], note=log_path.name)
+                  output_tokens=usage['output'], cache_tokens=usage['cache'], usage_quality=usage['quality'],
+                  note=log_path.name)
     branch = f'auto/{employee}'
     ahead = git('rev-list', '--count', f'main..{branch}', check=False).stdout.strip()
     if ahead not in ('', '0'):
