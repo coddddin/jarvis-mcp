@@ -400,3 +400,32 @@ def test_pending_ids_match_the_pending_count_and_ignore_broadcasts_and_read_mess
     assert len(ids) == board.pending_for_employee('codex') == 2 and ids == sorted(ids)
     board.inbox('codex:auto')
     assert board.pending_ids('codex') == []
+
+
+# Wake input by id (79536368): ids only narrow the inbox, never widen it.
+
+def test_inbox_by_ids_returns_only_those_unread_messages_and_marks_them_read(tmp_path):
+    board = BoardStore(Guardrails(tmp_path))
+    first = board.send('user:heejun', 'codex', 'first')['id']
+    board.send('user:heejun', 'codex', 'second')
+    board.send('claude-code:main', '*', 'old broadcast')
+    third = board.send('user:heejun', 'codex:auto', 'third')['id']
+    result = board.inbox('codex:auto', ids=[third, first, first])
+    assert [m['body'] for m in result['messages']] == ['first', 'third'] and result['unread'] == 2
+    assert board.inbox('codex:auto', ids=[first, third])['messages'] == []        # read once
+    assert [m['body'] for m in board.inbox('codex:auto')['messages']] == ['second', 'old broadcast']
+    assert board.pending_ids('codex') == []
+
+
+def test_inbox_ids_cannot_read_someone_elses_mail(tmp_path):
+    board = BoardStore(Guardrails(tmp_path))
+    foreign = board.send('user:heejun', 'cursor', 'for cursor only')['id']
+    assert board.inbox('codex:auto', ids=[foreign])['messages'] == []
+    assert board.pending_ids('cursor') == [foreign]                               # still unread for cursor
+
+
+@pytest.mark.parametrize('ids', [[], list(range(1, 52)), ['1'], [True], [1.0], [-1], [0], 'x', 5])
+def test_inbox_rejects_bad_ids(tmp_path, ids):
+    board = BoardStore(Guardrails(tmp_path))
+    with pytest.raises(BoardError):
+        board.inbox('codex:auto', ids=ids)

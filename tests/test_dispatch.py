@@ -1041,3 +1041,10 @@ def test_usage_quality_survives_a_ledger_reopen(tmp_path):
     reopened = DispatchLedger(Guardrails(tmp_path), clock=lambda: NOW, alive=lambda pid: True)
     assert reopened.summary()['recent'][0]['usage_quality'] == 'partial'
     assert reopened.summary()['codex']['usage_quality_runs']['partial'] == 1
+
+
+def test_wake_prompt_names_the_waking_ids_instead_of_the_whole_inbox():
+    prompt = wake_prompt('codex', 'C:/p/python.exe', ids=[12, 15])
+    assert "board_inbox(agent='codex:auto', ids=[12, 15])" in prompt
+    assert "board_inbox(agent='codex:auto')" not in prompt and '"' not in prompt
+    assert wake_prompt('codex', 'C:/p/python.exe') == wake_prompt('codex', 'C:/p/python.exe', ids=())

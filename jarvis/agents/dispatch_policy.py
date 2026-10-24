@@ -348,12 +348,22 @@ def parse_usage(text):
     return (found['input'], found['output']) if found else (None, None)
 
 
-def wake_prompt(employee, python='.venv/Scripts/python.exe'):
+# A run is handed at most this many of its pending message ids (oldest first); the rest wake the next tick.
+WAKE_INBOX_IDS = 20
+
+
+def wake_prompt(employee, python='.venv/Scripts/python.exe', ids=()):
+    """ids: the pending message ids that woke this run. With them the run reads only those messages, so an
+    old broadcast backlog cannot push its real input past the inbox page."""
     agent, branch = f'{employee}:auto', f'auto/{employee}'
+    ids = [int(i) for i in ids]
     # No double quotes: Windows argument passing to PowerShell-based launchers mangles them.
+    read = (f"1. jarvis MCP의 board_inbox(agent='{agent}', ids={ids})로 너를 깨운 요청만 읽는다. 다른 메시지는 읽지 않는다. "
+            '처리할 요청이 없으면 바로 끝낸다.' if ids else
+            f"1. jarvis MCP의 board_inbox(agent='{agent}')로 받은 요청을 읽는다. 처리할 요청이 없으면 바로 끝낸다.")
     lines = [
         f'너는 J.A.R.V.I.S. 프로젝트의 AI 직원 {agent}다. 지금 폴더는 git worktree이고 브랜치는 {branch}다.',
-        f"1. jarvis MCP의 board_inbox(agent='{agent}')로 받은 요청을 읽는다. 처리할 요청이 없으면 바로 끝낸다.",
+        read,
         '2. AGENTS_CONTEXT.md 규칙을 따른다. 파일을 고치기 전에 board_claim으로 경로를 맡는다. 명부 등급을 넘는 도구는 쓰지 않는다.',
         f'3. 커밋은 의미 있는 단위가 끝나고 검사({python} -m pytest)가 통과했을 때만 이 브랜치({branch})에 한다. '
         'main 브랜치 커밋·merge·push는 금지. push는 디스패처가 한다.',

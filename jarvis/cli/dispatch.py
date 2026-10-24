@@ -17,7 +17,7 @@ import psutil
 
 from jarvis.agents.dispatch_policy import (DispatchLedger, DispatcherConfig, EmployeeState, block_unsafe, build_command,
                                            build_env, build_digest, digest_due, due, input_key, models_line,
-                                           parse_usage_detail, run_status, should_run_lead, wake_prompt,
+                                           parse_usage_detail, run_status, should_run_lead, wake_prompt, WAKE_INBOX_IDS,
                                            MODEL_BACKOFF_STATUSES)
 from jarvis.agents.lead_planner import LeadLedger, plan_next
 from jarvis.agents import process_watch
@@ -111,7 +111,8 @@ def run_employee(employee, run_id, config, guard, ledger, board):
     worktree = ensure_worktree(employee)
     # Tests run with the project's interpreter by absolute path; a .venv junction would trip link guards.
     python = (PROJECT_ROOT / '.venv' / 'Scripts' / 'python.exe').as_posix()
-    argv = build_command(employee, config, worktree, wake_prompt(employee, python), mcp_config(), executable=exe[0],
+    ids = board.pending_ids(employee)[:WAKE_INBOX_IDS]  # the oldest waking messages; the rest wake the next tick
+    argv = build_command(employee, config, worktree, wake_prompt(employee, python, ids), mcp_config(), executable=exe[0],
                          git_dir=PROJECT_ROOT / '.git', python=python, model=model)
     argv = exe + argv[1:]
     LOGS.mkdir(parents=True, exist_ok=True)

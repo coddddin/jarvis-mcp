@@ -43,7 +43,7 @@ Codex·Claude Code·Cursor·OpenCode·로컬 리드가 같은 자비스 MCP 도�
 | `board_note(agent, task_id, kind, body, refs)` | 노트 추가 |
 | `board_release(agent, task_id, status, summary, verification, commit)` | 담당 해제와 인수인계 노트 자동 기록 |
 | `board_send(agent, to, body, task_id)` | 짧은 메시지(1000자) |
-| `board_inbox(agent, limit=20, mark_read=True)` | 안 읽은 메시지만, 오래된 순. 읽으면 읽음 처리 |
+| `board_inbox(agent, limit=20, mark_read=True, ids=None)` | 안 읽은 메시지만, 오래된 순. 읽으면 읽음 처리. `ids`(메시지 id 1~50개)를 주면 그중 내 안 읽은 메시지만 돌려준다(좁히기만 하며 남의 메시지는 못 읽음). 디스패처가 깨운 직원은 지시문의 id(대기 메시지 중 오래된 20개)만 읽어서, 쌓인 공지에 실제 요청이 밀리지 않는다 |
 
 ## 동작 세부와 한계
 
