@@ -521,11 +521,75 @@ def test_usage_detail_keeps_the_cache_share_apart():
     from jarvis.agents.dispatch_policy import parse_usage_detail
     claude = json.dumps({'usage': {'input_tokens': 12, 'cache_creation_input_tokens': 40,
                                    'cache_read_input_tokens': 100, 'output_tokens': 7}})
-    assert parse_usage_detail(claude) == {'input': 152, 'cache': 140, 'output': 7}
+    assert parse_usage_detail(claude) == {'input': 152, 'cache': 140, 'output': 7, 'quality': 'measured'}
     assert parse_usage(claude) == (152, 7)                                        # unchanged meaning
     codex = '{"type":"x"}\n' + json.dumps({'usage': {'input_tokens': 900, 'output_tokens': 40}})
-    assert parse_usage_detail(codex) == {'input': 900, 'cache': 0, 'output': 40}
+    assert parse_usage_detail(codex) == {'input': 900, 'cache': 0, 'output': 40, 'quality': 'measured'}
     assert parse_usage_detail('plain text') is None
+
+
+def test_usage_detail_marks_missing_or_invalid_counts_instead_of_guessing():
+    from jarvis.agents.dispatch_policy import parse_usage_detail
+
+    def detail(usage):
+        return parse_usage_detail(json.dumps({'type': 'result', 'usage': usage}))
+    # bool and negative numbers are reporting errors, not counts
+    assert detail({'input_tokens': True, 'output_tokens': -1}) == {
+        'input': None, 'cache': 0, 'output': None, 'quality': 'unknown'}
+    assert detail({'input_tokens': 1, 'output_tokens': -1}) == {
+        'input': 1, 'cache': 0, 'output': None, 'quality': 'partial'}
+    # a missing input is unknown, not 0, even when the output was reported
+    assert detail({'output_tokens': 5}) == {'input': None, 'cache': 0, 'output': 5, 'quality': 'partial'}
+    assert detail({'cache_read_input_tokens': 100, 'output_tokens': 5}) == {
+        'input': None, 'cache': 100, 'output': 5, 'quality': 'partial'}
+    # an invalid cache field makes the input total unknown too
+    assert detail({'input_tokens': 3, 'cache_read_input_tokens': '9', 'output_tokens': 5}) == {
+        'input': None, 'cache': None, 'output': 5, 'quality': 'partial'}
+    assert parse_usage(json.dumps({'usage': {'output_tokens': 5}})) == (None, 5)
+
+
+def test_usage_detail_reads_cursor_camel_case_result():
+    from jarvis.agents.dispatch_policy import parse_usage_detail
+    # Shape of a cursor-agent stream-json `result` event: inputTokens already excludes cache read/write.
+    cursor = '\n'.join([json.dumps({'type': 'thinking', 'subtype': 'completed'}),
+                        json.dumps({'type': 'result', 'subtype': 'success', 'is_error': False, 'result': 'ok',
+                                    'usage': {'inputTokens': 20, 'outputTokens': 8, 'cacheReadTokens': 300,
+                                              'cacheWriteTokens': 40}})])
+    assert parse_usage_detail(cursor) == {'input': 360, 'cache': 340, 'output': 8, 'quality': 'measured'}
+    assert parse_usage(cursor) == (360, 8)
+    # mixed shapes are never summed together: a snake cache key switches the event to snake mode
+    assert parse_usage_detail(json.dumps({'usage': {'inputTokens': 2, 'outputTokens': 1,
+                                                    'cache_read_input_tokens': 50}}))['input'] is None
+
+
+def test_usage_detail_review_cases():
+    from jarvis.agents.dispatch_policy import parse_usage_detail
+
+    def detail(usage):
+        return parse_usage_detail(json.dumps({'type': 'result', 'usage': usage}))
+    # Cursor writes 0 for fields it did not get: an all-zero result is not a measured 0
+    assert detail({'inputTokens': 0, 'outputTokens': 0, 'cacheReadTokens': 0, 'cacheWriteTokens': 0}) == {
+        'input': None, 'cache': 0, 'output': None, 'quality': 'unknown'}
+    assert detail({'inputTokens': 0, 'outputTokens': 3, 'cacheReadTokens': 50, 'cacheWriteTokens': 0}) == {
+        'input': 50, 'cache': 50, 'output': 3, 'quality': 'measured'}
+    # a cache-only event keeps its cache count instead of being dropped
+    assert detail({'cache_read_input_tokens': 100}) == {'input': None, 'cache': 100, 'output': None,
+                                                        'quality': 'partial'}
+    # mixed shapes: snake wins, camel values are ignored rather than mixed in
+    assert detail({'input_tokens': 3, 'outputTokens': 4}) == {'input': 3, 'cache': 0, 'output': None,
+                                                             'quality': 'partial'}
+    # a later partial event does not replace an earlier measured one
+    jsonl = '\n'.join(json.dumps({'usage': u}) for u in ({'input_tokens': 900, 'output_tokens': 40},
+                                                         {'input_tokens': 5}))
+    assert parse_usage_detail(jsonl) == {'input': 900, 'cache': 0, 'output': 40, 'quality': 'measured'}
+    only_partial = '\n'.join(json.dumps({'usage': u}) for u in ({'output_tokens': 1}, {'input_tokens': 5}))
+    assert parse_usage_detail(only_partial)['input'] == 5
+
+
+def test_usage_detail_takes_the_last_reporting_event_without_summing():
+    from jarvis.agents.dispatch_policy import parse_usage_detail
+    jsonl = '\n'.join(json.dumps({'usage': {'input_tokens': n, 'output_tokens': n}}) for n in (5, 7))
+    assert parse_usage_detail(jsonl)['input'] == 7
 
 
 def test_tokens_today_sums_todays_runs_with_a_cache_breakdown(tmp_path):

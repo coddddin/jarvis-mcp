@@ -269,36 +269,70 @@ def detect_eligibility(text):
 
 
 CACHE_FIELDS = ('cache_creation_input_tokens', 'cache_read_input_tokens')
+# Cursor stream-json `result` events: inputTokens already excludes the cache share, and Cursor writes 0 for any
+# field the model did not report, so a Cursor 0 cannot be told apart from a missing value.
+CURSOR_CACHE_FIELDS = ('cacheReadTokens', 'cacheWriteTokens')
+SNAKE_KEYS = ('input_tokens', 'output_tokens') + CACHE_FIELDS
+CURSOR_KEYS = ('inputTokens', 'outputTokens') + CURSOR_CACHE_FIELDS
+
+
+def _count(value):
+    """A token count only if it is a non-negative int (bool and negative numbers are reporting errors)."""
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
 
 
 def _usage_from(obj):
     usage = obj.get('usage') if isinstance(obj, dict) else None
-    if not isinstance(usage, dict) or 'output_tokens' not in usage:
+    if not isinstance(usage, dict):
         return None
-    cache = sum(v for k, v in usage.items() if k in CACHE_FIELDS and isinstance(v, int))
-    plain = usage.get('input_tokens') if isinstance(usage.get('input_tokens'), int) else 0
-    return {'input': plain + cache, 'cache': cache,
-            'output': usage['output_tokens'] if isinstance(usage['output_tokens'], int) else None}
+    # Snake keys win when both shapes appear; camel values next to them are ignored, never mixed in.
+    snake = any(key in usage for key in SNAKE_KEYS)
+    if not snake and not any(key in usage for key in CURSOR_KEYS):
+        return None
+    fields = CACHE_FIELDS if snake else CURSOR_CACHE_FIELDS
+    plain = _count(usage.get('input_tokens' if snake else 'inputTokens'))
+    output = _count(usage.get('output_tokens' if snake else 'outputTokens'))
+    caches = [_count(usage[key]) for key in fields if key in usage]
+    cache = sum(c for c in caches if c is not None) if None not in caches else None
+    total = plain + cache if plain is not None and cache is not None else None
+    if not snake:
+        # Cursor writes 0 for what it did not get, so a 0 total or output is not a measurement.
+        total = total or None
+        output = output or None
+    known = (total is not None) + (output is not None)
+    quality = 'measured' if known == 2 else 'partial' if known or (caches and cache) else 'unknown'
+    return {'input': total, 'cache': cache, 'output': output, 'quality': quality}
 
 
 def parse_usage_detail(text):
-    """{'input' (incl. cache), 'cache', 'output'} from a JSON result or the last JSONL event that reports usage;
-    None if absent. Cache counts only the Claude cache fields (CACHE_FIELDS)."""
+    """{'input' (incl. cache), 'cache', 'output', 'quality'} from a JSON result or JSONL events; None if no event
+    reports usage.
+
+    quality is 'measured' (input and output both read), 'partial' (one side missing or invalid, or only a cache
+    count; the missing side is None, never a guessed 0) or 'unknown' (usage present but nothing readable). Cache
+    counts only the Claude cache fields (CACHE_FIELDS) or Cursor's (CURSOR_CACHE_FIELDS); Codex's
+    cached_input_tokens is already inside input_tokens. A Cursor 0 reads as not reported.
+
+    Whether a provider's numbers cover the whole run or only its last turn is not known here. The last measured
+    event wins (the last other one only when none is measured); nothing is summed and there is no event id to
+    deduplicate on."""
     try:
         found = _usage_from(json.loads(text))
         if found:
             return found
     except (ValueError, TypeError):
         pass
-    found = None
+    measured = other = None
     for line in (text or '').splitlines():
         try:
             candidate = _usage_from(json.loads(line))
         except (ValueError, TypeError):
             continue
-        if candidate:
-            found = candidate
-    return found
+        if candidate and candidate['quality'] == 'measured':
+            measured = candidate
+        elif candidate:
+            other = candidate
+    return measured or other
 
 
 def parse_usage(text):
