@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import subprocess
 
 import pytest
 from mcp.server.fastmcp.exceptions import ToolError
@@ -73,12 +74,51 @@ def test_secrets_links_hidden_folders_and_non_markdown_excluded(tmp_path):
     (vault / '.obsidian/plugin.md').write_text(note())
     outside = tmp_path.parent / (tmp_path.name + '-outside.md')
     outside.write_text(note())
-    (vault / 'linked.md').symlink_to(outside)
     os.link(outside, vault / 'hard.md')
     assert store.index()['indexed_files'] == 1
     assert [x['path'] for x in store.search('검색')['results']] == ['JARVIS-Vault/note.md']
     with pytest.raises(GuardrailError):
         store.index(str(tmp_path.parent))
+
+
+def test_linked_vault_entries_are_not_indexed(tmp_path):
+    store, vault, path = setup(tmp_path)
+    outside = tmp_path.parent / (tmp_path.name + '-outside')
+    outside.mkdir()
+    (outside / 'other.md').write_text(note(id='note-2'), encoding='utf-8')
+    linked = 0
+    try:
+        (vault / 'linked.md').symlink_to(outside / 'other.md')
+        linked += 1
+    except OSError:  # Windows without symlink privilege (WinError 1314)
+        pass
+    if os.name == 'nt':  # a directory junction needs no privilege and must be refused the same way
+        made = subprocess.run(['cmd', '/c', 'mklink', '/J', str(vault / 'joined'), str(outside)],
+                              capture_output=True, text=True, timeout=5)
+        assert made.returncode == 0, made.stderr
+        assert (vault / 'joined').is_junction()
+        linked += 1
+    if not linked:
+        pytest.skip('no symlink or junction can be created on this machine')
+    assert store.index()['indexed_files'] == 1
+    assert [x['path'] for x in store.search('검색')['results']] == ['JARVIS-Vault/note.md']
+
+
+def test_crlf_note_is_indexed_and_searchable(tmp_path):
+    store, vault, path = setup(tmp_path)
+    path.write_bytes(note().replace('\n', '\r\n').encode('utf-8'))
+    assert store.index()['indexed_files'] == 1
+    [hit] = store.search('검색')['results']
+    assert hit['path'] == 'JARVIS-Vault/note.md' and hit['metadata']['id'] == 'note-1'
+
+
+@pytest.mark.parametrize('body', ['a\rb', 'a\r\r\nb', 'a\x1bb'], ids=['lone-cr', 'cr-before-crlf', 'escape'])
+def test_lone_carriage_return_and_control_characters_are_still_refused(tmp_path, body):
+    store, vault, path = setup(tmp_path)
+    path.write_bytes((note().replace('\n', '\r\n') + '\r\n' + body).encode('utf-8'))
+    result = store.index()
+    assert result['indexed_files'] == 0
+    assert [x['path'] for x in result['skipped']] == ['JARVIS-Vault/note.md']
 
 
 @pytest.mark.parametrize('text', [
