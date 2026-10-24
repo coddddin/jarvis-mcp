@@ -14,6 +14,8 @@
 - [원격 인계](handoffs/work-2026-10-22.md) · [보안 검토·검증 기록](handoffs/work-review-2026-10-22.md): PR 의존성과 실제 검증 범위.
 - [로컬 리드·외부 작업자 협업](guides/hybrid-team.md): OpenRig 배정 소스 이식, 로컬/Codex 제안 협업과 운영자 CLI.
 - [자비스 전용 채팅](guides/chat.md): 로컬 모델 대화·기록·읽기 도구와 인증·예산 경계.
+- [Claude Code 세션 상태 보고](guides/claude-session-hooks.md): 공식 hook을 내용 없는 공통 신호로, turn_id=prompt_id, 미연결 이벤트와 설치 전 확인.
+
 - [플러그인 추가·구조](guides/plugins.md): 파일별 도구와 자동 로더 계약, 공통 실행 경계.
 - [AI 직원 명부와 온보딩](guides/agents-roster.md): config/agents.json 한 곳에 직원 등록, 수습·등급, 새 도구 들이는 절차.
 - [W5 디스패처](guides/dispatcher.md): 게시판에 일이 온 AI 직원을 자동으로 깨우는 순환, 브랜치 작업·머지 승인·상한·장부.

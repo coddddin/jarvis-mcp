@@ -1,0 +1,176 @@
+{
+  "description": "Example only, not installed. Render real absolute paths with jarvis/cli/claude_session_signal.py --render-config, review, and add the hooks block to a Claude Code settings file only with the user's approval. Stores metadata only (employee, session_id, event_id, turn_id=prompt_id, event, source). Not connected: interrupted (no official hook). Before enabling: confirm prompt_id stays the same from UserPromptSubmit to Stop in one real session.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "__ABSOLUTE_PYTHON__",
+            "args": [
+              "__ABSOLUTE_REPO__/jarvis/cli/claude_session_signal.py",
+              "--workspace",
+              "__ABSOLUTE_WORKSPACE__",
+              "--project-root",
+              "__ABSOLUTE_REPO__"
+            ],
+            "async": true,
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "__ABSOLUTE_PYTHON__",
+            "args": [
+              "__ABSOLUTE_REPO__/jarvis/cli/claude_session_signal.py",
+              "--workspace",
+              "__ABSOLUTE_WORKSPACE__",
+              "--project-root",
+              "__ABSOLUTE_REPO__"
+            ],
+            "async": true,
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "__ABSOLUTE_PYTHON__",
+            "args": [
+              "__ABSOLUTE_REPO__/jarvis/cli/claude_session_signal.py",
+              "--workspace",
+              "__ABSOLUTE_WORKSPACE__",
+              "--project-root",
+              "__ABSOLUTE_REPO__"
+            ],
+            "async": true,
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "__ABSOLUTE_PYTHON__",
+            "args": [
+              "__ABSOLUTE_REPO__/jarvis/cli/claude_session_signal.py",
+              "--workspace",
+              "__ABSOLUTE_WORKSPACE__",
+              "--project-root",
+              "__ABSOLUTE_REPO__"
+            ],
+            "async": true,
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "__ABSOLUTE_PYTHON__",
+            "args": [
+              "__ABSOLUTE_REPO__/jarvis/cli/claude_session_signal.py",
+              "--workspace",
+              "__ABSOLUTE_WORKSPACE__",
+              "--project-root",
+              "__ABSOLUTE_REPO__"
+            ],
+            "async": true,
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "__ABSOLUTE_PYTHON__",
+            "args": [
+              "__ABSOLUTE_REPO__/jarvis/cli/claude_session_signal.py",
+              "--workspace",
+              "__ABSOLUTE_WORKSPACE__",
+              "--project-root",
+              "__ABSOLUTE_REPO__"
+            ],
+            "async": true,
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "__ABSOLUTE_PYTHON__",
+            "args": [
+              "__ABSOLUTE_REPO__/jarvis/cli/claude_session_signal.py",
+              "--workspace",
+              "__ABSOLUTE_WORKSPACE__",
+              "--project-root",
+              "__ABSOLUTE_REPO__"
+            ],
+            "async": true,
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "StopFailure": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "__ABSOLUTE_PYTHON__",
+            "args": [
+              "__ABSOLUTE_REPO__/jarvis/cli/claude_session_signal.py",
+              "--workspace",
+              "__ABSOLUTE_WORKSPACE__",
+              "--project-root",
+              "__ABSOLUTE_REPO__"
+            ],
+            "async": true,
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "__ABSOLUTE_PYTHON__",
+            "args": [
+              "__ABSOLUTE_REPO__/jarvis/cli/claude_session_signal.py",
+              "--workspace",
+              "__ABSOLUTE_WORKSPACE__",
+              "--project-root",
+              "__ABSOLUTE_REPO__"
+            ],
+            "async": true,
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}
