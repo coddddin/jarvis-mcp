@@ -18,16 +18,9 @@
 - JarvisWorkspace/: data only; documents/ and .jarvis-index/; not the code root.
 - .jarvis-auth/: server credentials; outside default indexed documents; Git-ignored.
 - artifacts/refactor/: source-only rollback ZIP; secrets/data excluded; Git-ignored.
-## 3. Current Phase & Progress (2026-10-20)
-- Structure: feature package migration complete; latest phase checkpoint 344 passed/0 skipped; 27 original contracts preserved.
-- Phase 2 knowledge: local search and independent Google OAuth verified; live MCP Gmail/Calendar both OK (2026-10-17).
-- Phase 2 utility: snapshots/organizer/launcher/debug + registered web collector verified; all included in full 212-test verification; report junction boundaries preserved.
-- Downloads read-only scan enabled in Codex config; live MCP verified 20 files (2026-10-17), no moves/content reads.
-- Phase 2.5: Ollama 0.40.5 + qwen2.5-coder:7b installed; live planner/coder/static-QA passed (3 steps, no corrections); cloud disabled.
-- Phase 2.5 controls: pinned Docker/functional integer QA, shared reservations, cancellation/resume/retention, scoped memory and authenticated events verified.
-- Phase 3: local chat + task HUD; hybrid local/Codex/Claude proposal handoff verified (33 focused tests; Claude live review needs_user_input, not executed QA). See [team guide](docs/guides/hybrid-team.md), [report](docs/archive/reports/hybrid-team.md); chat owner handles UI/server/app/chat.py/chat_step.py; briefing/3D/voice pending.
-- Evidence: [Phase 1](docs/archive/reports/phase-01.md), [Phase 2](docs/archive/reports/phase-02.md), [Phase 2.5](docs/archive/reports/phase-02-5.md); local-only approved Vault adapter: [guide](docs/guides/obsidian.md), [review](docs/handoffs/work-review-2026-10-22.md). Desktop deployment pending.
-- Plugin contract: [plugins](docs/guides/plugins.md); [snapshot usage/limits](docs/guides/snapshots.md); no hot reload.
+## 3. Current State
+- Live status: board (`board_list`, `board_inbox`) and `git log origin/main`; plan and milestones: [PLAN](docs/PLAN.md).
+- Phase evidence: [Phase 1](docs/archive/reports/phase-01.md), [Phase 2](docs/archive/reports/phase-02.md), [Phase 2.5](docs/archive/reports/phase-02-5.md); [plugins](docs/guides/plugins.md), [snapshots](docs/guides/snapshots.md), [team](docs/guides/hybrid-team.md), [obsidian](docs/guides/obsidian.md).
 ## 4. Rules for AI Agents
 1. Read this map and relevant contracts; keep edits localized, inspect shared dependencies when needed.
 2. Preserve existing tools and mandatory guardrails; no arbitrary/destructive shell execution.
@@ -43,8 +36,6 @@
 11. Follow docs/architecture.md; run scripts/check_architecture.py for layout/import changes; no new root implementation modules.
 12. The PC can power off and sessions can be replaced at any time. (a) Session start: `git status` and `git worktree list` first, then board_inbox, board_list. Make sure no other live session uses your board ID. Leads judge who is really active from recent board claims/updates, each worktree's latest commit time and running codex/agent/opencode processes, not ListAgents alone. Others' uncommitted changes and stale claims stay theirs: never commit, revert, stash or adopt them; report. (b) Work in your own worktree+branch, never in the shared main checkout, and never edit a file another agent is editing. board_claim paths first; board_heartbeat long work. (c) After each verified step, commit and push your branch (tracked sources only, no secrets or large outputs). If push fails, keep the local commit, record the cause, no automatic retry. (d) After each checkpoint, board_note(kind=handoff): changed files, verified/unverified, next step, branch, commit, base main hash, pushed yes/no; a replacement session must resume from board + git log alone. (e) Task end: board_release(status=review) with summary+verification+last commit and a merge request. main gets one squash merge per task: small changes by the lead after one review, others with user approval ([sizes](docs/DEVELOPMENT.md)); then remove the worktree and branch. Never commit just to communicate.
 13. Agent web research/browsing/UI tests: use ego-lite via ego-browser. Read its skill and run `ego-browser skill` first. If unavailable, report the blocker; never silently substitute another browser (user instruction, 2026-10-21).
-## 5. Active integration handoff (2026-10-20)
-- REA 6.7.0 + Agent Reach 1.5.0 + Ghidra 12.1.4 installed; static JS/PE + registered RSS verified via MCP (29 tools); Android/additional channels next. See [report](docs/archive/reports/rea-agent-reach.md).
+## 5. Standing constraints
 - Removing/uninstalling/disabling redundant MCPs or tools requires explicit user consent after presenting scope/reason/impact.
-- Keep PLAN.md and relevant reports current with changes, versions/paths, checks, blockers and exact next actions; never record secrets.
-
+- Never record secrets. REA/Agent Reach/Ghidra notes: [report](docs/archive/reports/rea-agent-reach.md).
