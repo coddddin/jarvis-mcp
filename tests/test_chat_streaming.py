@@ -281,3 +281,89 @@ def test_send_streams_the_final_step_and_clears_a_tool_step_draft(service, monke
     turn = service.send(conversation, uuid4().hex, 'PC 상태 알려줘')['turns'][0]
     assert saved == ['검색해볼게', '', 'CPU는 여유']                   # tool step draft cleared before the answer
     assert turn['status'] == 'completed' and turn['draft'] == ''
+
+
+# --- warm-up: load the model once when the HUD starts, generate nothing ---
+
+def test_worker_warm_up_only_loads_the_model_with_the_chat_options(step, monkeypatch):
+    checked, sent = [], []
+    monkeypatch.setattr(step.support, 'local_model', checked.append)
+    monkeypatch.setattr(step.support, 'request', lambda path, body: sent.append((path, body)) or
+                        {'message': {'role': 'assistant', 'content': ''}, 'done': True, 'done_reason': 'load'})
+    stdout = io.StringIO()
+    monkeypatch.setattr(step.sys, 'stdin', io.TextIOWrapper(io.BytesIO(b'{"model": "qwen2.5-coder:7b", "warm": true}')))
+    monkeypatch.setattr(step.sys, 'stdout', stdout)
+    assert step.main() == 0 and json.loads(stdout.getvalue()) == {'ok': True, 'result': {}}
+    assert checked == ['qwen2.5-coder:7b']
+    assert sent == [('/api/chat', {'model': 'qwen2.5-coder:7b', 'messages': [], 'stream': False,
+                                   'options': step.OPTIONS, 'keep_alive': step.KEEP_ALIVE})]
+
+
+def test_worker_warm_up_reports_a_model_that_did_not_load(step, monkeypatch):
+    monkeypatch.setattr(step.support, 'local_model', lambda model: None)
+    monkeypatch.setattr(step.support, 'request', lambda path, body: {'done': False})
+    stdout = io.StringIO()
+    monkeypatch.setattr(step.sys, 'stdin', io.TextIOWrapper(io.BytesIO(b'{"model": "qwen2.5-coder:7b", "warm": true}')))
+    monkeypatch.setattr(step.sys, 'stdout', stdout)
+    assert step.main() == 1 and json.loads(stdout.getvalue())['ok'] is False
+
+
+class WarmProcess:
+    def __init__(self, error=None):
+        self.sent, self.error, self.done = [], error, False
+
+    def communicate(self, data=None, timeout=None):
+        if data is not None:
+            self.sent.append(json.loads(data))
+        if self.error and not self.done:
+            raise self.error
+        return b'', b''
+
+    def poll(self):
+        return 0 if self.done else None
+
+    def kill(self):
+        self.done = True
+
+
+def test_service_warm_up_runs_in_the_background_and_sends_only_the_model(service, monkeypatch):
+    process = WarmProcess()
+    monkeypatch.setattr(service, '_spawn_worker', lambda: process)
+    service.warm_up().join(5)
+    assert process.sent == [{'model': service.model, 'warm': True}]
+
+
+@pytest.mark.parametrize('error', [subprocess.TimeoutExpired('worker', 120), OSError('no python')])
+def test_service_warm_up_swallows_failures_and_never_leaves_the_worker_running(service, monkeypatch, error):
+    process = WarmProcess(error)
+    monkeypatch.setattr(service, '_spawn_worker', lambda: process if isinstance(error, subprocess.TimeoutExpired)
+                        else (_ for _ in ()).throw(error))
+    thread = service.warm_up()
+    thread.join(5)
+    assert not thread.is_alive()
+    if isinstance(error, subprocess.TimeoutExpired):
+        assert process.done
+
+
+def test_service_warm_up_respects_the_stop_marker(service, tmp_path, monkeypatch):
+    (tmp_path / '.jarvis-stop').write_text('stop')
+    spawned = []
+    monkeypatch.setattr(service, '_spawn_worker', lambda: spawned.append(1))
+    service.warm_up().join(5)
+    assert spawned == []
+
+
+def test_hud_server_warms_the_model_only_after_a_successful_bind(monkeypatch):
+    import asyncio
+    import uvicorn
+    from jarvis.cli.hud import HUDServer
+    calls = []
+
+    async def startup(server, sockets=None):
+        assert calls == []
+        server.started = sockets != 'fail'
+    monkeypatch.setattr(uvicorn.Server, 'startup', startup)
+    asyncio.run(HUDServer(uvicorn.Config('unused'), on_start=lambda: calls.append(1)).startup(sockets='fail'))
+    assert calls == []
+    asyncio.run(HUDServer(uvicorn.Config('unused'), on_start=lambda: calls.append(1)).startup())
+    assert calls == [1]

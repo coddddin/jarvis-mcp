@@ -19,12 +19,15 @@ from jarvis.features.google.service import GoogleBriefing
 
 class HUDServer(uvicorn.Server):
     """Open only after loopback binding succeeds, avoiding a browser startup race."""
-    def __init__(self, config, *, open_url=None):
+    def __init__(self, config, *, open_url=None, on_start=None):
         super().__init__(config)
         self.open_url = open_url
+        self.on_start = on_start
 
     async def startup(self, sockets=None):
         await super().startup(sockets=sockets)
+        if self.started and self.on_start:
+            self.on_start()
         if self.started and self.open_url:
             try:
                 await asyncio.to_thread(webbrowser.open, self.open_url)
@@ -58,7 +61,8 @@ def main():
     config = uvicorn.Config(app, host='127.0.0.1', port=args.port, ws='websockets-sansio',
                 ws_max_size=1024, ws_max_queue=16, limit_concurrency=32,
                 ws_per_message_deflate=False, access_log=False, log_level='warning', server_header=False)
-    HUDServer(config, open_url=url if args.open else None).run()
+    # Load the chat model in the background once the port is bound, so the first reply does not wait for it.
+    HUDServer(config, open_url=url if args.open else None, on_start=chat.warm_up).run()
 
 
 if __name__ == '__main__':
