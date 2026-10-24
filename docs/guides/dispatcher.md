@@ -55,6 +55,10 @@
 - Claude Code: 공식 statusline 입력의 `rate_limits.five_hour`·`seven_day`(Pro·Max, 세션 첫 응답 이후). `jarvis/cli/claude_statusline_usage.py`가 숫자만 저장하고 한 줄을 출력한다. 설치(사용자 Claude Code 설정의 `statusLine`)는 사용자 승인 후. 예시: `config/statusline.claude.example.json`, 실제 경로 출력: `--workspace <작업공간> --render-config`.
 - 수집 실패는 로그만 남기고 이전 파일을 그대로 둔다.
 
+## 알림 (W3, 1단계)
+
+tick은 하루 요약을 보낸 뒤 사용자에게 알릴 사건을 골라 `user:heejun`에게 게시판 메시지 1통으로 보낸다. 대상은 lease가 끝난 claim, blocked 작업, 어댑터 점검 코드(`privacy_open` 포함), 받은 일이 있는데 점검 때문에 깨우지 않은 직원, 프로세스 감시의 `service_down`·`owner_dead`·`overdue`다. 같은 사건은 하루에 한 번만 보낸다(`.jarvis-dispatch/alerts.sqlite3`, 7일 보관). 전송에 성공한 것만 기록하므로 실패하면 다음 tick에 다시 보낸다. 문구에는 작업 제목(redact 후 60자), 직원 ID, 정해진 한국어 문장만 들어가고 노트·경로·명령은 넣지 않는다. 알림이 실패해도 tick은 계속된다. HUD 디스패처 패널은 오늘 보낸 알림을 읽기 전용으로 보여 준다. Windows 토스트 알림은 2단계(별도 승인)다.
+
 ## 순환 닫기: 로컬 팀장과 하루 요약
 
 - 로컬 팀장: 모든 직원에게 처리할 메시지도 실행 중인 일도 없을 때만 tick이 `lead_planner.plan_next`를 부른다. 팀장은 `docs/PLAN.md`의 미체크 항목 하나를 작업으로 만들고 담당 직원에게 메시지로 배정한다. 같은 tick에서 그 직원을 바로 깨운다. 판단은 로컬 Ollama(`lead_judge.ollama_judge`)가 하고, Ollama가 꺼져 있거나 판단 함수가 없으면 팀장만 쉬고 직원 깨우기는 계속한다. 하루 생성 상한은 `lead.daily_tasks`(기본 3). 민감 작업은 작업을 만들지 않고 사용자에게 승인 요청만 보낸다.

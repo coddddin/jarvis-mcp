@@ -47,7 +47,10 @@
   // W3: last observed 5-hour and weekly usage; display only, the dispatcher ignores stale samples.
   const usageTitle = element('h3', '', '마지막 사용량'); usageTitle.hidden = true;
   const usage = element('ul', 'activity'); usage.setAttribute('aria-label', '마지막 사용량'); usage.hidden = true;
-  panel.append(heading, summary, notice, actions, watchTitle, watch, usageTitle, usage, element('h3', '', '직원별 누적'), employees,
+  // W3 alerts: what the dispatcher already told the user today (board message to user:heejun).
+  const alertTitle = element('h3', '', '오늘 보낸 알림'); alertTitle.hidden = true;
+  const alertList = element('ul', 'activity'); alertList.setAttribute('aria-label', '오늘 알림'); alertList.hidden = true;
+  panel.append(heading, summary, notice, actions, watchTitle, watch, usageTitle, usage, alertTitle, alertList, element('h3', '', '직원별 누적'), employees,
     element('h3', '', '최근 실행 (최대 10개)'), recent);
   workspace.append(panel);
 
@@ -123,6 +126,21 @@
     usage.hidden = !show; usageTitle.hidden = !show;
   }
 
+  function renderAlerts(report) {
+    alertList.replaceChildren();
+    const today = report && Array.isArray(report.today) ? report.today : [];
+    for (const item of today.slice(0, 20)) {
+      if (!item || typeof item.text !== 'string') continue;
+      const row = element('li');
+      row.append(element('span', 'status needs_user_input', isTime(item.sent) ? stamp(item.sent) : '알림'),
+        element('span', '', ' ' + item.text.slice(0, 300)));
+      alertList.append(row);
+    }
+    if (report && report.error) alertList.append(element('li', 'empty-feed', '알림 기록을 읽지 못했어요.'));
+    const show = alertList.children.length > 0;
+    alertList.hidden = !show; alertTitle.hidden = !show;
+  }
+
   function render(data) {
     snapshot = data;
     const [label, kind] = data.effective_enabled ? ['켜짐', 'completed']
@@ -142,6 +160,7 @@
 
     renderWatch(data.watch);
     renderUsage(data.usage);
+    renderAlerts(data.alerts);
 
     const now = Date.now() / 1000;
     employees.replaceChildren();

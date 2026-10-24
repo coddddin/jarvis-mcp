@@ -193,3 +193,30 @@ test('last observed usage shows per employee with stale marking; absent keeps it
   assert.match(text, /오래됨/);
   assert.match(text, /판단에는 쓰지 않음/);
 });
+
+test('todays alerts show as plain text; none keeps the section hidden', async () => {
+  const h = harness();
+  await h.connect('t');
+  const list = find(h.panel, n => n.attributes['aria-label'] === '오늘 알림');
+  assert.equal(list.hidden, true);
+  h.setHandler(() => ({status:200, body:snapshot({alerts:{today:[
+    {text:'멈춘 담당: <b>job</b>(codex)', sent:NOW - 60}, {text:42, sent:NOW}, null,
+    {text:'x'.repeat(400), sent:'later'}]}})}));
+  await h.button('새로고침').events.click();
+  await h.settle();
+  assert.equal(list.hidden, false);
+  assert.equal(list.children.length, 2);  // non-text items are ignored
+  const text = flatten(list);
+  assert.match(text, /멈춘 담당: <b>job<\/b>\(codex\)/);  // textContent only, never markup
+  assert.ok(!text.includes('x'.repeat(301)));
+});
+
+test('an unreadable alert record is reported without hiding the rest', async () => {
+  const h = harness();
+  h.setHandler(() => ({status:200, body:snapshot({alerts:{today:[], error:'alerts_unavailable'}})}));
+  await h.connect('t');
+  const list = find(h.panel, n => n.attributes['aria-label'] === '오늘 알림');
+  assert.equal(list.hidden, false);
+  assert.match(flatten(list), /알림 기록을 읽지 못했어요/);
+  assert.match(flatten(h.panel), /켜짐/);
+});

@@ -100,6 +100,7 @@ def snapshot(guard, config_path, *, clock=time.time):
         'recent': [{key: row.get(key) for key in RUN_FIELDS} for row in recent[:RECENT]],
         'watch': _watch(guard, config_path),
         'usage': _usage(guard),
+        'alerts': _alerts(guard, clock()),
         'read_at': clock(),
     }
 
@@ -111,6 +112,14 @@ def _usage(guard):
         return usage_collector.usage_overview(guard)
     except Exception:
         return {}
+
+
+def _alerts(guard, now):
+    from jarvis.agents import alerts  # imported here like the watch: keeps this module's import graph small
+    try:
+        return {'today': alerts.read_today(guard, now)}
+    except Exception:  # the panel still shows the rest when the alert record cannot be read
+        return {'today': [], 'error': 'alerts_unavailable'}
 
 
 def _watch(guard, config_path):

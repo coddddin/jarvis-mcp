@@ -27,6 +27,7 @@ from jarvis.agents.usage_collector import collect_codex, usage_overview
 from jarvis.agents.worker_adapters import ADAPTERS, employed, roster_problem_codes, roster_problems
 from jarvis.agents.dispatch_policy import Decision
 from jarvis.app.runtime import load_guardrails
+from jarvis.cli.alerts import send_alerts
 from jarvis.core.paths import CONFIG_ROOT, PROJECT_ROOT
 from jarvis.core.roster import load_roster
 from jarvis.features.board.service import BoardStore
@@ -284,6 +285,10 @@ def tick(dry_run=False):
         log_service_error(RuntimeError('Adapter check failed; not woken: '
                                        + ' | '.join(p for name in blocked for p in problems[name])))
     send_digest_if_due(guard, board, ledger, config, now, roster)
+    try:  # W3 alerts: new events once a day to the user; never stops the tick
+        send_alerts(guard, board, roster, CONFIG_ROOT / 'dispatcher.json', now, sender=DISPATCHER_ID, not_woken=blocked)
+    except Exception as exc:
+        log_service_error(exc)
     threads = []
     for decision in decisions:
         if not decision.wake:
