@@ -3,6 +3,9 @@
 With "stream": true in the payload it reads Ollama's NDJSON stream and prints {"delta": text} lines with the
 newly decoded part of the JSON "reply" string as it arrives, then the same final {"ok", "result"} line as the
 non-streaming path. The guards are the same: named local model only, 256 KB response cap, done/done_reason check.
+
+With "warm": true it only asks Ollama to load the model (empty messages, same options so the later chat does not
+reload it) and prints {"ok": true, "result": {}}. Nothing is generated.
 """
 import http.client
 import json
@@ -17,6 +20,9 @@ spec = importlib.util.spec_from_file_location('local_agent_step', Path(__file__)
 support = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(support)
 
+# Same options for chat and warm-up: a different num_ctx would make Ollama reload the model.
+OPTIONS = {'temperature': 0.2, 'num_predict': 1024, 'num_ctx': 8192}
+KEEP_ALIVE = '30m'
 REPLY_START = re.compile(r'\s*\{\s*"reply"\s*:\s*"')
 ESCAPES = {'"': '"', '\\': '\\', '/': '/', 'b': '\b', 'f': '\f', 'n': '\n', 'r': '\r', 't': '\t'}
 
@@ -107,9 +113,16 @@ def main():
             raise ValueError('Chat context too large.')
         payload = json.loads(raw)
         support.local_model(payload['model'])
+        if payload.get('warm') is True:
+            data = support.request('/api/chat', {'model': payload['model'], 'messages': [], 'stream': False,
+                                                 'options': OPTIONS, 'keep_alive': KEEP_ALIVE})
+            if data.get('done') is not True:
+                raise ValueError('Model did not load.')
+            emit({'ok': True, 'result': {}})
+            return 0
         body = {'model': payload['model'], 'stream': payload.get('stream') is True,
                 'format': payload['schema'], 'messages': payload['messages'],
-                'options': {'temperature': 0.2, 'num_predict': 1024, 'num_ctx': 8192}, 'keep_alive': '2m'}
+                'options': OPTIONS, 'keep_alive': KEEP_ALIVE}
         if not body['stream']:
             data = support.request('/api/chat', body)
             message = data['message']

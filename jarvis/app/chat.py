@@ -107,6 +107,32 @@ class ChatService:
                 'conversations': self.store.listing(), 'team': self.team.metadata(),
                 'dispatch': self.dispatcher.metadata()}
 
+    @staticmethod
+    def _spawn_worker():
+        return subprocess.Popen([sys.executable, '-I', str(WORKERS_ROOT / 'chat_step.py')],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            env={key: value for key, value in os.environ.items() if key.upper() in {'SYSTEMROOT', 'WINDIR', 'TEMP', 'TMP'}},
+            creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+
+    def warm_up(self):
+        """Ask the worker to load the local model in the background so the first reply starts sooner. Best effort:
+        returns at once, generates nothing, and ignores every failure (the first chat then just loads it)."""
+        def run():
+            process = None
+            try:
+                self.guard.check_running()
+                process = self._spawn_worker()
+                process.communicate(json.dumps({'model': self.model, 'warm': True}).encode(), timeout=120)
+            except Exception:
+                pass
+            finally:
+                if process is not None and process.poll() is None:
+                    process.kill()
+                    process.communicate()
+        thread = threading.Thread(target=run, daemon=True, name='chat-warm-up')
+        thread.start()
+        return thread
+
     def _infer(self, messages, schema, deadline, on_delta=None):
         self.guard.check_running()
         body = {'model': self.model, 'messages': messages, 'schema': schema}
@@ -115,10 +141,7 @@ class ChatService:
         payload = json.dumps(body, ensure_ascii=False)
         if len(payload.encode()) > 65536:
             raise ChatError('Chat context limit reached.')
-        process = subprocess.Popen([sys.executable, '-I', str(WORKERS_ROOT / 'chat_step.py')],
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-            env={key: value for key, value in os.environ.items() if key.upper() in {'SYSTEMROOT', 'WINDIR', 'TEMP', 'TMP'}},
-            creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+        process = self._spawn_worker()
         if on_delta is not None:
             return self._infer_streaming(process, payload.encode(), deadline, on_delta)
         try:
