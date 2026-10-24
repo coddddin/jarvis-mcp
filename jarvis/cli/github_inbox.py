@@ -35,6 +35,15 @@ class BoardFull(BoardError):
     """The board reached MAX_TASKS: every later Issue would fail too, so the batch stops."""
 
 
+def _halt_reason(guard):
+    """'stopped' only for the stop marker; any other guardrail refusal (linked storage) is storage."""
+    try:
+        guard.check_running()
+    except GuardrailError:
+        return "stopped"
+    return "storage_unavailable"
+
+
 def _source_title(value):
     """The validated source title, or IssueRejected with 'invalid_title' (type/length) or
     'title_redacted' (credentials or control characters), before any write."""
@@ -169,14 +178,11 @@ def main(argv=None):
                 results.append(import_issue(board, item, repo=args.repo))
             except IssueRejected as exc:
                 rejected.append({"issue": f"{args.repo}#{item['number']}", "error": exc.code})
-            except GuardrailError:
-                halted = "stopped"
-                break
             except BoardFull:
                 halted = "board_full"
                 break
-            except (BoardError, sqlite3.Error, OSError):
-                halted = "storage_unavailable"
+            except (GuardrailError, BoardError, sqlite3.Error, OSError):
+                halted = _halt_reason(guard)
                 break
         # Receipt is not assignment or execution authority. Report the current handoff gap
         # without sending employee messages or claiming tasks on the user's behalf.
@@ -184,10 +190,14 @@ def main(argv=None):
         # Ownership alone cannot prove that another assignment is needed.
         unclaimed = []
         if halted is None:
-            for result in results:
-                task = board.get(result['task_id'])
-                if task['status'] == 'open' and task['owner'] is None:
-                    unclaimed.append(task['id'])
+            try:
+                for result in results:
+                    task = board.get(result['task_id'])
+                    if task['status'] == 'open' and task['owner'] is None:
+                        unclaimed.append(task['id'])
+            except (GuardrailError, BoardError, sqlite3.Error, OSError):
+                unclaimed, halted = [], _halt_reason(guard)
+        if halted is None:
             next_action = "check_existing_assignment" if unclaimed else "inspect_existing_tasks"
         else:
             next_action = "resolve_failure_then_rerun"  # the board may be unreadable; do not guess

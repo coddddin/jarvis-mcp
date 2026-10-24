@@ -6,7 +6,7 @@ import pytest
 from urllib.request import Request
 from jarvis.cli import github_inbox as inbox
 from jarvis.cli.github_inbox import eligible, import_issue
-from jarvis.core.guardrails import Guardrails
+from jarvis.core.guardrails import GuardrailError, Guardrails
 from jarvis.features.board.service import BoardError, BoardStore
 
 
@@ -293,3 +293,23 @@ def test_board_full_is_detected_inside_the_import_transaction(tmp_path, monkeypa
     import_issue(board, issue(12), repo=inbox.REPO)
     with pytest.raises(inbox.BoardFull):
         import_issue(board, issue(13), repo=inbox.REPO)
+
+
+def test_linked_storage_refusal_is_reported_as_storage_not_stop(tmp_path, monkeypatch, capsys):
+    calls = _failing_after_first(
+        monkeypatch, lambda board: (_ for _ in ()).throw(GuardrailError('Linked board storage is forbidden.')))
+    rc, out, err = _apply(tmp_path, monkeypatch, capsys, [issue(12), issue(13), issue(14)])
+    assert rc == 1 and out['halted'] == 'storage_unavailable' and calls == [12, 13]
+    assert [r['issue'] for r in out['results']] == ['coddddin/jarvis-mcp#12']
+    assert 'Linked' not in err
+
+
+def test_receipt_reread_failure_keeps_receipts_and_stops_safely(tmp_path, monkeypatch, capsys):
+    def broken_get(self, task_id, **kw):
+        raise __import__('sqlite3').OperationalError('database is locked')
+    monkeypatch.setattr(BoardStore, 'get', broken_get)
+    rc, out, err = _apply(tmp_path, monkeypatch, capsys, [issue(12), issue(13)])
+    assert rc == 1 and out['halted'] == 'storage_unavailable' and len(out['results']) == 2
+    assert out['dispatch'] == {'automatic_execution': False, 'unclaimed_task_ids': [],
+                               'next_action': 'resolve_failure_then_rerun'}
+    assert 'locked' not in err
