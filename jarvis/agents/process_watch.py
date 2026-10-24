@@ -49,7 +49,7 @@ def scan(guard, config_path, *, now=None, lookup=psutil.Process):
     findings = []
 
     service = dispatch_control.service_state(guard, lookup=lookup)
-    if not service['running']:
+    if service['status'] in ('stopped', 'identity_mismatch'):
         try:
             paused = read_pause(guard)['paused']
         except Exception:  # an unreadable switch counts as paused, as in the service loop
@@ -70,4 +70,7 @@ def scan(guard, config_path, *, now=None, lookup=psutil.Process):
         if now - started > limit + OVERDUE_GRACE_SECONDS:
             findings.append(_finding('overdue', ref, started, employee=row['employee'],
                                      elapsed_seconds=round(now - started), limit_seconds=limit))
-    return {'findings': findings[:MAX_FINDINGS], 'checked_at': now}
+    report = {'findings': findings[:MAX_FINDINGS], 'checked_at': now}
+    if service['status'] == 'unknown':
+        report['error'] = 'service_observation_unavailable'
+    return report
