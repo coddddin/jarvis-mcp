@@ -482,3 +482,103 @@ def test_digest_is_still_sent_when_the_promotion_check_fails(tmp_path, monkeypat
     monkeypatch.setattr(cli_dispatch, 'log_service_error', logged.append)
     assert cli_dispatch.send_digest_if_due(guard, board, ledger, config, NOW, roster=roster)
     assert sent and '승격' not in sent[0] and 'board gone' in str(logged[-1])
+
+
+# --- W5: per-employee daily token cap -----------------------------------------------------------------
+
+def test_token_cap_blocks_waking_only_when_configured_and_reached():
+    assert due([state(tokens_today=10**9)], NOW, daily_runs=10)[0].wake            # no cap configured
+    assert due([state(tokens_today=4999, daily_tokens=5000)], NOW, daily_runs=10)[0].wake
+    decision = due([state(tokens_today=5000, daily_tokens=5000)], NOW, daily_runs=10)[0]
+    assert not decision.wake and decision.reason == 'token_cap'
+    # The run cap is reported first when both apply; a running employee stays 'already_running'.
+    assert due([state(runs_today=10, tokens_today=9000, daily_tokens=5000)], NOW, daily_runs=10)[0].reason == 'daily_cap'
+    assert due([state(running=True, tokens_today=9000, daily_tokens=5000)], NOW, daily_runs=10)[0].reason == 'already_running'
+
+
+def test_daily_tokens_setting_is_optional_and_bounded():
+    base = {'version': 1, 'enabled': True, 'interval_minutes': 10, 'daily_runs': 10, 'run_timeout_minutes': 30}
+    config = DispatcherConfig.model_validate({**base, 'employees': {'codex': {}, 'cursor': {'daily_tokens': 200000}}})
+    assert config.employees['codex'].daily_tokens is None and config.employees['cursor'].daily_tokens == 200000
+    for bad in (999, 0, '5000', 1.5):
+        with pytest.raises(ValueError):
+            DispatcherConfig.model_validate({**base, 'employees': {'codex': {'daily_tokens': bad}}})
+
+
+def test_usage_detail_keeps_the_cache_share_apart():
+    from jarvis.agents.dispatch_policy import parse_usage_detail
+    claude = json.dumps({'usage': {'input_tokens': 12, 'cache_creation_input_tokens': 40,
+                                   'cache_read_input_tokens': 100, 'output_tokens': 7}})
+    assert parse_usage_detail(claude) == {'input': 152, 'cache': 140, 'output': 7}
+    assert parse_usage(claude) == (152, 7)                                        # unchanged meaning
+    codex = '{"type":"x"}\n' + json.dumps({'usage': {'input_tokens': 900, 'output_tokens': 40}})
+    assert parse_usage_detail(codex) == {'input': 900, 'cache': 0, 'output': 40}
+    assert parse_usage_detail('plain text') is None
+
+
+def test_tokens_today_sums_todays_runs_with_a_cache_breakdown(tmp_path):
+    clock = [NOW]
+    ledger = DispatchLedger(Guardrails(tmp_path), clock=lambda: clock[0], alive=lambda pid: True)
+    clock[0] = NOW - 86400                                                         # yesterday: not counted
+    ledger.finish(ledger.start('claude-code', pid=1), status='ok', exit_code=0, input_tokens=10**6,
+                  output_tokens=10, cache_tokens=10**6 - 5, note='')
+    clock[0] = NOW
+    ledger.finish(ledger.start('claude-code', pid=1), status='ok', exit_code=0, input_tokens=1500,
+                  output_tokens=200, cache_tokens=1400, note='')
+    ledger.finish(ledger.start('claude-code', pid=1), status='ok', exit_code=0, input_tokens=300,
+                  output_tokens=50, note='')                                       # older caller: cache unknown
+    ledger.finish(ledger.start('claude-code', pid=1), status='error', exit_code=None, input_tokens=None,
+                  output_tokens=None, note='')                                     # unreadable usage counts 0
+    ledger.finish(ledger.start('codex', pid=1), status='ok', exit_code=0, input_tokens=9, output_tokens=9, note='')
+    assert ledger.tokens_today('claude-code') == {'total': 2050, 'input': 1800, 'output': 250, 'cache': 1400,
+                                                  'cache_unknown_runs': 1}
+    assert ledger.tokens_today('opencode') == {'total': 0, 'input': 0, 'output': 0, 'cache': 0,
+                                               'cache_unknown_runs': 0}
+
+
+def test_older_ledger_gains_the_cache_column_in_place(tmp_path):
+    import sqlite3
+    (tmp_path / '.jarvis-dispatch').mkdir()
+    db = sqlite3.connect(tmp_path / '.jarvis-dispatch' / 'ledger.sqlite3')
+    with db:
+        db.execute('CREATE TABLE runs (id INTEGER PRIMARY KEY AUTOINCREMENT, employee TEXT NOT NULL, pid INTEGER, '
+                   'started REAL NOT NULL, ended REAL, status TEXT NOT NULL, exit_code INTEGER, input_tokens INTEGER, '
+                   'output_tokens INTEGER, note TEXT NOT NULL DEFAULT "")')
+        db.execute("INSERT INTO runs(employee,started,status,input_tokens,output_tokens) VALUES('codex',?,'ok',100,5)",
+                   (NOW,))
+    db.close()
+    ledger = DispatchLedger(Guardrails(tmp_path), clock=lambda: NOW, alive=lambda pid: True)
+    assert ledger.tokens_today('codex') == {'total': 105, 'input': 100, 'output': 5, 'cache': 0,
+                                            'cache_unknown_runs': 1}
+
+
+def test_tick_skips_an_employee_over_its_token_cap(tmp_path, monkeypatch):
+    from jarvis.cli import dispatch as cli_dispatch
+    from jarvis.core.roster import load_roster
+    from jarvis.features.board.service import BoardStore
+    workspace, config_root = tmp_path / 'ws', tmp_path / 'config'
+    workspace.mkdir(), config_root.mkdir()
+    (config_root / 'dispatcher.json').write_text(json.dumps({
+        'version': 1, 'enabled': True, 'interval_minutes': 10, 'daily_runs': 10, 'run_timeout_minutes': 30,
+        'employees': {'claude-code': {'daily_tokens': 1000}, 'codex': {}}, 'lead': {'enabled': False}}),
+        encoding='utf-8')
+    roster, guard = load_roster(), Guardrails(workspace)
+    board = BoardStore(guard, roster=roster)
+    board.send('user:heejun', 'claude-code', 'build please')
+    board.send('user:heejun', 'codex', 'build please')
+    ledger = DispatchLedger(guard, alive=lambda pid: True)
+    ledger.finish(ledger.start('claude-code', pid=1), status='ok', exit_code=0, input_tokens=900,
+                  output_tokens=100, cache_tokens=800, note='')
+    launched = []
+    monkeypatch.setattr(cli_dispatch, 'CONFIG_ROOT', config_root)
+    monkeypatch.setattr(cli_dispatch, 'load_guardrails', lambda: guard)
+    monkeypatch.setattr(cli_dispatch, 'load_roster', lambda **kw: roster)
+    monkeypatch.setattr(cli_dispatch, 'BoardStore', lambda g: BoardStore(g, roster=roster))
+    monkeypatch.setattr(cli_dispatch, 'run_employee', lambda employee, *a: launched.append(employee) or 'ok')
+    monkeypatch.setattr(cli_dispatch, 'send_digest_if_due', lambda *a: None)
+    monkeypatch.setattr(cli_dispatch, 'send_alerts', lambda *a, **k: 0, raising=False)
+    monkeypatch.setattr(cli_dispatch, 'collect_codex', lambda g: None)
+    dry = cli_dispatch.tick(dry_run=True)
+    assert {d['employee']: d['reason'] for d in dry['decisions']}['claude-code'] == 'token_cap'
+    cli_dispatch.tick()
+    assert launched == ['codex']

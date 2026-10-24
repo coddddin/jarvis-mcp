@@ -58,6 +58,9 @@
 ## 알림 (W3, 1단계)
 
 tick은 하루 요약을 보낸 뒤 사용자에게 알릴 사건을 골라 `user:heejun`에게 게시판 메시지 1통으로 보낸다. 대상은 lease가 끝난 claim, blocked 작업, 어댑터 점검 코드(`privacy_open` 포함), 받은 일이 있는데 점검 때문에 깨우지 않은 직원, 프로세스 감시의 `service_down`·`owner_dead`·`overdue`다. 같은 사건은 하루에 한 번만 보낸다(`.jarvis-dispatch/alerts.sqlite3`, 7일 보관). 전송에 성공한 것만 기록하므로 실패하면 다음 tick에 다시 보낸다. 문구에는 작업 제목(redact 후 60자), 직원 ID, 정해진 한국어 문장만 들어가고 노트·경로·명령은 넣지 않는다. 알림이 실패해도 tick은 계속된다. HUD 디스패처 패널은 오늘 보낸 알림을 읽기 전용으로 보여 준다. Windows 토스트 알림은 2단계(별도 승인)다.
+## 직원별 하루 토큰 상한 (W5)
+
+`config/dispatcher.json`의 직원 설정에 `daily_tokens`(1000 이상 정수)를 넣으면, 오늘(로컬 자정 이후) 시작한 실행의 토큰 합이 그 값 이상일 때 그 직원을 깨우지 않는다(사유 `token_cap`). 값이 없으면 상한도 없다. 이미 돌고 있는 실행은 끊지 않는다. **`daily_tokens`는 cache 포함 합계다**: input(cache 생성·읽기 포함) + output. Claude는 cache 읽기가 매우 커서 실제 비용보다 훨씬 빨리 찰 수 있으니 값을 넉넉히 잡는다. 장부는 실행마다 cache 몫을 `cache_tokens`로 따로 남기고, `DispatchLedger.tokens_today()`가 합계와 내역(input, output, cache, cache를 모르는 옛 실행 수)을 함께 돌려준다. 토큰을 읽지 못한 실행은 0으로 세며 `daily_runs`가 계속 막는다. Claude 5시간 사용률 규칙은 2단계다.
 
 ## 순환 닫기: 로컬 팀장과 하루 요약
 

@@ -17,7 +17,7 @@ import psutil
 
 from jarvis.agents.dispatch_policy import (DispatchLedger, DispatcherConfig, EmployeeState, block_unsafe, build_command,
                                            build_env, build_digest, detect_eligibility, detect_limit, digest_due, due,
-                                           parse_usage, should_run_lead, wake_prompt)
+                                           parse_usage_detail, should_run_lead, wake_prompt)
 from jarvis.agents.lead_planner import LeadLedger, plan_next
 from jarvis.agents import process_watch
 from jarvis.agents import promotion as promotion_review
@@ -129,14 +129,14 @@ def run_employee(employee, run_id, config, guard, ledger, board):
             time.sleep(2)
         process.wait()
     output = log_path.read_text(encoding='utf-8', errors='replace')
-    tokens_in, tokens_out = parse_usage(output)
+    usage = parse_usage_detail(output) or {'input': None, 'output': None, 'cache': None}
     failed = process.returncode != 0 or '"is_error":true' in output.replace(' ', '')
     if status is None:
         # A free-tier refusal can arrive as an error event with exit code 0, so check it first.
         status = ('eligibility' if detect_eligibility(output)
                   else ('limit' if detect_limit(output) else 'error') if failed else 'ok')
-    ledger.finish(run_id, status=status, exit_code=process.returncode, input_tokens=tokens_in,
-                  output_tokens=tokens_out, note=log_path.name)
+    ledger.finish(run_id, status=status, exit_code=process.returncode, input_tokens=usage['input'],
+                  output_tokens=usage['output'], cache_tokens=usage['cache'], note=log_path.name)
     branch = f'auto/{employee}'
     ahead = git('rev-list', '--count', f'main..{branch}', check=False).stdout.strip()
     if ahead not in ('', '0'):
@@ -260,7 +260,9 @@ def tick(dry_run=False):
                 employee=employee, enabled=settings.enabled, roster_status=agent.status if agent else 'missing',
                 pending=board.pending_for_employee(employee) if agent else 0,
                 runs_today=ledger.runs_today(employee), running=ledger.running(employee, stale_after=stale_after) is not None,
-                exhausted_until=ledger.exhausted_until(employee)))
+                exhausted_until=ledger.exhausted_until(employee),
+                tokens_today=ledger.tokens_today(employee)['total'] if settings.daily_tokens is not None else 0,
+                daily_tokens=settings.daily_tokens))
         return states
 
     states = collect()

@@ -30,6 +30,8 @@ class EmployeeSettings(BaseModel):
     enabled: bool = True
     max_turns: int = Field(default=60, ge=1, le=200)
     model: str = Field(default='', max_length=120, pattern=r'^[A-Za-z0-9._/:#-]*$')
+    # W5: tokens (input incl. cache + output) this employee may use per local day; None means no token cap.
+    daily_tokens: int | None = Field(default=None, ge=1000, le=1_000_000_000)
 
 
 class LeadSettings(BaseModel):
@@ -59,6 +61,8 @@ class EmployeeState:
     runs_today: int
     running: bool
     exhausted_until: float | None
+    tokens_today: int = 0             # W5: input (incl. cache) + output of runs started today
+    daily_tokens: int | None = None   # None: no token cap
 
 
 @dataclass(frozen=True)
@@ -81,6 +85,8 @@ def due(states, now, *, daily_runs):
             reason = 'exhausted'
         elif item.runs_today >= daily_runs:
             reason = 'daily_cap'
+        elif item.daily_tokens is not None and item.tokens_today >= item.daily_tokens:
+            reason = 'token_cap'
         elif item.pending <= 0:
             reason = 'no_pending_work'
         else:
@@ -183,24 +189,29 @@ def detect_eligibility(text):
     return bool(ELIGIBILITY_PATTERN.search(text or ''))
 
 
+CACHE_FIELDS = ('cache_creation_input_tokens', 'cache_read_input_tokens')
+
+
 def _usage_from(obj):
     usage = obj.get('usage') if isinstance(obj, dict) else None
     if not isinstance(usage, dict) or 'output_tokens' not in usage:
         return None
-    fields = ('input_tokens', 'cache_creation_input_tokens', 'cache_read_input_tokens')
-    inputs = sum(v for k, v in usage.items() if k in fields and isinstance(v, int))
-    return inputs, usage['output_tokens'] if isinstance(usage['output_tokens'], int) else None
+    cache = sum(v for k, v in usage.items() if k in CACHE_FIELDS and isinstance(v, int))
+    plain = usage.get('input_tokens') if isinstance(usage.get('input_tokens'), int) else 0
+    return {'input': plain + cache, 'cache': cache,
+            'output': usage['output_tokens'] if isinstance(usage['output_tokens'], int) else None}
 
 
-def parse_usage(text):
-    """Token usage from a JSON result or the last JSONL event that reports usage; (None, None) if absent."""
+def parse_usage_detail(text):
+    """{'input' (incl. cache), 'cache', 'output'} from a JSON result or the last JSONL event that reports usage;
+    None if absent. Cache counts only the Claude cache fields (CACHE_FIELDS)."""
     try:
         found = _usage_from(json.loads(text))
         if found:
             return found
     except (ValueError, TypeError):
         pass
-    found = (None, None)
+    found = None
     for line in (text or '').splitlines():
         try:
             candidate = _usage_from(json.loads(line))
@@ -209,6 +220,12 @@ def parse_usage(text):
         if candidate:
             found = candidate
     return found
+
+
+def parse_usage(text):
+    """(input incl. cache, output) tokens; (None, None) if absent."""
+    found = parse_usage_detail(text)
+    return (found['input'], found['output']) if found else (None, None)
 
 
 def wake_prompt(employee, python='.venv/Scripts/python.exe'):
@@ -281,6 +298,13 @@ class DispatchLedger:
                 except sqlite3.OperationalError as exc:
                     if 'duplicate column' not in str(exc).lower():
                         raise
+            # W5: cache share of input_tokens, kept apart so the cap can be explained. NULL: not recorded.
+            if 'cache_tokens' not in {row['name'] for row in db.execute('PRAGMA table_info(runs)')}:
+                try:
+                    db.execute('ALTER TABLE runs ADD COLUMN cache_tokens INTEGER')
+                except sqlite3.OperationalError as exc:
+                    if 'duplicate column' not in str(exc).lower():
+                        raise
             yield db
             db.commit()
         finally:
@@ -350,12 +374,13 @@ class DispatchLedger:
         with self.connection() as db:
             db.execute('UPDATE runs SET pid=?, pid_at=? WHERE id=?', (pid, self.clock(), run_id))
 
-    def finish(self, run_id, *, status, exit_code, input_tokens, output_tokens, note):
+    def finish(self, run_id, *, status, exit_code, input_tokens, output_tokens, note, cache_tokens=None):
         now = self.clock()
         with self.connection() as db:
             row = db.execute('SELECT employee FROM runs WHERE id=?', (run_id,)).fetchone()
-            db.execute('UPDATE runs SET ended=?, status=?, exit_code=?, input_tokens=?, output_tokens=?, note=? WHERE id=?',
-                       (now, status, exit_code, input_tokens, output_tokens, note[:500], run_id))
+            db.execute('UPDATE runs SET ended=?, status=?, exit_code=?, input_tokens=?, output_tokens=?, note=?, '
+                       'cache_tokens=? WHERE id=?',
+                       (now, status, exit_code, input_tokens, output_tokens, note[:500], cache_tokens, run_id))
             if status in ('limit', 'eligibility'):
                 prior = db.execute('SELECT backoff FROM exhaustion WHERE employee=?', (row['employee'],)).fetchone()
                 backoff = next_backoff(prior['backoff'] if prior else None)
@@ -370,6 +395,19 @@ class DispatchLedger:
             if row is None:
                 return None
             return row['id'] if self._settle(db, row, self.clock(), stale_after) else None
+
+    def tokens_today(self, employee):
+        """Tokens of runs started today (local day): {'total': input + output (the cap compares this),
+        'input' (incl. cache), 'output', 'cache', 'cache_unknown_runs' (runs with tokens but no cache record)}.
+        Runs whose usage could not be read count 0; daily_runs still bounds them."""
+        start = time.mktime(time.localtime(self.clock())[:3] + (0, 0, 0, 0, 0, -1))
+        with self.connection() as db:
+            row = db.execute('SELECT COALESCE(SUM(input_tokens),0) inp, COALESCE(SUM(output_tokens),0) out, '
+                             'COALESCE(SUM(cache_tokens),0) cache, '
+                             'SUM(CASE WHEN cache_tokens IS NULL AND input_tokens IS NOT NULL THEN 1 ELSE 0 END) unknown '
+                             'FROM runs WHERE employee=? AND started>=?', (employee, start)).fetchone()
+        return {'total': row['inp'] + row['out'], 'input': row['inp'], 'output': row['out'],
+                'cache': row['cache'], 'cache_unknown_runs': row['unknown'] or 0}
 
     def runs_today(self, employee):
         start = time.mktime(time.localtime(self.clock())[:3] + (0, 0, 0, 0, 0, -1))
