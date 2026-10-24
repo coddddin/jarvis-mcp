@@ -139,14 +139,16 @@ def main(argv=None):
         results = [import_issue(board, x, repo=args.repo) for x in approved]
         # Receipt is not assignment or execution authority. Report the current handoff gap
         # without sending employee messages or claiming tasks on the user's behalf.
-        unassigned = []
+        # An open task can already have an assignment message awaiting claim.
+        # Ownership alone cannot prove that another assignment is needed.
+        unclaimed = []
         for result in results:
             task = board.get(result['task_id'])
             if task['status'] == 'open' and task['owner'] is None:
-                unassigned.append(task['id'])
+                unclaimed.append(task['id'])
         print(json.dumps({"mode": "apply", "results": results, "dispatch": {
-            "automatic_execution": False, "assignment_required_task_ids": unassigned,
-            "next_action": "review_and_assign" if unassigned else "inspect_existing_tasks",
+            "automatic_execution": False, "unclaimed_task_ids": unclaimed,
+            "next_action": "check_existing_assignment" if unclaimed else "inspect_existing_tasks",
         }}, ensure_ascii=False))
         return 0
     except (HTTPError, URLError, OSError, ValueError, sqlite3.Error) as exc:
