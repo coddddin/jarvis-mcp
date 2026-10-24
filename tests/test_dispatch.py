@@ -968,6 +968,7 @@ def test_summary_counts_runs_per_quality_and_keeps_known_sums_apart(tmp_path):
     assert totals['usage_quality_runs'] == {'measured': 1, 'partial': 1, 'unknown': 1, 'missing': 1, 'unrecorded': 0}
     assert (totals['known_input_tokens'], totals['known_input_runs']) == (1500, 1)   # cache not added again
     assert (totals['known_output_tokens'], totals['known_output_runs']) == (230, 2)
+    assert totals['unrecorded_input_tokens'] is None and totals['unrecorded_output_tokens'] is None
 
 
 def test_summary_of_runs_with_no_readable_usage_has_no_known_sum(tmp_path):
@@ -1020,11 +1021,18 @@ def test_older_ledger_gains_the_quality_column_and_old_rows_are_never_promoted(t
     totals = ledger.summary()['codex']
     # both numbers are present on the first row, but nothing recorded how they were read
     assert totals['usage_quality_runs'] == {'measured': 0, 'partial': 0, 'unknown': 0, 'missing': 0, 'unrecorded': 2}
-    assert (totals['known_input_tokens'], totals['known_input_runs']) == (100, 1)
+    # their numbers stay apart from the known sums, and the old totals still include them
+    assert (totals['known_input_tokens'], totals['known_input_runs']) == (None, 0)
+    assert (totals['unrecorded_input_tokens'], totals['unrecorded_output_tokens']) == (100, 5)
     assert totals['total_input_tokens'] == 100 and totals['total_output_tokens'] == 5
     assert [row['usage_quality'] for row in ledger.summary()['recent']] == [None, None]
     today = ledger.tokens_today('codex')
     assert today['total'] == 105 and today['partial_runs'] == 0 and today['unknown_runs'] == 0
+    ledger.finish(ledger.start('codex', pid=1), status='ok', exit_code=0, input_tokens=7, output_tokens=2,
+                  note='', usage_quality='measured')
+    mixed = ledger.summary()['codex']
+    assert (mixed['known_input_tokens'], mixed['known_input_runs']) == (7, 1)
+    assert (mixed['unrecorded_input_tokens'], mixed['total_input_tokens']) == (100, 107)
 
 
 def test_usage_quality_survives_a_ledger_reopen(tmp_path):

@@ -654,18 +654,26 @@ class DispatchLedger:
     def summary(self, *, recent=10):
         """Per employee: 'runs', 'total_input_tokens' and 'total_output_tokens' (unread numbers add 0, as
         before), 'usage_quality_runs' (runs per USAGE_QUALITIES value plus 'unrecorded' for NULL), and the
-        'known_*_tokens' sums (None when no run reported that side) with their 'known_*_runs' counts. Input
-        already includes the cache, so the cache is never added again."""
+        'known_*_tokens' sums (None when no run reported that side) with their 'known_*_runs' counts, over runs
+        with a recorded quality only. Older unrecorded rows that kept numbers stay apart in 'unrecorded_*_tokens'
+        (None when none) so they are never read as measured. Input already includes the cache, so the cache is
+        never added again."""
         quality_sql = ', '.join(f"SUM(CASE WHEN usage_quality='{q}' THEN 1 ELSE 0 END) q_{q}" for q in USAGE_QUALITIES)
         with self.connection() as db:
             totals: dict = {row['employee']: {
                 'runs': row['runs'], 'total_input_tokens': row['inp'] or 0, 'total_output_tokens': row['out'] or 0,
                 'usage_quality_runs': {**{q: row[f'q_{q}'] or 0 for q in USAGE_QUALITIES},
                                        'unrecorded': row['unrecorded'] or 0},
-                'known_input_tokens': row['inp'], 'known_input_runs': row['inp_runs'],
-                'known_output_tokens': row['out'], 'known_output_runs': row['out_runs']}
+                'known_input_tokens': row['k_inp'], 'known_input_runs': row['k_inp_runs'],
+                'known_output_tokens': row['k_out'], 'known_output_runs': row['k_out_runs'],
+                'unrecorded_input_tokens': row['u_inp'], 'unrecorded_output_tokens': row['u_out']}
                 for row in db.execute('SELECT employee, COUNT(*) runs, SUM(input_tokens) inp, SUM(output_tokens) out, '
-                                      'COUNT(input_tokens) inp_runs, COUNT(output_tokens) out_runs, '
+                                      'SUM(CASE WHEN usage_quality IS NOT NULL THEN input_tokens END) k_inp, '
+                                      'SUM(CASE WHEN usage_quality IS NOT NULL THEN output_tokens END) k_out, '
+                                      'COUNT(CASE WHEN usage_quality IS NOT NULL THEN input_tokens END) k_inp_runs, '
+                                      'COUNT(CASE WHEN usage_quality IS NOT NULL THEN output_tokens END) k_out_runs, '
+                                      'SUM(CASE WHEN usage_quality IS NULL THEN input_tokens END) u_inp, '
+                                      'SUM(CASE WHEN usage_quality IS NULL THEN output_tokens END) u_out, '
                                       f'{quality_sql}, '
                                       'SUM(CASE WHEN usage_quality IS NULL THEN 1 ELSE 0 END) unrecorded '
                                       'FROM runs GROUP BY employee')}

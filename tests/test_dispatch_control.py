@@ -91,8 +91,9 @@ def test_snapshot_exposes_whitelisted_fields_only(guard, config):
                                            'exhausted_until': None,
                                            'usage_quality_runs': {'measured': 0, 'partial': 0, 'unknown': 0,
                                                                   'missing': 0, 'unrecorded': 1},
-                                           'known_input_tokens': 10, 'known_input_runs': 1,
-                                           'known_output_tokens': 5, 'known_output_runs': 1}
+                                           'known_input_tokens': None, 'known_input_runs': 0,
+                                           'known_output_tokens': None, 'known_output_runs': 0,
+                                           'unrecorded_input_tokens': 10, 'unrecorded_output_tokens': 5}
     assert set(state['recent'][0]) == set(dispatch_control.RUN_FIELDS)
     assert 'secret' not in json.dumps(state)
     dispatch_control.pause(guard)
@@ -289,3 +290,7 @@ def test_snapshot_adds_quality_counts_and_known_sums_beside_the_old_totals(guard
     assert codex['usage_quality_runs']['unknown'] == 1
     assert [row['usage_quality'] for row in state['recent']] == ['unknown', 'missing', 'partial', 'measured']
     assert 'secret' not in json.dumps(state)
+    # a value written outside finish() is not passed through as text
+    with ledger.connection() as db:
+        db.execute("UPDATE runs SET usage_quality='secret-text' WHERE employee='codex'")
+    assert dispatch_control.snapshot(guard, config)['recent'][0]['usage_quality'] is None
