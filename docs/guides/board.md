@@ -36,7 +36,7 @@ Codex·Claude Code·Cursor·OpenCode·로컬 리드가 같은 자비스 MCP 도�
 | 도구 | 하는 일 |
 |---|---|
 | `board_list(status, agent, limit=10, include_closed=False, full_paths=False)` | 간결한 작업 목록(id·제목·상태·담당·stale·경로 수·노트 수). done·cancelled는 status로 지정하거나 include_closed=True일 때만 보인다. full_paths=True면 경로 목록. agent는 생성자 또는 담당자 |
-| `board_get(task_id, notes=3, full=False)` | 작업 상세와 최근 노트(기본 3, 최대 50). 노트 본문은 600자에서 잘리고 `truncated`가 붙는다. `total_notes`로 전체 수를 알 수 있고, full=True면 전문 |
+| `board_get(task_id, notes=3, full=False)` | 작업 상세와 최근 노트(기본 3, 최대 50). 노트 본문은 600자에서 잘리고 `truncated`가 붙는다. `total_notes`로 전체 수를 알 수 있다. 오래된 인수인계까지 보려면 notes=10 이상, 전문은 full=True |
 | `board_create(agent, title, paths, detail, depends_on)` | open 작업 생성 |
 | `board_claim(agent, task_id, lease_minutes=30)` | 작업 담당. 경로 충돌·미완료 의존 작업이면 거부 |
 | `board_heartbeat(agent, task_id, lease_minutes=30)` | 담당자만 lease 연장(5~240분) |
