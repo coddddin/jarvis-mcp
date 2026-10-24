@@ -40,7 +40,7 @@ class EmployeeSettings(BaseModel):
     model_config = ConfigDict(strict=True, extra='forbid')
     enabled: bool = True
     max_turns: int = Field(default=60, ge=1, le=200)
-    model: str = Field(default='', max_length=120, pattern=r'^[A-Za-z0-9._/:#-]*$')
+    model: str = Field(default='', max_length=120, pattern=r'^(?:[A-Za-z0-9._][A-Za-z0-9._/:#-]*)?$')  # no leading '-'
     # W5: tokens (input incl. cache + output) this employee may use per local day; None means no token cap.
     daily_tokens: int | None = Field(default=None, ge=1000, le=1_000_000_000)
     # Rotation: models in priority order. A limit/model_missing run backs off only that model;
