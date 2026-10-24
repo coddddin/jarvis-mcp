@@ -31,8 +31,9 @@ def _number(value):
 
 def _usage_quality(totals):
     """Run counts per usage quality and the known token sums, beside the old totals that show unread as 0.
-    A known sum is None when no recorded run reported that side; older unrecorded rows' numbers stay apart. 'measured' only means both reported numbers were read,
-    not that the whole run was observed; a Cursor cache 0 may mean not reported."""
+    A known sum is None when no recorded run reported that side; older unrecorded rows' numbers stay apart.
+    'measured' only means both reported numbers were read, not that the whole run was observed; a Cursor
+    cache 0 may mean not reported."""
     counts = totals.get('usage_quality_runs') or {}
     return {'usage_quality_runs': {key: _number(counts.get(key)) or 0 for key in QUALITY_KEYS},
             'known_input_tokens': _number(totals.get('known_input_tokens')),
