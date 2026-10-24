@@ -13,12 +13,36 @@ from urllib.error import HTTPError, URLError
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 from uuid import uuid4
 
-from jarvis.core.guardrails import Guardrails
+from jarvis.core.guardrails import GuardrailError, Guardrails
 from jarvis.features.board.service import BoardError, BoardStore, MAX_TASKS, _text
 
 REPO = "coddddin/jarvis-mcp"
 OWNER = "coddddin"
 LABEL = "jarvis-approved"
+
+
+class IssueRejected(BoardError):
+    """One Issue's own data cannot be imported; the rest of the batch continues.
+
+    code is a fixed identifier (never the title or another source text)."""
+
+    def __init__(self, code):
+        super().__init__(code)
+        self.code = code
+
+
+class BoardFull(BoardError):
+    """The board reached MAX_TASKS: every later Issue would fail too, so the batch stops."""
+
+
+def _source_title(value):
+    """The validated source title, or IssueRejected with 'invalid_title' (type/length) or
+    'title_redacted' (credentials or control characters), before any write."""
+    try:
+        return _text(value, "title", 256)
+    except BoardError:
+        plain = isinstance(value, str) and value.strip() and len(value) <= 256
+        raise IssueRejected("title_redacted" if plain else "invalid_title") from None
 
 
 class NoRedirect(HTTPRedirectHandler):
@@ -79,11 +103,11 @@ def eligible(issue, *, owner, label):
 def import_issue(board, issue, *, repo):
     """Atomically create the board task and dedup mapping in one SQLite transaction."""
     if repo != REPO or not eligible(issue, owner=OWNER, label=LABEL):
-        raise BoardError("Issue is not approved for this inbox")
+        raise IssueRejected("not_approved")
     number = issue["number"]
     key = f"{repo}#{number}"
     # Validate the entire source before truncating, including secrets beyond the prefix.
-    source_title = _text(issue.get("title"), "title", 256)
+    source_title = _source_title(issue.get("title"))
     prefix = f"[GitHub #{number}] "
     title = _text(prefix + source_title[:200 - len(prefix)], "title", 200)
     creator = board._agent("user:github-inbox")
@@ -99,7 +123,7 @@ def import_issue(board, issue, *, repo):
         if previous:
             return {"issue": key, "task_id": previous[0], "created": False}
         if db.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] >= MAX_TASKS:
-            raise BoardError("Board task limit reached")
+            raise BoardFull("Board task limit reached")
         task_id = uuid4().hex
         db.execute("INSERT INTO tasks(id,title,detail,status,creator,owner,lease_until,paths,"
                    "depends_on,created,updated) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
@@ -136,21 +160,44 @@ def main(argv=None):
                               [x["number"] for x in approved]}, ensure_ascii=False))
             return 0
         board = BoardStore(guard)
-        results = [import_issue(board, x, repo=args.repo) for x in approved]
+        results, rejected, halted = [], [], None
+        for item in approved:
+            # Only an Issue's own bad data is skipped. A stop marker or a storage failure stops the
+            # batch safely; Issues already applied keep their receipts and a rerun is idempotent.
+            try:
+                guard.check_running()
+                results.append(import_issue(board, item, repo=args.repo))
+            except IssueRejected as exc:
+                rejected.append({"issue": f"{args.repo}#{item['number']}", "error": exc.code})
+            except GuardrailError:
+                halted = "stopped"
+                break
+            except BoardFull:
+                halted = "board_full"
+                break
+            except (BoardError, sqlite3.Error, OSError):
+                halted = "storage_unavailable"
+                break
         # Receipt is not assignment or execution authority. Report the current handoff gap
         # without sending employee messages or claiming tasks on the user's behalf.
         # An open task can already have an assignment message awaiting claim.
         # Ownership alone cannot prove that another assignment is needed.
         unclaimed = []
-        for result in results:
-            task = board.get(result['task_id'])
-            if task['status'] == 'open' and task['owner'] is None:
-                unclaimed.append(task['id'])
-        print(json.dumps({"mode": "apply", "results": results, "dispatch": {
-            "automatic_execution": False, "unclaimed_task_ids": unclaimed,
-            "next_action": "check_existing_assignment" if unclaimed else "inspect_existing_tasks",
-        }}, ensure_ascii=False))
-        return 0
+        if halted is None:
+            for result in results:
+                task = board.get(result['task_id'])
+                if task['status'] == 'open' and task['owner'] is None:
+                    unclaimed.append(task['id'])
+            next_action = "check_existing_assignment" if unclaimed else "inspect_existing_tasks"
+        else:
+            next_action = "resolve_failure_then_rerun"  # the board may be unreadable; do not guess
+        print(json.dumps({"mode": "apply", "results": results, "rejected": rejected, "halted": halted,
+                          "dispatch": {"automatic_execution": False, "unclaimed_task_ids": unclaimed,
+                                       "next_action": next_action}}, ensure_ascii=False))
+        if halted is not None:
+            print(f"GitHub inbox stopped: {halted}", file=sys.stderr)
+            return 1
+        return 2 if rejected else 0
     except (HTTPError, URLError, OSError, ValueError, sqlite3.Error) as exc:
         print(f"GitHub inbox failed: {type(exc).__name__}", file=sys.stderr)
         return 1
