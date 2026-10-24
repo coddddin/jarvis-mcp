@@ -103,6 +103,7 @@ test('reply markdown becomes elements: code block, heading, lists, bold, inline 
   const body=assistant.children[1];
   assert.equal(body.className,'chat-body chat-markdown');
   assert.equal(nodes.find(n=>n.tagName==='H4').children.join(''),'Title');
+  assert.equal(nodes.find(n=>n.tagName==='H4').className,'chat-md-heading');  // not the panel header's chat-heading
   assert.equal(nodes.find(n=>n.tagName==='STRONG').textContent,'bold');
   assert.equal(nodes.find(n=>n.className==='chat-inline-code').textContent,'x<y');
   assert.deepEqual(nodes.filter(n=>n.tagName==='UL')[0].children.map(li=>li.children.join('')),['one','two']);
@@ -122,6 +123,7 @@ test('only http(s) links become anchors; other schemes stay literal text',async(
   assert.equal(links[0].href,'https://example.com/a');
   assert.equal(links[0].rel,'noopener noreferrer');
   assert.equal(links[0].target,'_blank');
+  assert.equal(links[0].title,'https://example.com/a');
   const text=flatten(assistant);
   assert.match(text,/\[bad\]\(javascript:alert\(1\)/);
   assert.match(text,/\[file\]\(file:\/\/\/C:\/x\)/);

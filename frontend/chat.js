@@ -71,7 +71,7 @@
       else if (match[2] !== undefined) parts.push(node('strong', '', match[2]));
       else if (SAFE_URL.test(match[4])) {
         const link = node('a', 'chat-link', match[3]);
-        link.href = match[4]; link.target = '_blank'; link.rel = 'noopener noreferrer';
+        link.href = match[4]; link.title = match[4]; link.target = '_blank'; link.rel = 'noopener noreferrer';
         parts.push(link);
       } else parts.push(match[0]);
       last = match.index + match[0].length;
@@ -101,7 +101,7 @@
         body.append(pre);
       } else if (heading) {
         endBlock();
-        const title = node('h4', 'chat-heading'); title.append(...inline(heading[2])); body.append(title);
+        const title = node('h4', 'chat-md-heading'); title.append(...inline(heading[2])); body.append(title);
       } else if (item) {
         endParagraph();
         const tag = item[1] ? 'ul' : 'ol';
