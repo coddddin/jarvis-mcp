@@ -493,3 +493,34 @@ def test_privacy_open_blocks_an_active_employee_too(monkeypatch):
     out = block_unsafe([Decision('opencode', True, 'pending_work')], wa.roster_problems(active))
     assert (out[0].wake, out[0].reason) == (False, 'adapter_check_failed')
     assert replace  # dataclasses import kept local to this test
+
+
+# --- OpenCode model rotation: the probation check holds for every configured model -------------------
+
+def _rotation_models():
+    config = DispatcherConfig.model_validate(json.loads(Path('config/dispatcher.json').read_text(encoding='utf-8')))
+    return config.employees['opencode'].models
+
+
+def test_config_rotates_seven_free_opencode_models():
+    models = _rotation_models()
+    assert len(models) == 7 and all(m.startswith('opencode/') and m.endswith('-free') for m in models)
+
+
+@pytest.mark.parametrize('model', _rotation_models())
+def test_probation_check_passes_with_each_rotation_model(monkeypatch, model):
+    from dataclasses import replace
+    original = wa.ADAPTERS['opencode'].work_command
+    tampered(monkeypatch, 'opencode', work_command=lambda r: original(replace(r, model=lambda: model)))
+    assert problems_for(load_roster(), 'opencode') == []
+    argv, _ = wa._probe('opencode')
+    assert argv[argv.index('-m') + 1] == model
+
+
+def test_rotation_changes_only_the_model_value_in_the_opencode_argv():
+    config = DispatcherConfig.model_validate(json.loads(Path('config/dispatcher.json').read_text(encoding='utf-8')))
+    base, _ = wa._probe('opencode')
+    for model in _rotation_models():
+        argv = build_command('opencode', config, 'WORKTREE', 'PROMPT', '{}', executable='EXECUTABLE', model=model)
+        index = argv.index('-m') + 1
+        assert argv[:index] + argv[index + 1:] == base[:index] + base[index + 1:] and argv[index] == model

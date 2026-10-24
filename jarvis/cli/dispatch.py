@@ -16,8 +16,9 @@ import time
 import psutil
 
 from jarvis.agents.dispatch_policy import (DispatchLedger, DispatcherConfig, EmployeeState, block_unsafe, build_command,
-                                           build_env, build_digest, detect_eligibility, detect_limit, digest_due, due,
-                                           parse_usage_detail, should_run_lead, wake_prompt)
+                                           build_env, build_digest, digest_due, due, models_line,
+                                           parse_usage_detail, run_status, should_run_lead, wake_prompt,
+                                           MODEL_BACKOFF_STATUSES)
 from jarvis.agents.lead_planner import LeadLedger, plan_next
 from jarvis.agents import process_watch
 from jarvis.agents import promotion as promotion_review
@@ -99,11 +100,19 @@ def run_employee(employee, run_id, config, guard, ledger, board):
         ledger.finish(run_id, status='error', exit_code=None, input_tokens=None, output_tokens=None,
                       note='executable not found')
         return 'error'
+    models = config.employees[employee].models
+    model = ledger.pick_model(employee, models) if models else None
+    if models and model is None:  # every model backed off since this tick decided to wake
+        ledger.finish(run_id, status='error', exit_code=None, input_tokens=None, output_tokens=None,
+                      note='all models backed off')
+        return 'error'
+    if model:
+        ledger.set_model(run_id, model)
     worktree = ensure_worktree(employee)
     # Tests run with the project's interpreter by absolute path; a .venv junction would trip link guards.
     python = (PROJECT_ROOT / '.venv' / 'Scripts' / 'python.exe').as_posix()
     argv = build_command(employee, config, worktree, wake_prompt(employee, python), mcp_config(), executable=exe[0],
-                         git_dir=PROJECT_ROOT / '.git', python=python)
+                         git_dir=PROJECT_ROOT / '.git', python=python, model=model)
     argv = exe + argv[1:]
     LOGS.mkdir(parents=True, exist_ok=True)
     log_path = LOGS / f'{employee}-{run_id}.log'
@@ -135,18 +144,19 @@ def run_employee(employee, run_id, config, guard, ledger, board):
     usage = parse_usage_detail(output) or {'input': None, 'output': None, 'cache': None}
     failed = process.returncode != 0 or '"is_error":true' in output.replace(' ', '')
     if status is None:
-        # A free-tier refusal can arrive as an error event with exit code 0, so check it first.
-        status = ('eligibility' if detect_eligibility(output)
-                  else ('limit' if detect_limit(output) else 'error') if failed else 'ok')
+        status = run_status(output, failed=failed)
     ledger.finish(run_id, status=status, exit_code=process.returncode, input_tokens=usage['input'],
                   output_tokens=usage['output'], cache_tokens=usage['cache'], note=log_path.name)
     branch = f'auto/{employee}'
     ahead = git('rev-list', '--count', f'main..{branch}', check=False).stdout.strip()
     if ahead not in ('', '0'):
         git('push', '-q', 'origin', branch, cwd=worktree, check=False)
-    if status != 'ok':
+    # A rotating employee's per-model backoff is routine (the digest shows it); alert once every model is out.
+    quiet = model and status in MODEL_BACKOFF_STATUSES and ledger.pick_model(employee, models) is not None
+    if status != 'ok' and not quiet:
         board.send(DISPATCHER_ID, 'user:heejun',
-                   f'[알림] 디스패처: {employee} 실행 {status} (run {run_id}, exit {process.returncode}). 로그 {log_path.name}')
+                   f'[알림] 디스패처: {employee} 실행 {status} (run {run_id}, exit {process.returncode}'
+                   + (f', 모델 {model}' if model else '') + f'). 로그 {log_path.name}')
     return status
 
 
@@ -226,9 +236,15 @@ def send_digest_if_due(guard, board, ledger, config, now, roster=None):
         except Exception as exc:
             log_service_error(exc)
             usage = None
+        try:  # display only, like the blocked line
+            models = models_line({name: (settings.models, ledger.models_backed_off(name))
+                                  for name, settings in config.employees.items() if settings.models})
+        except Exception as exc:
+            log_service_error(exc)
+            models = None
         text = build_digest(day=day, done=done, review=review, stale=stale, runs=ledger.runs_today_by_status(),
                             exhausted=ledger.exhausted_all(), pause=read_pause(guard), blocked=blocked,
-                            promotion=promotion, usage=usage)
+                            promotion=promotion, usage=usage, models=models)
         board.send(DISPATCHER_ID, 'user:heejun', text)
         ledger.mark_digest(day)
         return True
@@ -263,7 +279,8 @@ def tick(dry_run=False):
                 employee=employee, enabled=settings.enabled, roster_status=agent.status if agent else 'missing',
                 pending=board.pending_for_employee(employee) if agent else 0,
                 runs_today=ledger.runs_today(employee), running=ledger.running(employee, stale_after=stale_after) is not None,
-                exhausted_until=ledger.exhausted_until(employee),
+                exhausted_until=(ledger.rotation_exhausted_until(employee, settings.models) if settings.models
+                                 else ledger.exhausted_until(employee)),
                 tokens_today=ledger.tokens_today(employee)['total'] if settings.daily_tokens is not None else 0,
                 daily_tokens=settings.daily_tokens))
         return states
