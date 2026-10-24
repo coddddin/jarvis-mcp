@@ -36,7 +36,7 @@ def test_worker_console_is_an_explicit_observer_callback(tmp_path, monkeypatch):
 
 def test_persisted_history_and_duplicate_request_do_not_repeat_inference(service, monkeypatch):
     calls = []
-    def generate(messages, schema, deadline):
+    def generate(messages, schema, deadline, on_delta=None):
         calls.append(messages)
         return reply('당신의 이름은 해준입니다.' if len(calls) > 1 else '해준님, 기억할게요.')
     monkeypatch.setattr(service, '_worker', generate)
@@ -58,7 +58,7 @@ def test_persisted_history_and_duplicate_request_do_not_repeat_inference(service
 
 def test_tool_result_is_visible_data_and_guarded(service, monkeypatch):
     calls = []
-    def generate(messages, schema, deadline):
+    def generate(messages, schema, deadline, on_delta=None):
         calls.append(messages[:])
         return ChatDecision(reply='', tool='get_system_status', argument='') if len(calls) == 1 else reply('PC 상태를 확인했습니다.')
     monkeypatch.setattr(service, '_worker', generate)
@@ -108,7 +108,7 @@ def test_inference_failure_is_persisted_and_never_reported_as_answer(service, mo
 
 def test_tool_loop_has_finite_rounds_and_final_schema_disables_tools(service, monkeypatch):
     schemas = []
-    def looping(messages, schema, deadline):
+    def looping(messages, schema, deadline, on_delta=None):
         schemas.append(schema)
         return ChatDecision(reply='', tool='list_web_sources', argument='')
     monkeypatch.setattr(service, '_worker', looping)
@@ -272,7 +272,7 @@ def test_failed_tool_cannot_be_followed_by_unsupported_success(service, monkeypa
 
 def test_actual_inference_schema_requires_evidence_fields(service, monkeypatch):
     schemas = []
-    def infer(messages, schema, deadline):
+    def infer(messages, schema, deadline, on_delta=None):
         schemas.append(schema)
         return reply()
     monkeypatch.setattr(service, '_worker', infer)
@@ -439,7 +439,7 @@ def test_korean_search_query_translation_uses_local_infer_and_reserves_budget(se
         ChatDecision(reply='summary', tool='none', argument='', basis='external', evidence_ids=['e1'])])
     monkeypatch.setattr(service, '_worker', lambda *args: next(decisions))
     inferred = []
-    def infer(messages, schema, deadline):
+    def infer(messages, schema, deadline, on_delta=None):
         inferred.append(messages)
         return {'query': 'Python official documentation'}
     monkeypatch.setattr(service, '_infer', infer)

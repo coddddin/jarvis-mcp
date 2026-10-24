@@ -8,6 +8,7 @@
   const statusText = value => statusLabels[value] || '상태 확인 필요';
   let token = null, current = null, pending = false, generation = 0, selection = 0, mode = 'chat';
   let conversations = [];
+  const POLL_MS = 400;  // while a reply is pending only: it carries the streamed draft
   const node = (tag, className, text) => {
     const value = document.createElement(tag);
     value.className = className;
@@ -123,6 +124,13 @@
       role === 'user' ? node('p', 'chat-body', text) : markdown(text));
     return article;
   }
+  // A streamed draft is unverified: grounding may still replace it, so it stays plain, dimmed text.
+  function draftBubble(text) {
+    const article = node('article', 'chat-message assistant chat-draft');
+    article.setAttribute('aria-label', '작성 중인 답변, 아직 확인 전');
+    article.append(node('span', 'chat-author', 'J.A.R.V.I.S. · 작성 중 · 확인 전'), node('p', 'chat-body', text));
+    return article;
+  }
   function render() {
     renderList();
     const list = byId('chatMessages'); list.replaceChildren();
@@ -180,6 +188,7 @@
         list.append(team);
       }
       if (turn.assistant) list.append(bubble('assistant', turn.assistant));
+      else if (turn.status === 'pending' && turn.draft) list.append(draftBubble(turn.draft));
       if (turn.tools?.length) {
         const details = node('details', 'chat-tools');
         details.append(node('summary', '', '확인한 도구 · ' + turn.tools.length + '개'));
@@ -236,9 +245,9 @@
         const snapshot = await api('/api/chat/conversations/' + identity);
         if (polling && generation === version && current?.id === identity) {current = snapshot; render();}
       } catch (error) {if (polling && generation === version) say('진행 조회 실패: ' + error.message);}
-      if (polling && generation === version) pollTimer = setTimeout(poll, 1500);
+      if (polling && generation === version) pollTimer = setTimeout(poll, POLL_MS);
     }
-    if (requestMode !== 'chat') pollTimer = setTimeout(poll, 1500);
+    if (requestMode !== 'chat') pollTimer = setTimeout(poll, POLL_MS);
     busy(true); say('자비스가 답변을 준비하고 있어요.');
     byId('chatMessages').append(bubble('user', message));
     byId('chatMessages').scrollTop = byId('chatMessages').scrollHeight;

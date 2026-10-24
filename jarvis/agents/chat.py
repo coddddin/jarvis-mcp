@@ -49,6 +49,9 @@ class ChatStore:
                 db.execute('ALTER TABLE turns ADD COLUMN request_plan TEXT NOT NULL DEFAULT "{}"')
             if 'dispatch' not in columns:
                 db.execute('ALTER TABLE turns ADD COLUMN dispatch TEXT NOT NULL DEFAULT "{}"')
+            # Streamed reply so far, unverified; only shown while the turn is pending, cleared on finish.
+            if 'draft' not in columns:
+                db.execute('ALTER TABLE turns ADD COLUMN draft TEXT NOT NULL DEFAULT ""')
 
     @contextmanager
     def connection(self):
@@ -107,6 +110,8 @@ class ChatStore:
                 # A dead process is visible as interrupted; never fabricate an answer or replay tools.
                 if turn['status'] == 'pending' and time.time() > turn['deadline']:
                     turn['status'] = 'interrupted'
+                if turn['status'] != 'pending':
+                    turn['draft'] = ''
                 turns.append(turn)
             return {**dict(row), 'turns': turns}
 
@@ -179,6 +184,16 @@ class ChatStore:
             db.execute('UPDATE turns SET team=? WHERE conversation=? AND id=? AND status="pending"',
                        (encoded, identity, request_id))
 
+    def draft(self, identity, request_id, text):
+        """Save the reply streamed so far for a pending turn (unverified; finish clears it)."""
+        self.identifier(identity)
+        self.identifier(request_id)
+        if not isinstance(text, str):
+            raise ChatError('Draft must be text.')
+        with self.connection() as db:
+            db.execute('UPDATE turns SET draft=? WHERE conversation=? AND id=? AND status="pending"',
+                       (redact(text)[:6000], identity, request_id))
+
     def reserve(self, identity):
         with self.connection() as db:
             row = db.execute('SELECT reserved FROM conversations WHERE id=?', (identity,)).fetchone()
@@ -190,6 +205,6 @@ class ChatStore:
         if status not in {'completed', 'failed'}:
             raise ChatError('Invalid result status.')
         with self.connection() as db:
-            db.execute('UPDATE turns SET assistant=?,status=?,tools=? WHERE conversation=? AND id=? AND status="pending"',
+            db.execute('UPDATE turns SET assistant=?,status=?,tools=?,draft="" WHERE conversation=? AND id=? AND status="pending"',
                        (redact(reply)[:6000], status, json.dumps(tools, ensure_ascii=True), identity, request_id))
             db.execute('UPDATE conversations SET updated=? WHERE id=?', (time.time(), identity))
