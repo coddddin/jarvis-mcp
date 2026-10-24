@@ -163,6 +163,39 @@ def test_streaming_infer_keeps_deadline_size_and_exit_checks(service, script, me
     assert process.poll() is not None                              # never left running
 
 
+class HangingProcess:
+    """Closed its stdout but does not exit within the 5 s grace period."""
+    returncode = None
+
+    def __init__(self):
+        self.stdin = io.BytesIO()
+        self.stdout = io.BytesIO(b'{"ok": true, "result": {}}\n')
+        self.killed = False
+
+    def poll(self):
+        return -9 if self.killed else None
+
+    def wait(self, timeout=None):
+        if timeout is not None and not self.killed:
+            raise subprocess.TimeoutExpired('worker', timeout)
+
+    def kill(self):
+        self.killed = True
+
+
+def test_streaming_infer_reports_a_worker_that_hangs_after_closing_stdout(service):
+    process = HangingProcess()
+    with pytest.raises(ChatError, match='invalid response'):
+        service._infer_streaming(process, b'{}', time.monotonic() + 20, lambda _: None)
+    assert process.killed and process.stdout.closed and process.stdin.closed
+
+
+def test_streaming_infer_closes_the_worker_pipes(service):
+    process = spawn('import sys,json\nsys.stdin.buffer.read()\nprint(json.dumps({"ok":True,"result":{}}))')
+    assert service._infer_streaming(process, b'{}', time.monotonic() + 20, lambda _: None) == {}
+    assert process.stdout.closed and process.stdin.closed
+
+
 def test_streaming_infer_honours_the_stop_marker(service, tmp_path):
     (tmp_path / '.jarvis-stop').write_text('stop')
     process = spawn('import sys,time\nsys.stdin.buffer.read()\ntime.sleep(30)')

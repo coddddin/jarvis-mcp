@@ -153,13 +153,15 @@ class ChatService:
             try:
                 process.stdin.write(payload)
                 process.stdin.close()
-            except OSError:
+            except (OSError, ValueError):  # worker gone or pipe already closed
                 pass
 
         def read():
             try:
                 for line in iter(process.stdout.readline, b''):
                     lines.put(line)
+            except (OSError, ValueError):  # pipe closed by the finally below
+                pass
             finally:
                 lines.put(None)
 
@@ -191,7 +193,10 @@ class ChatService:
                         pass
                 else:
                     final = value
-            process.wait(timeout=5)
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                raise ChatError('Local model unavailable or returned an invalid response.') from None
             if process.returncode or not isinstance(final, dict) or final.get('ok') is not True:
                 raise ChatError('Local model unavailable or returned an invalid response.'
                                 if process.returncode or not isinstance(final, dict) else 'Local model response failed.')
@@ -200,6 +205,11 @@ class ChatService:
             if process.poll() is None:
                 process.kill()
             process.wait()
+            for pipe in (process.stdin, process.stdout):
+                try:
+                    pipe.close()
+                except (OSError, ValueError):
+                    pass
 
     def _worker(self, messages, schema, deadline, on_delta=None):
         result = self._infer(messages, schema, deadline, on_delta)
