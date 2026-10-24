@@ -109,13 +109,19 @@ def snapshot(guard, config_path, *, clock=time.time):
     """Whitelisted fields only: no log paths, notes, prompts or command lines."""
     config = DispatcherConfig.model_validate_json(config_path.read_bytes())
     pause_info = read_pause(guard)
-    summary = DispatchLedger(guard).summary(recent=RECENT)
+    ledger = DispatchLedger(guard)
+    summary = ledger.summary(recent=RECENT)
     recent = summary.pop('recent', [])
     employees = {name: {'runs': totals.get('runs') or 0,
                         'total_input_tokens': totals.get('total_input_tokens') or 0,
                         'total_output_tokens': totals.get('total_output_tokens') or 0,
                         'exhausted_until': _number(totals.get('exhausted_until'))}
                  for name, totals in summary.items()}
+    # A rotating employee waits when every model is backed off (or its own eligibility backoff runs), the same
+    # wake rule the tick uses; the HUD shows it with the existing exhausted_until line.
+    for name, settings in config.employees.items():
+        if settings.models and name in employees:
+            employees[name]['exhausted_until'] = ledger.rotation_exhausted_until(name, settings.models)
     return {
         'config_enabled': config.enabled,
         'paused': pause_info['paused'],
