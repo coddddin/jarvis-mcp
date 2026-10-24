@@ -137,7 +137,17 @@ def main(argv=None):
             return 0
         board = BoardStore(guard)
         results = [import_issue(board, x, repo=args.repo) for x in approved]
-        print(json.dumps({"mode": "apply", "results": results}, ensure_ascii=False))
+        # Receipt is not assignment or execution authority. Report the current handoff gap
+        # without sending employee messages or claiming tasks on the user's behalf.
+        unassigned = []
+        for result in results:
+            task = board.get(result['task_id'])
+            if task['status'] == 'open' and task['owner'] is None:
+                unassigned.append(task['id'])
+        print(json.dumps({"mode": "apply", "results": results, "dispatch": {
+            "automatic_execution": False, "assignment_required_task_ids": unassigned,
+            "next_action": "review_and_assign" if unassigned else "inspect_existing_tasks",
+        }}, ensure_ascii=False))
         return 0
     except (HTTPError, URLError, OSError, ValueError, sqlite3.Error) as exc:
         print(f"GitHub inbox failed: {type(exc).__name__}", file=sys.stderr)

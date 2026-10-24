@@ -139,7 +139,8 @@ def test_fetch_bounds_and_redirect_policy(monkeypatch):
         inbox.NoRedirect().redirect_request(Request('https://api.github.com'), None, 302, '', {}, 'https://example.com')
 
 
-@pytest.mark.parametrize('payload', [b'{}', b'not json', b'x' * 1_000_001])
+@pytest.mark.parametrize('payload', [b'{}', b'not json', b'x' * 1_000_001],
+                         ids=['wrong-shape', 'invalid-json', 'oversized'])
 def test_invalid_api_responses_rejected(monkeypatch, payload):
     monkeypatch.setattr(inbox, 'urlopen', lambda *a, **kw: BytesIO(payload))
     with pytest.raises(ValueError):
@@ -173,3 +174,25 @@ def test_import_does_not_wake_dispatcher_and_blocks_idle_lead(tmp_path):
     board.send('user:heejun', 'codex', 'Please review this task', task_id=result['task_id'])
     assert board.pending_for_employee('codex') == 1
 
+
+
+def test_cli_apply_distinguishes_receipt_from_assignment(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv('GITHUB_TOKEN', 'synthetic-token')
+    monkeypatch.setattr(inbox, 'fetch_issues', lambda *a: [issue()])
+    args = ['--workspace', str(tmp_path), '--apply']
+    assert inbox.main(args) == 0
+    received = json.loads(capsys.readouterr().out)
+    task_id = received['results'][0]['task_id']
+    assert received['dispatch'] == {
+        'automatic_execution': False, 'assignment_required_task_ids': [task_id],
+        'next_action': 'review_and_assign',
+    }
+    board = BoardStore(Guardrails(tmp_path))
+    assert board.pending_for_employee('codex') == 0
+    board.claim('codex:acceptance', task_id)
+    board.release('codex:acceptance', task_id, 'review', 'Synthetic result', verification='fixture checked')
+    assert inbox.main(args) == 0
+    duplicate = json.loads(capsys.readouterr().out)
+    assert duplicate['results'][0]['created'] is False
+    assert duplicate['dispatch']['assignment_required_task_ids'] == []
+    assert duplicate['dispatch']['automatic_execution'] is False
