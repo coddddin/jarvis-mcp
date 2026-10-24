@@ -601,6 +601,9 @@ def test_models_setting_is_ordered_bounded_and_exclusive_with_model():
         with pytest.raises(ValidationError):
             _settings(**bad)
     assert _settings(model='opencode/b').models is None   # single-model employees keep working as before
+    with pytest.raises(ValidationError):
+        _settings(model='-f')                             # it follows -m in argv, like models
+    assert _settings(model='').model == ''
 
 
 def test_ledger_backs_off_only_the_model_that_hit_a_limit(tmp_path):
