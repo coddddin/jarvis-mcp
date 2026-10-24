@@ -277,10 +277,11 @@ def tick(dry_run=False):
         states = []
         for employee, settings in config.employees.items():
             agent = roster.agents.get(employee)
-            keys[employee] = input_key(board.pending_ids(employee)) if agent else None
+            pending_ids = board.pending_ids(employee) if agent else []
+            keys[employee] = input_key(pending_ids)
             states.append(EmployeeState(
                 employee=employee, enabled=settings.enabled, roster_status=agent.status if agent else 'missing',
-                pending=board.pending_for_employee(employee) if agent else 0,
+                pending=len(pending_ids),
                 runs_today=ledger.runs_today(employee), running=ledger.running(employee, stale_after=stale_after) is not None,
                 exhausted_until=(ledger.rotation_exhausted_until(employee, settings.models) if settings.models
                                  else ledger.exhausted_until(employee)),

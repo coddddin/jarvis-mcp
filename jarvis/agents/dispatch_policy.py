@@ -124,8 +124,12 @@ def due(states, now, *, daily_runs):
 
 
 def should_run_lead(states, *, lead_enabled):
-    """The JARVIS lead plans new work only when no employee has addressed work or a live run."""
-    return lead_enabled and all(item.pending <= 0 and not item.running for item in states)
+    """The JARVIS lead plans new work only when no employee has addressed work or a live run.
+
+    J2 H-02: unread input held as unchanged_input will never wake its employee, so it counts as idle here;
+    otherwise one unread message would stop planning for everyone. retry_backoff ends by itself."""
+    return lead_enabled and all((item.pending <= 0 or item.input_hold == 'unchanged_input') and not item.running
+                                for item in states)
 
 
 def digest_due(now, *, hour, last_sent_day):

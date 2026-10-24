@@ -176,6 +176,17 @@ def test_lead_runs_only_when_no_employee_has_work():
     assert not should_run_lead([state(pending=0, running=True)], lead_enabled=True)
 
 
+def test_an_employee_held_on_unchanged_input_does_not_stop_the_lead():
+    # J2 H-02 review P2: unread input that will never wake anyone must not block planning forever.
+    from jarvis.agents.dispatch_policy import should_run_lead
+    held = state(pending=2, input_hold='unchanged_input')
+    assert should_run_lead([held, state(employee='cursor', pending=0)], lead_enabled=True)
+    assert not should_run_lead([state(pending=2, input_hold='unchanged_input', running=True)], lead_enabled=True)
+    assert not should_run_lead([held, state(employee='cursor', pending=1)], lead_enabled=True)
+    # retry_backoff ends by itself; planning meanwhile would only wake the failing employee early
+    assert not should_run_lead([state(pending=2, input_hold='retry_backoff')], lead_enabled=True)
+
+
 def test_digest_is_due_once_per_local_day_after_the_hour():
     import time as _time
     from jarvis.agents.dispatch_policy import digest_due
@@ -837,3 +848,22 @@ def test_tick_retries_a_failed_run_only_after_backoff(tmp_path, monkeypatch):
     reasons = {d['employee']: d['reason'] for d in cli_dispatch.tick(dry_run=True)['decisions']}
     assert reasons['claude-code'] == 'retry_backoff'
     assert alerted[-1] == []                                              # failures already alert per run
+
+
+def test_tick_runs_the_lead_past_a_held_employee_and_a_new_message_releases_it(tmp_path, monkeypatch):
+    cli_dispatch, board, launched, alerted = _h02_tick(tmp_path, monkeypatch)
+    config = cli_dispatch.CONFIG_ROOT / 'dispatcher.json'
+    data = json.loads(config.read_text(encoding='utf-8'))
+    data['employees']['codex'] = {}
+    data['lead'] = {'enabled': True}
+    config.write_text(json.dumps(data), encoding='utf-8')
+    leads = []
+    monkeypatch.setattr(cli_dispatch, 'run_lead', lambda *a: leads.append(1) or {'action': 'none', 'reason': 'test'})
+    board.send('user:heejun', 'claude-code', 'first request')
+    cli_dispatch.tick()                       # pending work: the lead waits, the employee runs (never reads)
+    assert launched == ['claude-code'] and leads == []
+    cli_dispatch.tick()                       # held on unchanged input, codex idle: the lead may plan
+    assert launched == ['claude-code'] and leads == [1]
+    board.send('user:heejun', 'claude-code', 'second request')
+    cli_dispatch.tick()                       # new input releases the hold; the lead waits again
+    assert launched == ['claude-code', 'claude-code'] and leads == [1]
