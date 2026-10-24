@@ -320,13 +320,17 @@ class BoardStore:
         """Messages to an employee or its auto session that no session of that employee has read yet.
 
         Used by the dispatcher to decide whether to wake the employee; broadcasts never wake anyone."""
+        return len(self.pending_ids(employee))
+
+    def pending_ids(self, employee):
+        """Sorted ids of the messages pending_for_employee counts: the dispatcher's input fingerprint (J2 H-02)."""
         if employee not in self._prefixes() or employee in ('user', 'local'):
             raise BoardError('Unknown employee.')
         with self.connection() as db:
-            return db.execute(
-                'SELECT COUNT(*) FROM messages m WHERE m.recipient IN (?,?) AND m.sender NOT LIKE ? '
-                'AND NOT EXISTS (SELECT 1 FROM reads r WHERE r.message_id=m.id AND r.reader LIKE ?)',
-                (employee, employee + ':auto', employee + ':%', employee + ':%')).fetchone()[0]
+            return [row[0] for row in db.execute(
+                'SELECT m.id FROM messages m WHERE m.recipient IN (?,?) AND m.sender NOT LIKE ? '
+                'AND NOT EXISTS (SELECT 1 FROM reads r WHERE r.message_id=m.id AND r.reader LIKE ?) ORDER BY m.id',
+                (employee, employee + ':auto', employee + ':%', employee + ':%'))]
 
     def activity_snapshot(self):
         """Read-only HUD projection. Board declarations never imply a live process."""

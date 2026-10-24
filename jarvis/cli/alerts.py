@@ -8,14 +8,14 @@ from jarvis.agents.worker_adapters import employed, roster_problem_codes
 USER = 'user:heejun'
 
 
-def gather(guard, board, roster, config_path, *, not_woken=()):
+def gather(guard, board, roster, config_path, *, not_woken=(), unchanged=()):
     stale = [task for task in board.list(status='claimed', limit=50)['tasks'] if task['stale']]
     blocked = board.list(status='blocked', limit=50)['tasks']
     working = set(employed(roster))
     problems = {name: codes for name, codes in roster_problem_codes(roster).items() if name in working}
     findings = process_watch.scan(guard, config_path)['findings']
     return alerts.events(stale=stale, blocked=blocked, problems=problems, not_woken=not_woken, findings=findings,
-                         service=_service_status(guard, config_path))
+                         service=_service_status(guard, config_path), unchanged=unchanged)
 
 
 def _service_status(guard, config_path):
@@ -30,7 +30,7 @@ def _service_status(guard, config_path):
     return dispatch_control.service_state(guard)['status']
 
 
-def send_alerts(guard, board, roster, config_path, now, *, sender, not_woken=(), ledger=None):
+def send_alerts(guard, board, roster, config_path, now, *, sender, not_woken=(), unchanged=(), ledger=None):
     ledger = ledger or alerts.AlertLedger(guard)
-    found = gather(guard, board, roster, config_path, not_woken=not_woken)
+    found = gather(guard, board, roster, config_path, not_woken=not_woken, unchanged=unchanged)
     return alerts.notify(ledger, found, lambda text: board.send(sender, USER, text), now)

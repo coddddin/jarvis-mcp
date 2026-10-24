@@ -5,6 +5,7 @@ No model is invoked here. The CLI in jarvis/cli/dispatch.py performs launches.
 """
 from contextlib import contextmanager
 from dataclasses import dataclass
+import hashlib
 import json
 import re
 import sqlite3
@@ -86,6 +87,8 @@ class EmployeeState:
     exhausted_until: float | None
     tokens_today: int = 0             # W5: input (incl. cache) + output of runs started today
     daily_tokens: int | None = None   # None: no token cap
+    # J2 H-02: '' (wake on pending work), 'unchanged_input' or 'retry_backoff' (see DispatchLedger.input_hold)
+    input_hold: str = ''
 
 
 @dataclass(frozen=True)
@@ -112,6 +115,8 @@ def due(states, now, *, daily_runs):
             reason = 'token_cap'
         elif item.pending <= 0:
             reason = 'no_pending_work'
+        elif item.input_hold:
+            reason = item.input_hold
         else:
             reason = 'pending_work'
         decisions.append(Decision(item.employee, reason == 'pending_work', reason))
@@ -200,6 +205,19 @@ def block_unsafe(decisions, problems):
     """Keep employees whose adapter failed worker_adapters.roster_problems asleep (reason adapter_check_failed)."""
     return [Decision(d.employee, False, 'adapter_check_failed') if d.wake and problems.get(d.employee) else d
             for d in decisions]
+
+
+def input_key(message_ids):
+    """Fingerprint of an employee's unread input (J2 H-02); None when nothing is pending."""
+    ids = sorted(int(i) for i in message_ids)
+    return hashlib.sha256(','.join(map(str, ids)).encode()).hexdigest()[:16] if ids else None
+
+
+# J2 H-02: after these, the same unread input does not wake the employee again (the run saw it, or the user
+# stopped it). After INPUT_RETRY_STATUSES it is retried only after next_backoff, per employee and input.
+# limit, eligibility and model_missing are left to the exhaustion ledgers (employee and per model).
+INPUT_DONE_STATUSES = ('ok', 'stopped')
+INPUT_RETRY_STATUSES = ('error', 'timeout', 'lost')
 
 
 def next_backoff(previous):
@@ -365,12 +383,14 @@ class DispatchLedger:
                     if 'duplicate column' not in str(exc).lower():
                         raise
             # Rotation: the model a run used. NULL: the employee has a single model (or an older row).
-            if 'model' not in {row['name'] for row in db.execute('PRAGMA table_info(runs)')}:
-                try:
-                    db.execute('ALTER TABLE runs ADD COLUMN model TEXT')
-                except sqlite3.OperationalError as exc:
-                    if 'duplicate column' not in str(exc).lower():
-                        raise
+            # J2 H-02: input_key, the unread input a run was woken for. NULL: an older row, never holds.
+            for column in ('model', 'input_key'):
+                if column not in {row['name'] for row in db.execute('PRAGMA table_info(runs)')}:
+                    try:
+                        db.execute(f'ALTER TABLE runs ADD COLUMN {column} TEXT')
+                    except sqlite3.OperationalError as exc:
+                        if 'duplicate column' not in str(exc).lower():
+                            raise
             yield db
             db.commit()
         finally:
@@ -419,7 +439,7 @@ class DispatchLedger:
         db.execute('UPDATE runs SET status="lost", ended=? WHERE id=?', (now, row['id']))
         return False
 
-    def try_start(self, employee, *, daily_runs, stale_after=None):
+    def try_start(self, employee, *, daily_runs, stale_after=None, input_key=None):
         """Atomically reserve a run: refused if one is live or the daily cap is reached. Returns run id or None.
 
         stale_after (seconds, normally run_timeout_minutes*60): a pid-less running row older than this is closed
@@ -433,8 +453,34 @@ class DispatchLedger:
                     return None
             if db.execute('SELECT COUNT(*) FROM runs WHERE employee=? AND started>=?', (employee, day_start)).fetchone()[0] >= daily_runs:
                 return None
-            return db.execute('INSERT INTO runs(employee,pid,started,status) VALUES(?,?,?,?)',
-                              (employee, None, now, 'running')).lastrowid
+            return db.execute('INSERT INTO runs(employee,pid,started,status,input_key) VALUES(?,?,?,?,?)',
+                              (employee, None, now, 'running', input_key)).lastrowid
+
+    def input_hold(self, employee, key):
+        """J2 H-02: why this employee must not be woken for this unread input, or '' when it may be.
+
+        Looks at the employee's latest finished runs only (per employee, by input; model rotation is separate).
+        Same key after ok/stopped: 'unchanged_input' until a new message changes the key. Same key after
+        error/timeout/lost: 'retry_backoff' for next_backoff per consecutive failure on that key."""
+        if key is None:
+            return ''
+        now = self.clock()
+        with self.connection() as db:
+            rows = db.execute('SELECT status, ended, input_key FROM runs WHERE employee=? AND status!="running" '
+                              'ORDER BY id DESC LIMIT 20', (employee,)).fetchall()
+        if not rows or rows[0]['input_key'] != key:
+            return ''
+        if rows[0]['status'] in INPUT_DONE_STATUSES:
+            return 'unchanged_input'
+        if rows[0]['status'] not in INPUT_RETRY_STATUSES:
+            return ''
+        backoff = None
+        for row in rows:
+            if row['input_key'] != key or row['status'] not in INPUT_RETRY_STATUSES:
+                break
+            backoff = next_backoff(backoff)
+        ended = rows[0]['ended'] if rows[0]['ended'] is not None else now
+        return 'retry_backoff' if now < ended + backoff else ''
 
     def set_pid(self, run_id, pid):
         with self.connection() as db:

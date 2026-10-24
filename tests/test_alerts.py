@@ -230,3 +230,9 @@ def test_tick_keeps_working_when_alerts_fail(tmp_path, monkeypatch):
     monkeypatch.setattr(cli_dispatch, 'send_alerts', lambda *a, **k: 1 / 0)
     cli_dispatch.tick()
     assert launched == ['claude-code'] and any(isinstance(item, ZeroDivisionError) for item in logged)
+
+
+def test_unchanged_input_is_one_line_per_employee():
+    found = dict(alerts.events(unchanged=['cursor', 'cursor', 'opencode']))
+    assert found == {'unchanged_input:cursor': '같은 입력으로 다시 깨우지 않음: cursor',
+                     'unchanged_input:opencode': '같은 입력으로 다시 깨우지 않음: opencode'}
