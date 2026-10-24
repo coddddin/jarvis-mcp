@@ -37,10 +37,11 @@ def _who(agent):
     return str(agent or '-').split(':')[0]
 
 
-def events(*, stale=(), blocked=(), problems=None, not_woken=(), findings=(), service=None):
+def events(*, stale=(), blocked=(), problems=None, not_woken=(), findings=(), service=None, unchanged=()):
     """[(key, text)] in a stable order. stale/blocked: board task rows; problems: {employee: [codes]};
     not_woken: employees with waiting work the adapter check kept asleep; findings: process_watch findings;
-    service: dispatcher service status, passed only when the dispatcher is enabled and not paused."""
+    service: dispatcher service status, passed only when the dispatcher is enabled and not paused;
+    unchanged: employees not woken again because their unread input is the same as their last run's (J2 H-02)."""
     found = []
     for task in stale:
         found.append((f"stale_claim:task:{task['id']}", f'멈춘 담당: {_title(task)}({_who(task.get("owner"))})'))
@@ -52,6 +53,8 @@ def events(*, stale=(), blocked=(), problems=None, not_woken=(), findings=(), se
                 found.append((f'adapter:{employee}:{code}', f'어댑터 점검: {employee} {PROBLEM_LABELS[code]}'))
     for employee in sorted(set(not_woken)):
         found.append((f'adapter_check_failed:{employee}', f'받은 일이 있지만 점검 때문에 깨우지 않음: {employee}'))
+    for employee in sorted(set(unchanged)):
+        found.append((f'unchanged_input:{employee}', f'같은 입력으로 다시 깨우지 않음: {employee}'))
     for item in findings:
         kind = item.get('kind')
         if kind not in WATCH_TEXT:

@@ -176,6 +176,17 @@ def test_lead_runs_only_when_no_employee_has_work():
     assert not should_run_lead([state(pending=0, running=True)], lead_enabled=True)
 
 
+def test_an_employee_held_on_unchanged_input_does_not_stop_the_lead():
+    # J2 H-02 review P2: unread input that will never wake anyone must not block planning forever.
+    from jarvis.agents.dispatch_policy import should_run_lead
+    held = state(pending=2, input_hold='unchanged_input')
+    assert should_run_lead([held, state(employee='cursor', pending=0)], lead_enabled=True)
+    assert not should_run_lead([state(pending=2, input_hold='unchanged_input', running=True)], lead_enabled=True)
+    assert not should_run_lead([held, state(employee='cursor', pending=1)], lead_enabled=True)
+    # retry_backoff ends by itself; planning meanwhile would only wake the failing employee early
+    assert not should_run_lead([state(pending=2, input_hold='retry_backoff')], lead_enabled=True)
+
+
 def test_digest_is_due_once_per_local_day_after_the_hour():
     import time as _time
     from jarvis.agents.dispatch_policy import digest_due
@@ -690,3 +701,169 @@ def test_eligibility_backs_off_the_rotating_employee_not_the_model(tmp_path):
     assert ledger.rotation_exhausted_until('opencode', models) == now[0] + 3600
     now[0] += 3601
     assert ledger.rotation_exhausted_until('opencode', models) is None
+
+
+# --- J2 H-02: the same unread input never wakes an employee again for nothing ------------------------------
+
+def _finish(ledger, employee, status, key, *, model=None):
+    run_id = ledger.try_start(employee, daily_runs=100, input_key=key)
+    if model:
+        ledger.set_model(run_id, model)
+    ledger.finish(run_id, status=status, exit_code=0 if status == 'ok' else 1, input_tokens=None,
+                  output_tokens=None, note='')
+
+
+def test_due_holds_unchanged_input_and_retry_backoff_after_other_reasons():
+    held = due([state(input_hold='unchanged_input')], NOW, daily_runs=10)[0]
+    assert (held.wake, held.reason) == (False, 'unchanged_input')
+    held = due([state(input_hold='retry_backoff')], NOW, daily_runs=10)[0]
+    assert (held.wake, held.reason) == (False, 'retry_backoff')
+    # no pending work and the caps still win, so earlier reasons keep their meaning
+    assert due([state(pending=0, input_hold='unchanged_input')], NOW, daily_runs=10)[0].reason == 'no_pending_work'
+    assert due([state(runs_today=10, input_hold='unchanged_input')], NOW, daily_runs=10)[0].reason == 'daily_cap'
+    assert due([state()], NOW, daily_runs=10)[0].reason == 'pending_work'
+
+
+def test_input_key_is_order_free_and_empty_without_pending():
+    from jarvis.agents.dispatch_policy import input_key
+    assert input_key([3, 1, 2]) == input_key([1, 2, 3]) != input_key([1, 2])
+    assert input_key([]) is None and len(input_key([1])) == 16
+
+
+@pytest.mark.parametrize('status', ['ok', 'stopped'])
+def test_same_input_after_ok_or_stopped_is_not_woken_again(tmp_path, status):
+    ledger = DispatchLedger(Guardrails(tmp_path), clock=lambda: NOW, alive=lambda pid: False)
+    assert ledger.input_hold('codex', 'k1') == ''
+    _finish(ledger, 'codex', status, 'k1')
+    assert ledger.input_hold('codex', 'k1') == 'unchanged_input'
+    assert ledger.input_hold('codex', 'k2') == ''          # a new message changes the key
+    assert ledger.input_hold('codex', None) == ''
+
+
+@pytest.mark.parametrize('status', ['error', 'timeout', 'lost'])
+def test_same_input_after_a_failure_waits_a_growing_backoff(tmp_path, status):
+    clock = [NOW]
+    ledger = DispatchLedger(Guardrails(tmp_path), clock=lambda: clock[0], alive=lambda pid: False)
+    _finish(ledger, 'codex', status, 'k1')
+    assert ledger.input_hold('codex', 'k1') == 'retry_backoff'
+    assert ledger.input_hold('codex', 'k2') == ''
+    clock[0] += 3600
+    assert ledger.input_hold('codex', 'k1') == ''          # first retry after one hour (next_backoff start)
+    _finish(ledger, 'codex', status, 'k1')
+    clock[0] += 3600
+    assert ledger.input_hold('codex', 'k1') == 'retry_backoff'
+    clock[0] += 3600
+    assert ledger.input_hold('codex', 'k1') == ''          # second retry after two hours
+    assert ledger.exhausted_until('codex') is None        # an ordinary failure is not a limit
+
+
+@pytest.mark.parametrize('status', ['limit', 'eligibility', 'model_missing'])
+def test_limit_like_statuses_are_left_to_the_exhaustion_ledger(tmp_path, status):
+    ledger = DispatchLedger(Guardrails(tmp_path), clock=lambda: NOW, alive=lambda pid: False)
+    _finish(ledger, 'codex', status, 'k1')
+    assert ledger.input_hold('codex', 'k1') == ''
+
+
+def test_input_backoff_is_per_employee_and_separate_from_model_rotation(tmp_path):
+    ledger = DispatchLedger(Guardrails(tmp_path), clock=lambda: NOW, alive=lambda pid: False)
+    _finish(ledger, 'opencode', 'error', 'k1', model='m/a')
+    assert ledger.input_hold('opencode', 'k1') == 'retry_backoff'
+    assert ledger.input_hold('codex', 'k1') == ''              # another employee with the same key is free
+    assert ledger.models_backed_off('opencode') == {}          # an error never backs off a model
+    assert ledger.pick_model('opencode', ['m/a', 'm/b']) == 'm/a'
+    assert ledger.exhausted_until('opencode') is None
+
+
+def test_legacy_rows_without_a_key_never_hold(tmp_path):
+    ledger = DispatchLedger(Guardrails(tmp_path), clock=lambda: NOW, alive=lambda pid: False)
+    ledger.finish(ledger.start('codex', pid=1), status='ok', exit_code=0, input_tokens=1, output_tokens=1, note='')
+    assert ledger.input_hold('codex', 'k1') == ''
+
+
+def test_older_ledger_gains_the_input_key_column_in_place(tmp_path):
+    import sqlite3
+    folder = tmp_path / '.jarvis-dispatch'
+    folder.mkdir()
+    db = sqlite3.connect(folder / 'ledger.sqlite3')
+    db.execute('CREATE TABLE runs (id INTEGER PRIMARY KEY, employee TEXT NOT NULL, pid INTEGER, started REAL NOT NULL, '
+               'ended REAL, status TEXT NOT NULL, exit_code INTEGER, input_tokens INTEGER, output_tokens INTEGER, note TEXT)')
+    db.execute("INSERT INTO runs(employee,started,ended,status) VALUES('codex',1,2,'ok')")
+    db.commit()
+    db.close()
+    ledger = DispatchLedger(Guardrails(tmp_path), clock=lambda: NOW, alive=lambda pid: False)
+    assert ledger.input_hold('codex', 'k1') == ''
+    _finish(ledger, 'codex', 'ok', 'k1')
+    assert ledger.input_hold('codex', 'k1') == 'unchanged_input'
+
+
+def _h02_tick(tmp_path, monkeypatch, finish_status='ok'):
+    from jarvis.cli import dispatch as cli_dispatch
+    from jarvis.core.roster import load_roster
+    from jarvis.features.board.service import BoardStore
+    workspace, config_root = tmp_path / 'ws', tmp_path / 'config'
+    workspace.mkdir(), config_root.mkdir()
+    (config_root / 'dispatcher.json').write_text(json.dumps({
+        'version': 1, 'enabled': True, 'interval_minutes': 10, 'daily_runs': 10, 'run_timeout_minutes': 30,
+        'employees': {'claude-code': {}}, 'lead': {'enabled': False}}), encoding='utf-8')
+    roster, guard = load_roster(), Guardrails(workspace)
+    board = BoardStore(guard, roster=roster)
+    launched, alerted = [], []
+
+    def run(employee, run_id, config, guard, ledger, board):   # the employee never reads its inbox
+        launched.append(employee)
+        ledger.finish(run_id, status=finish_status, exit_code=0, input_tokens=1, output_tokens=1, note='')
+        return finish_status
+    monkeypatch.setattr(cli_dispatch, 'CONFIG_ROOT', config_root)
+    monkeypatch.setattr(cli_dispatch, 'load_guardrails', lambda: guard)
+    monkeypatch.setattr(cli_dispatch, 'load_roster', lambda **kw: roster)
+    monkeypatch.setattr(cli_dispatch, 'BoardStore', lambda g: BoardStore(g, roster=roster))
+    monkeypatch.setattr(cli_dispatch, 'run_employee', run)
+    monkeypatch.setattr(cli_dispatch, 'send_digest_if_due', lambda *a: None)
+    monkeypatch.setattr(cli_dispatch, 'send_alerts', lambda *a, **k: alerted.append(k.get('unchanged')) or 0)
+    monkeypatch.setattr(cli_dispatch, 'collect_codex', lambda g: None)
+    return cli_dispatch, board, launched, alerted
+
+
+def test_tick_does_not_wake_again_for_the_same_unread_input(tmp_path, monkeypatch):
+    cli_dispatch, board, launched, alerted = _h02_tick(tmp_path, monkeypatch)
+    board.send('user:heejun', 'claude-code', 'first request')
+    cli_dispatch.tick()
+    assert launched == ['claude-code']
+    cli_dispatch.tick()
+    assert launched == ['claude-code']                                    # same input: no second model run
+    reasons = {d['employee']: d['reason'] for d in cli_dispatch.tick(dry_run=True)['decisions']}
+    assert reasons['claude-code'] == 'unchanged_input'
+    assert alerted[-1] == ['claude-code']                                 # the user hears about it
+    board.send('user:heejun', 'claude-code', 'second request')
+    cli_dispatch.tick()
+    assert launched == ['claude-code', 'claude-code']                     # new input wakes normally
+
+
+def test_tick_retries_a_failed_run_only_after_backoff(tmp_path, monkeypatch):
+    cli_dispatch, board, launched, alerted = _h02_tick(tmp_path, monkeypatch, finish_status='error')
+    board.send('user:heejun', 'claude-code', 'first request')
+    cli_dispatch.tick()
+    cli_dispatch.tick()
+    assert launched == ['claude-code']
+    reasons = {d['employee']: d['reason'] for d in cli_dispatch.tick(dry_run=True)['decisions']}
+    assert reasons['claude-code'] == 'retry_backoff'
+    assert alerted[-1] == []                                              # failures already alert per run
+
+
+def test_tick_runs_the_lead_past_a_held_employee_and_a_new_message_releases_it(tmp_path, monkeypatch):
+    cli_dispatch, board, launched, alerted = _h02_tick(tmp_path, monkeypatch)
+    config = cli_dispatch.CONFIG_ROOT / 'dispatcher.json'
+    data = json.loads(config.read_text(encoding='utf-8'))
+    data['employees']['codex'] = {}
+    data['lead'] = {'enabled': True}
+    config.write_text(json.dumps(data), encoding='utf-8')
+    leads = []
+    monkeypatch.setattr(cli_dispatch, 'run_lead', lambda *a: leads.append(1) or {'action': 'none', 'reason': 'test'})
+    board.send('user:heejun', 'claude-code', 'first request')
+    cli_dispatch.tick()                       # pending work: the lead waits, the employee runs (never reads)
+    assert launched == ['claude-code'] and leads == []
+    cli_dispatch.tick()                       # held on unchanged input, codex idle: the lead may plan
+    assert launched == ['claude-code'] and leads == [1]
+    board.send('user:heejun', 'claude-code', 'second request')
+    cli_dispatch.tick()                       # new input releases the hold; the lead waits again
+    assert launched == ['claude-code', 'claude-code'] and leads == [1]

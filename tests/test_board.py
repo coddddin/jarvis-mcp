@@ -388,3 +388,15 @@ def test_existing_board_without_status_events_is_migrated_in_place(tmp_path, clo
     claimed = board.claim(CLAUDE, 'a' * 32)
     assert claimed['owner'] == CLAUDE and board.get('a' * 32)['title'] == 'Old'
     assert _events(board) == [('a' * 32, 'open', 'claimed', CLAUDE, clock.now)]
+
+
+def test_pending_ids_match_the_pending_count_and_ignore_broadcasts_and_read_messages(tmp_path):
+    from jarvis.core.roster import load_roster
+    board = BoardStore(Guardrails(tmp_path), roster=load_roster())
+    board.send('user:heejun', 'codex', 'one')
+    board.send('user:heejun', '*', 'everyone')
+    board.send('user:heejun', 'codex:auto', 'two')
+    ids = board.pending_ids('codex')
+    assert len(ids) == board.pending_for_employee('codex') == 2 and ids == sorted(ids)
+    board.inbox('codex:auto')
+    assert board.pending_ids('codex') == []

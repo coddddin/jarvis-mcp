@@ -16,7 +16,7 @@ import time
 import psutil
 
 from jarvis.agents.dispatch_policy import (DispatchLedger, DispatcherConfig, EmployeeState, block_unsafe, build_command,
-                                           build_env, build_digest, digest_due, due, models_line,
+                                           build_env, build_digest, digest_due, due, input_key, models_line,
                                            parse_usage_detail, run_status, should_run_lead, wake_prompt,
                                            MODEL_BACKOFF_STATUSES)
 from jarvis.agents.lead_planner import LeadLedger, plan_next
@@ -271,18 +271,22 @@ def tick(dry_run=False):
         except Exception as exc:  # usage is advisory; a failed read never stops the tick
             log_service_error(exc)
 
+    keys = {}  # J2 H-02: each employee's unread-input fingerprint, stored with the run it wakes
+
     def collect():
         states = []
         for employee, settings in config.employees.items():
             agent = roster.agents.get(employee)
+            pending_ids = board.pending_ids(employee) if agent else []
+            keys[employee] = input_key(pending_ids)
             states.append(EmployeeState(
                 employee=employee, enabled=settings.enabled, roster_status=agent.status if agent else 'missing',
-                pending=board.pending_for_employee(employee) if agent else 0,
+                pending=len(pending_ids),
                 runs_today=ledger.runs_today(employee), running=ledger.running(employee, stale_after=stale_after) is not None,
                 exhausted_until=(ledger.rotation_exhausted_until(employee, settings.models) if settings.models
                                  else ledger.exhausted_until(employee)),
                 tokens_today=ledger.tokens_today(employee)['total'] if settings.daily_tokens is not None else 0,
-                daily_tokens=settings.daily_tokens))
+                daily_tokens=settings.daily_tokens, input_hold=ledger.input_hold(employee, keys[employee])))
         return states
 
     states = collect()
@@ -308,14 +312,17 @@ def tick(dry_run=False):
                                        + ' | '.join(p for name in blocked for p in problems[name])))
     send_digest_if_due(guard, board, ledger, config, now, roster)
     try:  # W3 alerts: new events once a day to the user; never stops the tick
-        send_alerts(guard, board, roster, CONFIG_ROOT / 'dispatcher.json', now, sender=DISPATCHER_ID, not_woken=blocked)
+        unchanged = [d.employee for d in decisions if d.reason == 'unchanged_input']
+        send_alerts(guard, board, roster, CONFIG_ROOT / 'dispatcher.json', now, sender=DISPATCHER_ID, not_woken=blocked,
+                    unchanged=unchanged)
     except Exception as exc:
         log_service_error(exc)
     threads = []
     for decision in decisions:
         if not decision.wake:
             continue
-        run_id = ledger.try_start(decision.employee, daily_runs=config.daily_runs, stale_after=stale_after)
+        run_id = ledger.try_start(decision.employee, daily_runs=config.daily_runs, stale_after=stale_after,
+                                  input_key=keys.get(decision.employee))
         if run_id is None:
             continue
         def work(employee=decision.employee, run_id=run_id):
