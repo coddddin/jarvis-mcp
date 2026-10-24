@@ -429,3 +429,80 @@ def test_inbox_rejects_bad_ids(tmp_path, ids):
     board = BoardStore(Guardrails(tmp_path))
     with pytest.raises(BoardError):
         board.inbox('codex:auto', ids=ids)
+
+
+# --- Token-lean MCP tool defaults (service defaults stay full for internal callers) ---
+
+def tools(board):
+    from types import SimpleNamespace
+    from jarvis.features.board.tools import (claim_task_tool, create_task_tool, get_task_tool, heartbeat_task_tool,
+                                             inbox_tool, list_tasks_tool, note_task_tool, release_task_tool)
+    context = SimpleNamespace(board=board)
+    modules = (claim_task_tool, create_task_tool, get_task_tool, heartbeat_task_tool, inbox_tool, list_tasks_tool,
+               note_task_tool, release_task_tool)
+    return {fn.__name__: fn for fn in (module.build(context) for module in modules)}
+
+
+BRIEF = {'id', 'status', 'owner', 'lease_until', 'updated'}
+
+
+def test_write_tools_return_only_the_brief_view(board):
+    t = tools(board)
+    created = t['board_create'](CODEX, 'Fix chat routing', ['jarvis/app/chat.py'], detail='long detail ' * 50)
+    assert set(created) == BRIEF and created['status'] == 'open'
+    task = created['id']
+    assert set(t['board_claim'](CLAUDE, task)) == BRIEF
+    assert set(t['board_heartbeat'](CLAUDE, task)) == BRIEF
+    noted = t['board_note'](CLAUDE, task, 'finding', 'x' * 3000)
+    assert set(noted) == BRIEF and noted['owner'] == CLAUDE
+    released = t['board_release'](CLAUDE, task, 'review', 'summary')
+    assert set(released) == BRIEF and released['status'] == 'review' and released['lease_until'] is None
+    # the service itself still returns the whole task for internal callers
+    assert board.get(task)['detail'].startswith('long detail')
+
+
+def test_list_tool_hides_closed_tasks_and_counts_paths_by_default(board, clock):
+    t = tools(board)
+    done = make(board, paths=('a.py', 'b.py'))
+    board.claim(CODEX, done)
+    board.release(CODEX, done, 'done', 'ok', verification='pytest ok')
+    cancelled = make(board, paths=('c.py',))
+    board.claim(CODEX, cancelled)
+    board.release(CODEX, cancelled, 'cancelled', 'dropped')
+    for _ in range(12):
+        clock.now += 1
+        make(board, paths=('d.py', 'e.py'))
+    listed = t['board_list']()['tasks']
+    assert len(listed) == 10 and all(item['status'] == 'open' for item in listed)
+    assert listed[0]['paths'] == 2
+    assert {item['id'] for item in t['board_list'](status='done')['tasks']} == {done}
+    every = t['board_list'](include_closed=True, limit=50, full_paths=True)['tasks']
+    assert {done, cancelled} <= {item['id'] for item in every}
+    assert next(item for item in every if item['id'] == done)['paths'] == ['a.py', 'b.py']
+    # internal callers keep the old full view
+    assert board.list(limit=50)['tasks'][0]['paths'] == ['d.py', 'e.py']
+    assert len(board.list(limit=50)['tasks']) == 14
+
+
+def test_get_tool_returns_three_notes_cut_to_600_chars_unless_full(board):
+    t = tools(board)
+    task = make(board)
+    for n in range(5):
+        board.note(CODEX, task, 'finding', f'{n}' * (700 if n == 4 else 10))
+    got = t['board_get'](task)
+    assert got['total_notes'] == 5 and [note['body'][0] for note in got['notes']] == ['2', '3', '4']
+    assert len(got['notes'][-1]['body']) == 600 and got['notes'][-1]['truncated'] is True
+    assert 'truncated' not in got['notes'][0]
+    full = t['board_get'](task, notes=5, full=True)
+    assert len(full['notes']) == 5 and len(full['notes'][-1]['body']) == 700 and 'truncated' not in full['notes'][-1]
+
+
+def test_inbox_tool_defaults_to_five_with_ids_and_covers_given_ids(board):
+    t = tools(board)
+    sent = [board.send(CODEX, CLAUDE, f'message {n}')['id'] for n in range(8)]
+    first = t['board_inbox'](CLAUDE, mark_read=False)
+    assert first['unread'] == 8 and [m['id'] for m in first['messages']] == sent[:5]
+    # a woken employee passes up to 20 ids; the default limit must not drop any of them
+    picked = t['board_inbox'](CLAUDE, ids=sent[1:8])
+    assert [m['id'] for m in picked['messages']] == sent[1:8]
+    assert [m['id'] for m in t['board_inbox'](CLAUDE, limit=50)['messages']] == [sent[0]]
