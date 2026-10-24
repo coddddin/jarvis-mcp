@@ -1,5 +1,6 @@
 """W5 dispatcher: who to wake, caps, exhaustion backoff, usage parsing and command shapes."""
 import json
+import time
 from pathlib import Path
 
 import pytest
@@ -582,3 +583,87 @@ def test_tick_skips_an_employee_over_its_token_cap(tmp_path, monkeypatch):
     assert {d['employee']: d['reason'] for d in dry['decisions']}['claude-code'] == 'token_cap'
     cli_dispatch.tick()
     assert launched == ['codex']
+
+
+# --- OpenCode model rotation: settings, ledger, status and digest line --------------------------------------
+
+def _settings(**fields):
+    from jarvis.agents.dispatch_policy import EmployeeSettings
+    return EmployeeSettings.model_validate(fields)
+
+
+def test_models_setting_is_ordered_bounded_and_exclusive_with_model():
+    from pydantic import ValidationError
+    assert _settings(models=['opencode/a-free', 'opencode/b-free']).models == ['opencode/a-free', 'opencode/b-free']
+    for bad in ({'models': []}, {'models': [f'opencode/m{i}' for i in range(9)]},
+                {'models': ['opencode/a', 'opencode/a']}, {'models': ['']}, {'models': ['bad model']},
+                {'models': ['opencode/a'], 'model': 'opencode/b'}, {'models': 'opencode/a'}):
+        with pytest.raises(ValidationError):
+            _settings(**bad)
+    assert _settings(model='opencode/b').models is None   # single-model employees keep working as before
+
+
+def test_ledger_backs_off_only_the_model_that_hit_a_limit(tmp_path):
+    guard = Guardrails(tmp_path)
+    from jarvis.agents.dispatch_policy import DispatchLedger
+    now = [1_000_000.0]
+    ledger = DispatchLedger(guard, clock=lambda: now[0], alive=lambda pid: False)
+    models = ['m/a', 'm/b']
+    def run(model, status):
+        run_id = ledger.try_start('opencode', daily_runs=100)
+        ledger.set_model(run_id, model)
+        ledger.finish(run_id, status=status, exit_code=1, input_tokens=None, output_tokens=None, note='')
+    assert ledger.pick_model('opencode', models) == 'm/a'
+    run('m/a', 'eligibility')
+    assert ledger.pick_model('opencode', models) == 'm/b'
+    assert ledger.models_exhausted_until('opencode', models) is None and ledger.exhausted_until('opencode') is None
+    run('m/b', 'model_missing')
+    assert ledger.pick_model('opencode', models) is None
+    assert ledger.models_exhausted_until('opencode', models) == now[0] + 3600
+    run('m/a', 'limit')                                   # a second limit doubles that model's backoff
+    assert ledger.models_backed_off('opencode')['m/a'] == now[0] + 7200
+    now[0] += 3601                                        # m/b recovers first
+    assert ledger.pick_model('opencode', models) == 'm/b'
+    run('m/b', 'ok')
+    assert set(ledger.models_backed_off('opencode')) == {'m/a'}
+
+
+def test_a_run_without_a_model_still_backs_off_the_employee(tmp_path):
+    guard = Guardrails(tmp_path)
+    from jarvis.agents.dispatch_policy import DispatchLedger
+    ledger = DispatchLedger(guard, clock=lambda: 1_000_000.0, alive=lambda pid: False)
+    run_id = ledger.try_start('opencode', daily_runs=10)
+    ledger.finish(run_id, status='model_missing', exit_code=1, input_tokens=None, output_tokens=None, note='')
+    assert ledger.exhausted_until('opencode') == 1_000_000.0 + 3600
+    assert ledger.models_backed_off('opencode') == {}
+
+
+def test_run_status_uses_opencode_wording_for_a_missing_model():
+    from jarvis.agents.dispatch_policy import run_status
+    # Wording from opencode-cli: error class ProviderModelNotFoundError, message 'Model not found: <provider>/<model>'.
+    assert run_status('Model not found: opencode/old-free\nDid you mean: opencode/new-free', failed=True) == 'model_missing'
+    assert run_status('{"type":"error","error":{"name":"ProviderModelNotFoundError"}}', failed=True) == 'model_missing'
+    # A successful run that merely quotes the wording (e.g. it read these tests) is not a missing model.
+    assert run_status('read file: Model not found: opencode/old-free', failed=False) == 'ok'
+    assert run_status('{"name":"FreeTierError"} Model not found: a/b', failed=True) == 'eligibility'
+    assert run_status('rate limit exceeded', failed=True) == 'limit'
+    assert run_status('the model was not found in the docs', failed=True) == 'error'
+    assert run_status('fine', failed=False) == 'ok'
+
+
+def test_models_line_has_a_fixed_format_and_no_free_text():
+    from jarvis.agents.dispatch_policy import build_digest, models_line
+    until = time.mktime((2026, 10, 24, 14, 20, 0, 0, 0, -1))
+    line = models_line({'opencode': (['m/a', 'm/b', 'm/c'], {'m/a': until})})
+    assert line == '- opencode 모델: 지금 m/b, 소진 m/a(14:20까지)'
+    assert models_line({'opencode': (['m/a'], {'m/a': until})}) == '- opencode 모델: 모두 소진, 소진 m/a(14:20까지)'
+    assert models_line({}) is None
+    text = build_digest(day='2026-10-24', done=[], review=[], stale=[], runs={}, exhausted={}, pause={}, models=line)
+    assert line in text.splitlines()
+
+
+def test_build_command_puts_the_picked_model_into_the_opencode_argv():
+    from jarvis.agents.dispatch_policy import DispatcherConfig, build_command
+    config = DispatcherConfig.model_validate(json.loads(Path('config/dispatcher.json').read_text(encoding='utf-8')))
+    argv = build_command('opencode', config, 'W', 'P', '{}', executable='oc', model='opencode/glm-5.3-flash-free')
+    assert argv[argv.index('-m') + 1] == 'opencode/glm-5.3-flash-free'

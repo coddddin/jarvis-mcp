@@ -11,7 +11,9 @@ import sqlite3
 import time
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from typing import Annotated
+
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 # CLAUDE_TOOLS, EMPLOYEES and OPENCODE_DEFAULT_MODEL stay importable from here for existing callers.
 from jarvis.agents.worker_adapters import (ADAPTERS, CLAUDE_TOOLS, EMPLOYEES, OPENCODE_DEFAULT_MODEL, WorkRequest,  # noqa: F401
@@ -23,6 +25,11 @@ LIMIT_PATTERN = re.compile(r'usage limit|rate limit|quota|\b429\b|limit reached|
 # Employees whose work command cannot apply edits get the probation prompt (from worker_adapters).
 PROBATION_PROMPT = tuple(name for name in EMPLOYEES if not ADAPTERS[name].applies_edits)
 ELIGIBILITY_PATTERN = re.compile(r'FreeTierError|free tier can only be used', re.I)
+# OpenCode's own wording (opencode-cli strings: ProviderModelNotFoundError, 'Model not found: <provider>/<model>').
+# Free model lists change often; a retired model is backed off like a limit so rotation moves on.
+MODEL_MISSING_PATTERN = re.compile(r'\b(?:Provider)?ModelNotFoundError\b|Model not found: [A-Za-z0-9._-]+/[A-Za-z0-9._:-]+')
+BACKOFF_STATUSES = ('limit', 'eligibility', 'model_missing')
+ModelId = Annotated[str, Field(min_length=1, max_length=120, pattern=r'^[A-Za-z0-9._/:#-]+$')]
 
 
 class EmployeeSettings(BaseModel):
@@ -32,6 +39,18 @@ class EmployeeSettings(BaseModel):
     model: str = Field(default='', max_length=120, pattern=r'^[A-Za-z0-9._/:#-]*$')
     # W5: tokens (input incl. cache + output) this employee may use per local day; None means no token cap.
     daily_tokens: int | None = Field(default=None, ge=1000, le=1_000_000_000)
+    # Rotation: models in priority order. A limit/eligibility/model_missing run backs off only that model;
+    # the employee waits only when every model is backed off. Exclusive with model, so the choice is clear.
+    models: list[ModelId] | None = Field(default=None, min_length=1, max_length=8)
+
+    @model_validator(mode='after')
+    def _one_model_source(self):
+        if self.models is not None:
+            if self.model:
+                raise ValueError('Use either model or models, not both.')
+            if len(set(self.models)) != len(self.models):
+                raise ValueError('models must not repeat.')
+        return self
 
 
 class LeadSettings(BaseModel):
@@ -137,7 +156,8 @@ def _usage_line(usage):
     return '- 사용량(마지막 관찰): ' + ', '.join(parts) if parts else None
 
 
-def build_digest(*, day, done, review, stale, runs, exhausted, pause, blocked=None, promotion=None, usage=None):
+def build_digest(*, day, done, review, stale, runs, exhausted, pause, blocked=None, promotion=None, usage=None,
+                 models=None):
     """Short Korean daily report for user:heejun (board message, max 1000 chars, no double quotes).
 
     blocked: [(employee, problem codes, pending messages)] for employees the adapter check keeps asleep now.
@@ -157,6 +177,8 @@ def build_digest(*, day, done, review, stale, runs, exhausted, pause, blocked=No
     if exhausted:
         lines.append('- 한도 대기: ' + ', '.join(
             f"{who} {time.strftime('%H:%M', time.localtime(until))}까지" for who, until in sorted(exhausted.items())))
+    if models:
+        lines.append(models[:300])
     if pause.get('paused'):
         lines.append('- 디스패처 일시정지 중' + (f": {pause['reason']}" if pause.get('reason') else ''))
     usage_line = _usage_line(usage)
@@ -182,6 +204,37 @@ def next_backoff(previous):
 
 def detect_limit(text):
     return bool(LIMIT_PATTERN.search(text or ''))
+
+
+def detect_model_missing(text):
+    return bool(MODEL_MISSING_PATTERN.search(text or ''))
+
+
+def run_status(output, *, failed):
+    """Ledger status for a finished run. A free-tier refusal can arrive as an error event with exit code 0,
+    so it is checked first (as before). A missing model counts only for a failed run: a successful run's
+    output may quote the wording (this repository's own tests and docs contain it)."""
+    if detect_eligibility(output):
+        return 'eligibility'
+    if not failed:
+        return 'ok'
+    if detect_model_missing(output):
+        return 'model_missing'
+    return 'limit' if detect_limit(output) else 'error'
+
+
+def models_line(rotation):
+    """'- opencode 모델: 지금 opencode/a, 소진 opencode/b(14:20까지)' for rotating employees, or None.
+    rotation: {employee: (models, {model: until})}. Model IDs are config-validated; fixed format, no free text."""
+    parts = []
+    for employee, (models, backed_off) in sorted((rotation or {}).items()):
+        current = next((m for m in models if m not in backed_off), None)
+        text = f'{employee} 모델: ' + (f'지금 {current}' if current else '모두 소진')
+        waiting = [f"{m}({time.strftime('%H:%M', time.localtime(backed_off[m]))}까지)" for m in models if m in backed_off]
+        if waiting:
+            text += ', 소진 ' + '·'.join(waiting)
+        parts.append(text)
+    return ('- ' + ' / '.join(parts))[:300] if parts else None
 
 
 def detect_eligibility(text):
@@ -249,12 +302,12 @@ def wake_prompt(employee, python='.venv/Scripts/python.exe'):
     return '\n'.join(lines)
 
 
-def build_command(employee, config, worktree, prompt, mcp_json, *, executable, git_dir=None, python=None):
-    """Work-mode argv for one employee; the shape lives in worker_adapters."""
+def build_command(employee, config, worktree, prompt, mcp_json, *, executable, git_dir=None, python=None, model=None):
+    """Work-mode argv for one employee; the shape lives in worker_adapters. model: the rotation's pick."""
     settings = lambda: config.employees[employee]  # noqa: E731 - read only by employees that need it
     return adapter(employee).work_command(WorkRequest(
         str(worktree), prompt, mcp_json, executable, max_turns=lambda: settings().max_turns,
-        model=lambda: settings().model, git_dir=git_dir, python=python))
+        model=lambda: model or settings().model, git_dir=git_dir, python=python))
 
 
 def build_env(employee, *, project_root, workspace):
@@ -290,6 +343,8 @@ class DispatchLedger:
             db.execute('CREATE TABLE IF NOT EXISTS exhaustion (employee TEXT PRIMARY KEY, until REAL NOT NULL, '
                        'backoff REAL NOT NULL)')
             db.execute('CREATE TABLE IF NOT EXISTS digests (day TEXT PRIMARY KEY, sent REAL NOT NULL)')
+            db.execute('CREATE TABLE IF NOT EXISTS model_exhaustion (employee TEXT NOT NULL, model TEXT NOT NULL, '
+                       'until REAL NOT NULL, backoff REAL NOT NULL, PRIMARY KEY(employee, model))')
             # W2 stage 2: when set_pid ran. Added in place for older ledgers, inside this IMMEDIATE transaction
             # so concurrent openers (service, HUD, CLI) serialize; a lost race shows up as a duplicate column.
             if 'pid_at' not in {row['name'] for row in db.execute('PRAGMA table_info(runs)')}:
@@ -302,6 +357,13 @@ class DispatchLedger:
             if 'cache_tokens' not in {row['name'] for row in db.execute('PRAGMA table_info(runs)')}:
                 try:
                     db.execute('ALTER TABLE runs ADD COLUMN cache_tokens INTEGER')
+                except sqlite3.OperationalError as exc:
+                    if 'duplicate column' not in str(exc).lower():
+                        raise
+            # Rotation: the model a run used. NULL: the employee has a single model (or an older row).
+            if 'model' not in {row['name'] for row in db.execute('PRAGMA table_info(runs)')}:
+                try:
+                    db.execute('ALTER TABLE runs ADD COLUMN model TEXT')
                 except sqlite3.OperationalError as exc:
                     if 'duplicate column' not in str(exc).lower():
                         raise
@@ -374,19 +436,50 @@ class DispatchLedger:
         with self.connection() as db:
             db.execute('UPDATE runs SET pid=?, pid_at=? WHERE id=?', (pid, self.clock(), run_id))
 
+    def set_model(self, run_id, model):
+        with self.connection() as db:
+            db.execute('UPDATE runs SET model=? WHERE id=?', (model, run_id))
+
     def finish(self, run_id, *, status, exit_code, input_tokens, output_tokens, note, cache_tokens=None):
+        """A backoff status on a run with a model backs off only that model; without one, the employee."""
         now = self.clock()
         with self.connection() as db:
-            row = db.execute('SELECT employee FROM runs WHERE id=?', (run_id,)).fetchone()
+            row = db.execute('SELECT employee, model FROM runs WHERE id=?', (run_id,)).fetchone()
             db.execute('UPDATE runs SET ended=?, status=?, exit_code=?, input_tokens=?, output_tokens=?, note=?, '
                        'cache_tokens=? WHERE id=?',
                        (now, status, exit_code, input_tokens, output_tokens, note[:500], cache_tokens, run_id))
-            if status in ('limit', 'eligibility'):
-                prior = db.execute('SELECT backoff FROM exhaustion WHERE employee=?', (row['employee'],)).fetchone()
+            employee, model = row['employee'], row['model']
+            if status in BACKOFF_STATUSES and model:
+                prior = db.execute('SELECT backoff FROM model_exhaustion WHERE employee=? AND model=?',
+                                   (employee, model)).fetchone()
                 backoff = next_backoff(prior['backoff'] if prior else None)
-                db.execute('INSERT OR REPLACE INTO exhaustion VALUES (?,?,?)', (row['employee'], now + backoff, backoff))
+                db.execute('INSERT OR REPLACE INTO model_exhaustion VALUES (?,?,?,?)',
+                           (employee, model, now + backoff, backoff))
+            elif status in BACKOFF_STATUSES:
+                prior = db.execute('SELECT backoff FROM exhaustion WHERE employee=?', (employee,)).fetchone()
+                backoff = next_backoff(prior['backoff'] if prior else None)
+                db.execute('INSERT OR REPLACE INTO exhaustion VALUES (?,?,?)', (employee, now + backoff, backoff))
             elif status == 'ok':
-                db.execute('DELETE FROM exhaustion WHERE employee=?', (row['employee'],))
+                db.execute('DELETE FROM exhaustion WHERE employee=?', (employee,))
+                if model:
+                    db.execute('DELETE FROM model_exhaustion WHERE employee=? AND model=?', (employee, model))
+
+    def models_backed_off(self, employee):
+        """{model: until} for this employee's models still backed off now."""
+        now = self.clock()
+        with self.connection() as db:
+            return {row['model']: row['until'] for row in db.execute(
+                'SELECT model, until FROM model_exhaustion WHERE employee=?', (employee,)) if row['until'] > now}
+
+    def pick_model(self, employee, models):
+        """The first model in priority order that is not backed off, or None when all are."""
+        backed_off = self.models_backed_off(employee)
+        return next((m for m in models if m not in backed_off), None)
+
+    def models_exhausted_until(self, employee, models):
+        """When the first model comes back if every model is backed off; otherwise None (one is usable)."""
+        backed_off = self.models_backed_off(employee)
+        return min(backed_off[m] for m in models) if all(m in backed_off for m in models) else None
 
     def running(self, employee, *, stale_after=None):
         with self.connection() as db:
