@@ -215,3 +215,65 @@ def test_a_run_that_never_launched_records_no_quality(tmp_path, monkeypatch):
     run_id = ledger.try_start('opencode', daily_runs=10)
     assert dispatch.run_employee('opencode', run_id, config(), guard, ledger, board) == 'error'
     assert ledger.summary()['recent'][0]['usage_quality'] is None
+
+
+# --- Wake input by id (48bea649): the run reads only the messages that woke it -----------------------------
+
+def _reading_worker(tmp_path, monkeypatch, board, prompts):
+    """A fake employee that does what the wake prompt says: board_inbox by the ids it was given."""
+    import re
+    from types import SimpleNamespace
+    monkeypatch.setattr(dispatch, 'LOGS', tmp_path / 'logs')
+    monkeypatch.setattr(dispatch, 'ensure_worktree', lambda employee: tmp_path)
+    monkeypatch.setattr(dispatch, 'executable', lambda employee: ['synthetic-opencode.exe'])
+    monkeypatch.setattr(dispatch, 'observe_spawned', lambda *a, **kw: None)
+    monkeypatch.setattr(dispatch, 'job', lambda: SimpleNamespace(assign=lambda process: True))
+    monkeypatch.setattr(dispatch, 'git', lambda *a, **kw: SimpleNamespace(stdout='0'))
+
+    class Process:
+        pid, returncode = 999999, 0
+        def poll(self):
+            return 0
+        def wait(self):
+            return 0
+
+    def spawn(argv, **kwargs):
+        prompt = ' '.join(argv)
+        prompts.append(prompt)
+        ids = [int(i) for i in re.search(r'ids=\[([0-9, ]+)\]', prompt).group(1).split(',')]
+        board.inbox('opencode:auto', ids=ids)
+        kwargs['stdout'].write('{"type":"result","usage":{"input_tokens":1,"output_tokens":1}}')
+        kwargs['stdout'].flush()
+        return Process()
+    monkeypatch.setattr(dispatch.subprocess, 'Popen', spawn)
+
+
+def _wake_once(guard, board, ledger):
+    run_id = ledger.try_start('opencode', daily_runs=100)
+    return dispatch.run_employee('opencode', run_id, config(), guard, ledger, board)
+
+
+def test_the_run_is_given_the_oldest_twenty_pending_ids_and_reads_only_those(tmp_path, monkeypatch):
+    guard = Guardrails(tmp_path)
+    board, ledger, prompts = BoardStore(guard), DispatchLedger(guard), []
+    _reading_worker(tmp_path, monkeypatch, board, prompts)
+    sent = [board.send('user:heejun', 'opencode', f'request {n}')['id'] for n in range(25)]
+    assert _wake_once(guard, board, ledger) == 'ok'
+    assert f'ids={sent[:20]}' in prompts[0]
+    assert board.pending_ids('opencode') == sent[20:]           # the rest waits, under a new input key
+    assert _wake_once(guard, board, ledger) == 'ok'
+    assert f'ids={sent[20:]}' in prompts[1]
+    assert board.pending_ids('opencode') == []                  # a 25-message backlog drains in two runs
+
+
+def test_an_old_broadcast_backlog_does_not_hide_the_waking_message(tmp_path, monkeypatch):
+    guard = Guardrails(tmp_path)
+    board, ledger, prompts = BoardStore(guard), DispatchLedger(guard), []
+    _reading_worker(tmp_path, monkeypatch, board, prompts)
+    for n in range(30):
+        board.send('claude-code:main', '*', f'old broadcast {n}')
+    request = board.send('user:heejun', 'opencode', 'the real request')['id']
+    assert _wake_once(guard, board, ledger) == 'ok'
+    assert f'ids=[{request}]' in prompts[0]
+    assert board.pending_ids('opencode') == []                  # read, so the next tick has nothing to wake for
+    assert board.inbox('opencode:auto', mark_read=False)['unread'] == 30   # broadcasts untouched, not deleted

@@ -415,15 +415,26 @@ class BoardStore:
             if db is not None:
                 db.close()
 
-    def inbox(self, agent, *, limit=20, mark_read=True):
-        """Unread messages for this agent, oldest first. Reading marks them read unless mark_read is False."""
+    def inbox(self, agent, *, limit=20, mark_read=True, ids=None):
+        """Unread messages for this agent, oldest first. Reading marks them read unless mark_read is False.
+
+        ids (1-50 message ids) only narrows the result to those messages; the recipient and unread rules still
+        apply, so an id never reads someone else's mail. A woken employee reads the ids it was woken for."""
         agent = self._agent(agent)
         if type(limit) is not int or not 1 <= limit <= 50:
             raise BoardError('limit must be 1-50.')
+        if ids is not None:
+            if (not isinstance(ids, list) or not 1 <= len(ids) <= 50
+                    or any(type(i) is not int or i < 1 for i in ids)):
+                raise BoardError('ids must be a list of 1-50 positive message ids.')
+            ids = sorted(set(ids))
         prefix = agent.split(':', 1)[0]
         where = ('FROM messages m WHERE m.recipient IN (?,?,?) AND m.sender!=? '
                  'AND NOT EXISTS (SELECT 1 FROM reads r WHERE r.message_id=m.id AND r.reader=?)')
         args = (agent, prefix, '*', agent, agent)
+        if ids is not None:
+            where += ' AND m.id IN (' + ','.join('?' * len(ids)) + ')'
+            args = (*args, *ids)
         with self.connection() as db:
             unread = db.execute('SELECT COUNT(*) ' + where, args).fetchone()[0]
             rows = db.execute('SELECT m.* ' + where + ' ORDER BY m.id LIMIT ?', (*args, limit)).fetchall()
