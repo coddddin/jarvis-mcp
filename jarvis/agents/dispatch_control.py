@@ -12,7 +12,7 @@ import time
 
 import psutil
 
-from jarvis.agents.dispatch_policy import DispatchLedger, DispatcherConfig
+from jarvis.agents.dispatch_policy import USAGE_QUALITIES, DispatchLedger, DispatcherConfig
 from jarvis.agents.dispatch_service import PAUSE, read_pause
 from jarvis.core.guardrails import GuardrailError
 
@@ -20,11 +20,36 @@ SERVICE_INFO = '.jarvis-dispatch/service.json'
 OPERATOR = 'user:heejun'  # the HUD is operator-started and token-gated
 RECENT = 10
 _WRITE_LOCK = threading.Lock()  # HUD POSTs run in worker threads; a double click must not race
-RUN_FIELDS = ('id', 'employee', 'status', 'started', 'ended', 'exit_code', 'input_tokens', 'output_tokens')
+RUN_FIELDS = ('id', 'employee', 'status', 'started', 'ended', 'exit_code', 'input_tokens', 'output_tokens',
+              'usage_quality')
+QUALITY_KEYS = USAGE_QUALITIES + ('unrecorded',)
 
 
 def _number(value):
     return value if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+
+def _usage_quality(totals):
+    """Run counts per usage quality and the known token sums, beside the old totals that show unread as 0.
+    A known sum is None when no recorded run reported that side; older unrecorded rows' numbers stay apart.
+    'measured' only means both reported numbers were read, not that the whole run was observed; a Cursor
+    cache 0 may mean not reported."""
+    counts = totals.get('usage_quality_runs') or {}
+    return {'usage_quality_runs': {key: _number(counts.get(key)) or 0 for key in QUALITY_KEYS},
+            'known_input_tokens': _number(totals.get('known_input_tokens')),
+            'known_input_runs': _number(totals.get('known_input_runs')) or 0,
+            'known_output_tokens': _number(totals.get('known_output_tokens')),
+            'known_output_runs': _number(totals.get('known_output_runs')) or 0,
+            'unrecorded_input_tokens': _number(totals.get('unrecorded_input_tokens')),
+            'unrecorded_output_tokens': _number(totals.get('unrecorded_output_tokens'))}
+
+
+def _run_row(row):
+    """A recent run with whitelisted fields; usage_quality is a known value or None, never free text."""
+    item = {key: row.get(key) for key in RUN_FIELDS}
+    if item['usage_quality'] not in USAGE_QUALITIES:
+        item['usage_quality'] = None
+    return item
 
 
 def _write_pause(guard, paused, reason, clock):
@@ -115,7 +140,8 @@ def snapshot(guard, config_path, *, clock=time.time):
     employees = {name: {'runs': totals.get('runs') or 0,
                         'total_input_tokens': totals.get('total_input_tokens') or 0,
                         'total_output_tokens': totals.get('total_output_tokens') or 0,
-                        'exhausted_until': _number(totals.get('exhausted_until'))}
+                        'exhausted_until': _number(totals.get('exhausted_until')),
+                        **_usage_quality(totals)}
                  for name, totals in summary.items()}
     # A rotating employee waits when every model is backed off (or its own eligibility backoff runs), the same
     # wake rule the tick uses; the HUD shows it with the existing exhausted_until line.
@@ -132,7 +158,7 @@ def snapshot(guard, config_path, *, clock=time.time):
         'daily_runs': config.daily_runs,
         'service': service_state(guard),
         'employees': employees,
-        'recent': [{key: row.get(key) for key in RUN_FIELDS} for row in recent[:RECENT]],
+        'recent': [_run_row(row) for row in recent[:RECENT]],
         'watch': _watch(guard, config_path),
         'usage': _usage(guard),
         'alerts': _alerts(guard, clock()),

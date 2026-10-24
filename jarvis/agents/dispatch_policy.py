@@ -304,6 +304,12 @@ def _usage_from(obj):
     return {'input': total, 'cache': cache, 'output': output, 'quality': quality}
 
 
+# runs.usage_quality: the parser's quality, or 'missing' when the run ended with no usage event at all.
+# NULL means nothing was recorded: older rows, runs still going, runs that never launched, and lost or crashed
+# runs. A NULL row is never promoted to measured from its numbers alone.
+USAGE_QUALITIES = ('measured', 'partial', 'unknown', 'missing')
+
+
 def parse_usage_detail(text):
     """{'input' (incl. cache), 'cache', 'output', 'quality'} from a JSON result or JSONL events; None if no event
     reports usage.
@@ -315,7 +321,8 @@ def parse_usage_detail(text):
 
     Whether a provider's numbers cover the whole run or only its last turn is not known here. The last measured
     event wins (the last other one only when none is measured); nothing is summed and there is no event id to
-    deduplicate on."""
+    deduplicate on. So 'measured' means the reported input and output were both read, not that the whole run
+    was observed."""
     try:
         found = _usage_from(json.loads(text))
         if found:
@@ -422,7 +429,8 @@ class DispatchLedger:
                         raise
             # Rotation: the model a run used. NULL: the employee has a single model (or an older row).
             # J2 H-02: input_key, the unread input a run was woken for. NULL: an older row, never holds.
-            for column in ('model', 'input_key'):
+            # usage_quality: see USAGE_QUALITIES. NULL: not recorded.
+            for column in ('model', 'input_key', 'usage_quality'):
                 if column not in {row['name'] for row in db.execute('PRAGMA table_info(runs)')}:
                     try:
                         db.execute(f'ALTER TABLE runs ADD COLUMN {column} TEXT')
@@ -528,15 +536,20 @@ class DispatchLedger:
         with self.connection() as db:
             db.execute('UPDATE runs SET model=? WHERE id=?', (model, run_id))
 
-    def finish(self, run_id, *, status, exit_code, input_tokens, output_tokens, note, cache_tokens=None):
+    def finish(self, run_id, *, status, exit_code, input_tokens, output_tokens, note, cache_tokens=None,
+               usage_quality=None):
         """limit/model_missing on a run with a model back off only that model; eligibility, or any backoff
-        status on a run without a model, backs off the employee."""
+        status on a run without a model, backs off the employee. usage_quality is one of USAGE_QUALITIES or None
+        (not recorded)."""
+        if usage_quality is not None and usage_quality not in USAGE_QUALITIES:
+            raise ValueError(f'unknown usage quality: {usage_quality!r}')
         now = self.clock()
         with self.connection() as db:
             row = db.execute('SELECT employee, model FROM runs WHERE id=?', (run_id,)).fetchone()
             db.execute('UPDATE runs SET ended=?, status=?, exit_code=?, input_tokens=?, output_tokens=?, note=?, '
-                       'cache_tokens=? WHERE id=?',
-                       (now, status, exit_code, input_tokens, output_tokens, note[:500], cache_tokens, run_id))
+                       'cache_tokens=?, usage_quality=? WHERE id=?',
+                       (now, status, exit_code, input_tokens, output_tokens, note[:500], cache_tokens, usage_quality,
+                        run_id))
             employee, model = row['employee'], row['model']
             if status in MODEL_BACKOFF_STATUSES and model:
                 prior = db.execute('SELECT backoff FROM model_exhaustion WHERE employee=? AND model=?',
@@ -589,16 +602,21 @@ class DispatchLedger:
 
     def tokens_today(self, employee):
         """Tokens of runs started today (local day): {'total': input + output (the cap compares this),
-        'input' (incl. cache), 'output', 'cache', 'cache_unknown_runs' (runs with tokens but no cache record)}.
-        Runs whose usage could not be read count 0; daily_runs still bounds them."""
+        'input' (incl. cache), 'output', 'cache', 'cache_unknown_runs' (runs with tokens but no cache record),
+        'partial_runs' and 'unknown_runs' (usage_quality partial, and unknown or missing)}.
+        Runs whose usage could not be read count 0; daily_runs still bounds them. The two run counts explain the
+        total and never change it or the cap."""
         start = time.mktime(time.localtime(self.clock())[:3] + (0, 0, 0, 0, 0, -1))
         with self.connection() as db:
             row = db.execute('SELECT COALESCE(SUM(input_tokens),0) inp, COALESCE(SUM(output_tokens),0) out, '
                              'COALESCE(SUM(cache_tokens),0) cache, '
-                             'SUM(CASE WHEN cache_tokens IS NULL AND input_tokens IS NOT NULL THEN 1 ELSE 0 END) unknown '
+                             'SUM(CASE WHEN cache_tokens IS NULL AND input_tokens IS NOT NULL THEN 1 ELSE 0 END) unknown, '
+                             "SUM(CASE WHEN usage_quality='partial' THEN 1 ELSE 0 END) partial_runs, "
+                             "SUM(CASE WHEN usage_quality IN ('unknown','missing') THEN 1 ELSE 0 END) unread_runs "
                              'FROM runs WHERE employee=? AND started>=?', (employee, start)).fetchone()
         return {'total': row['inp'] + row['out'], 'input': row['inp'], 'output': row['out'],
-                'cache': row['cache'], 'cache_unknown_runs': row['unknown'] or 0}
+                'cache': row['cache'], 'cache_unknown_runs': row['unknown'] or 0,
+                'partial_runs': row['partial_runs'] or 0, 'unknown_runs': row['unread_runs'] or 0}
 
     def runs_today(self, employee):
         start = time.mktime(time.localtime(self.clock())[:3] + (0, 0, 0, 0, 0, -1))
@@ -634,11 +652,31 @@ class DispatchLedger:
             db.execute('INSERT OR REPLACE INTO digests VALUES (?,?)', (day, self.clock()))
 
     def summary(self, *, recent=10):
+        """Per employee: 'runs', 'total_input_tokens' and 'total_output_tokens' (unread numbers add 0, as
+        before), 'usage_quality_runs' (runs per USAGE_QUALITIES value plus 'unrecorded' for NULL), and the
+        'known_*_tokens' sums (None when no run reported that side) with their 'known_*_runs' counts, over runs
+        with a recorded quality only. Older unrecorded rows that kept numbers stay apart in 'unrecorded_*_tokens'
+        (None when none) so they are never read as measured. Input already includes the cache, so the cache is
+        never added again."""
+        quality_sql = ', '.join(f"SUM(CASE WHEN usage_quality='{q}' THEN 1 ELSE 0 END) q_{q}" for q in USAGE_QUALITIES)
         with self.connection() as db:
-            totals: dict = {row['employee']: {'runs': row['runs'], 'total_input_tokens': row['inp'] or 0,
-                                        'total_output_tokens': row['out'] or 0}
-                      for row in db.execute('SELECT employee, COUNT(*) runs, SUM(input_tokens) inp, SUM(output_tokens) out '
-                                            'FROM runs GROUP BY employee')}
+            totals: dict = {row['employee']: {
+                'runs': row['runs'], 'total_input_tokens': row['inp'] or 0, 'total_output_tokens': row['out'] or 0,
+                'usage_quality_runs': {**{q: row[f'q_{q}'] or 0 for q in USAGE_QUALITIES},
+                                       'unrecorded': row['unrecorded'] or 0},
+                'known_input_tokens': row['k_inp'], 'known_input_runs': row['k_inp_runs'],
+                'known_output_tokens': row['k_out'], 'known_output_runs': row['k_out_runs'],
+                'unrecorded_input_tokens': row['u_inp'], 'unrecorded_output_tokens': row['u_out']}
+                for row in db.execute('SELECT employee, COUNT(*) runs, SUM(input_tokens) inp, SUM(output_tokens) out, '
+                                      'SUM(CASE WHEN usage_quality IS NOT NULL THEN input_tokens END) k_inp, '
+                                      'SUM(CASE WHEN usage_quality IS NOT NULL THEN output_tokens END) k_out, '
+                                      'COUNT(CASE WHEN usage_quality IS NOT NULL THEN input_tokens END) k_inp_runs, '
+                                      'COUNT(CASE WHEN usage_quality IS NOT NULL THEN output_tokens END) k_out_runs, '
+                                      'SUM(CASE WHEN usage_quality IS NULL THEN input_tokens END) u_inp, '
+                                      'SUM(CASE WHEN usage_quality IS NULL THEN output_tokens END) u_out, '
+                                      f'{quality_sql}, '
+                                      'SUM(CASE WHEN usage_quality IS NULL THEN 1 ELSE 0 END) unrecorded '
+                                      'FROM runs GROUP BY employee')}
             for row in db.execute('SELECT employee, until FROM exhaustion'):
                 totals.setdefault(row['employee'], {})['exhausted_until'] = row['until']
             totals['recent'] = [dict(row) for row in db.execute('SELECT * FROM runs ORDER BY id DESC LIMIT ?', (recent,))]

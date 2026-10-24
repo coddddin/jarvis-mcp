@@ -88,7 +88,12 @@ def test_snapshot_exposes_whitelisted_fields_only(guard, config):
     state = dispatch_control.snapshot(guard, config, clock=lambda: 5.0)
     assert state['effective_enabled'] is True and state['paused'] is False and state['read_at'] == 5.0
     assert state['employees']['codex'] == {'runs': 1, 'total_input_tokens': 10, 'total_output_tokens': 5,
-                                           'exhausted_until': None}
+                                           'exhausted_until': None,
+                                           'usage_quality_runs': {'measured': 0, 'partial': 0, 'unknown': 0,
+                                                                  'missing': 0, 'unrecorded': 1},
+                                           'known_input_tokens': None, 'known_input_runs': 0,
+                                           'known_output_tokens': None, 'known_output_runs': 0,
+                                           'unrecorded_input_tokens': 10, 'unrecorded_output_tokens': 5}
     assert set(state['recent'][0]) == set(dispatch_control.RUN_FIELDS)
     assert 'secret' not in json.dumps(state)
     dispatch_control.pause(guard)
@@ -266,3 +271,26 @@ def test_snapshot_shows_a_rotating_employee_waiting_only_when_every_model_is_bac
     backed_off('m/b')
     until = dispatch_control.snapshot(guard, config)['employees']['opencode']['exhausted_until']
     assert until == ledger.models_exhausted_until('opencode', ['m/a', 'm/b']) and until > time.time()
+
+
+def test_snapshot_adds_quality_counts_and_known_sums_beside_the_old_totals(guard, config):
+    ledger = DispatchLedger(guard)
+    for inp, out, quality in ((100, 5, 'measured'), (None, 7, 'partial'), (None, None, 'missing')):
+        ledger.finish(ledger.start('cursor', pid=None), status='ok', exit_code=0, input_tokens=inp,
+                      output_tokens=out, note='cursor-secret-log.log', usage_quality=quality)
+    ledger.finish(ledger.start('codex', pid=None), status='ok', exit_code=0, input_tokens=None, output_tokens=None,
+                  note='', usage_quality='unknown')
+    state = dispatch_control.snapshot(guard, config, clock=lambda: 5.0)
+    cursor, codex = state['employees']['cursor'], state['employees']['codex']
+    assert cursor['total_input_tokens'] == 100 and cursor['total_output_tokens'] == 12   # unchanged meaning
+    assert cursor['usage_quality_runs'] == {'measured': 1, 'partial': 1, 'unknown': 0, 'missing': 1, 'unrecorded': 0}
+    assert (cursor['known_input_tokens'], cursor['known_input_runs']) == (100, 1)
+    assert (cursor['known_output_tokens'], cursor['known_output_runs']) == (12, 2)
+    assert codex['total_input_tokens'] == 0 and codex['known_input_tokens'] is None   # 0 shown, not measured
+    assert codex['usage_quality_runs']['unknown'] == 1
+    assert [row['usage_quality'] for row in state['recent']] == ['unknown', 'missing', 'partial', 'measured']
+    assert 'secret' not in json.dumps(state)
+    # a value written outside finish() is not passed through as text
+    with ledger.connection() as db:
+        db.execute("UPDATE runs SET usage_quality='secret-text' WHERE employee='codex'")
+    assert dispatch_control.snapshot(guard, config)['recent'][0]['usage_quality'] is None
