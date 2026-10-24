@@ -1,6 +1,7 @@
 """Authenticated chat orchestration through existing guarded, explicitly selected tools."""
 import json
 import os
+import queue
 import re
 import subprocess
 import sys
@@ -66,6 +67,29 @@ class RequestPlan(BaseModel):
     agent_policy: Literal['local', 'free'] = Field(default='local', description='free for explicitly requested free API/OpenCode/Gemini proposals, otherwise local')
 
 
+class DraftWriter:
+    """Keeps the reply streamed so far and saves it as the turn's draft at most every INTERVAL seconds.
+
+    The draft is unverified: grounding may replace the final reply, and the HUD shows it as provisional."""
+    INTERVAL = 0.25
+
+    def __init__(self, store, identity, request_id, *, clock=time.monotonic):
+        self.store, self.identity, self.request_id, self.clock = store, identity, request_id, clock
+        self.text, self.saved_at = '', None
+
+    def add(self, delta):
+        self.text += delta
+        now = self.clock()
+        if self.saved_at is None or now - self.saved_at >= self.INTERVAL:
+            self.saved_at = now
+            self.store.draft(self.identity, self.request_id, self.text)
+
+    def clear(self):
+        if self.text:
+            self.text, self.saved_at = '', None
+            self.store.draft(self.identity, self.request_id, '')
+
+
 class ChatService:
     def __init__(self, guard, *, model='qwen2.5-coder:7b', provider_candidates=(), provider_executors=None):
         self.guard = guard
@@ -83,15 +107,20 @@ class ChatService:
                 'conversations': self.store.listing(), 'team': self.team.metadata(),
                 'dispatch': self.dispatcher.metadata()}
 
-    def _infer(self, messages, schema, deadline):
+    def _infer(self, messages, schema, deadline, on_delta=None):
         self.guard.check_running()
-        payload = json.dumps({'model': self.model, 'messages': messages, 'schema': schema}, ensure_ascii=False)
+        body = {'model': self.model, 'messages': messages, 'schema': schema}
+        if on_delta is not None:
+            body['stream'] = True
+        payload = json.dumps(body, ensure_ascii=False)
         if len(payload.encode()) > 65536:
             raise ChatError('Chat context limit reached.')
         process = subprocess.Popen([sys.executable, '-I', str(WORKERS_ROOT / 'chat_step.py')],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
             env={key: value for key, value in os.environ.items() if key.upper() in {'SYSTEMROOT', 'WINDIR', 'TEMP', 'TMP'}},
             creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+        if on_delta is not None:
+            return self._infer_streaming(process, payload.encode(), deadline, on_delta)
         try:
             pending = payload.encode()
             while True:
@@ -114,8 +143,76 @@ class ChatService:
                 process.kill()
             process.communicate()
 
-    def _worker(self, messages, schema, deadline):
-        result = self._infer(messages, schema, deadline)
+    def _infer_streaming(self, process, payload, deadline, on_delta):
+        """Same guards as the blocking path (stop marker, deadline, 256 KB output cap, exit code, ok flag), but
+        reads the worker's lines as they arrive and passes each reply delta to on_delta. A failing on_delta only
+        loses the draft; the answer itself still comes from the final line."""
+        lines = queue.Queue()
+
+        def write():
+            try:
+                process.stdin.write(payload)
+                process.stdin.close()
+            except (OSError, ValueError):  # worker gone or pipe already closed
+                pass
+
+        def read():
+            try:
+                for line in iter(process.stdout.readline, b''):
+                    lines.put(line)
+            except (OSError, ValueError):  # pipe closed by the finally below
+                pass
+            finally:
+                lines.put(None)
+
+        threading.Thread(target=write, daemon=True).start()
+        threading.Thread(target=read, daemon=True).start()
+        total, final = 0, None
+        try:
+            while True:
+                self.guard.check_running()
+                if time.monotonic() > deadline:
+                    raise ChatError('Local model response timed out.')
+                try:
+                    line = lines.get(timeout=0.2)
+                except queue.Empty:
+                    continue
+                if line is None:
+                    break
+                total += len(line)
+                if total > 262144:
+                    raise ChatError('Local model unavailable or returned an invalid response.')
+                try:
+                    value = json.loads(line)
+                except ValueError:
+                    raise ChatError('Local model unavailable or returned an invalid response.') from None
+                if isinstance(value, dict) and set(value) == {'delta'} and isinstance(value['delta'], str):
+                    try:
+                        on_delta(value['delta'])
+                    except Exception:
+                        pass
+                else:
+                    final = value
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                raise ChatError('Local model unavailable or returned an invalid response.') from None
+            if process.returncode or not isinstance(final, dict) or final.get('ok') is not True:
+                raise ChatError('Local model unavailable or returned an invalid response.'
+                                if process.returncode or not isinstance(final, dict) else 'Local model response failed.')
+            return final['result']
+        finally:
+            if process.poll() is None:
+                process.kill()
+            process.wait()
+            for pipe in (process.stdin, process.stdout):
+                try:
+                    pipe.close()
+                except (OSError, ValueError):
+                    pass
+
+    def _worker(self, messages, schema, deadline, on_delta=None):
+        result = self._infer(messages, schema, deadline, on_delta)
         if not isinstance(result, dict) or not {'basis', 'evidence_ids'} <= result.keys():
             raise ChatError('Model omitted answer evidence metadata.')
         if result.get('tool') in {'none', 'get_system_status', 'list_web_sources'} and result.get('argument') == 'none':
@@ -317,6 +414,7 @@ class ChatService:
                 'If retrieval is unavailable, explain that limitation without inventing facts.')
             messages = [{'role': 'system', 'content': system}, *history, {'role': 'user', 'content': message}]
             deadline = time.monotonic() + 140
+            drafts = DraftWriter(self.store, identity, request_id)
             source_kinds = {}
             for iteration in range(3):
                 self.store.reserve(identity)
@@ -351,7 +449,9 @@ class ChatService:
                 if iteration == 0 and plan is not None and plan.evidence == 'local':
                     schema['properties']['tool']['enum'] = [name for name in self.tools
                         if name in {'get_system_status', 'search_local_documents', 'analyze_program_static'}]
-                decision = self._worker(messages, schema, deadline)
+                decision = self._worker(messages, schema, deadline, drafts.add)
+                if decision.tool != 'none':
+                    drafts.clear()  # a tool step's text is not the answer; for the final step, finish() clears it
                 if decision.tool not in schema['properties']['tool']['enum']:
                     raise ChatError('Model selected a tool outside this round\'s allowed actions.')
                 if decision.tool == 'none':

@@ -1,0 +1,283 @@
+"""Streamed chat drafts: reply decoding in the worker, guarded line reading, throttled unverified drafts."""
+import importlib.util
+import io
+import json
+import sqlite3
+import subprocess
+import sys
+import time
+from uuid import uuid4
+
+import pytest
+
+from jarvis.agents.chat import ChatError, ChatStore
+from jarvis.app.chat import ChatDecision, ChatService, DraftWriter
+from jarvis.core.guardrails import Guardrails
+from jarvis.core.paths import WORKERS_ROOT
+
+
+def worker_module():
+    spec = importlib.util.spec_from_file_location('chat_step_under_test', WORKERS_ROOT / 'chat_step.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.fixture
+def step():
+    return worker_module()
+
+
+# --- reply_prefix: the decoded, complete part of the leading "reply" string ---
+
+def test_reply_prefix_decodes_escapes_and_stops_at_the_closing_quote(step):
+    assert step.reply_prefix('{"reply": "a\\nb \\"q\\" \\\\ \\u00e9", "tool": "none"}') == 'a\nb "q" \\ é'
+    assert step.reply_prefix('{ "reply" : "partial') == 'partial'
+
+
+def test_reply_prefix_waits_for_unfinished_escapes_and_surrogate_pairs(step):
+    assert step.reply_prefix('{"reply":"x\\') == 'x'
+    assert step.reply_prefix('{"reply":"x\\u00') == 'x'
+    assert step.reply_prefix('{"reply":"x\\ud83d') == 'x'          # high surrogate alone: wait
+    assert step.reply_prefix('{"reply":"x\\ud83d\\ude00y') == 'x\U0001F600y'
+
+
+def test_reply_prefix_is_empty_unless_reply_is_the_first_key(step):
+    assert step.reply_prefix('{"tool":"none","reply":"hi"}') == ''
+    assert step.reply_prefix('not json') == ''
+
+
+# --- the worker's streaming path (fake Ollama over the same HTTP shape) ---
+
+class FakeResponse:
+    status = 200
+
+    def __init__(self, lines):
+        self.lines = list(lines)
+
+    def getheader(self, name, default=None):
+        return default
+
+    def readline(self, limit=-1):
+        return self.lines.pop(0) if self.lines else b''
+
+
+def run_worker(step, monkeypatch, chunks, *, stream=True):
+    lines = [json.dumps(chunk).encode() + b'\n' for chunk in chunks]
+
+    class Connection:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def request(self, method, path, body, headers):
+            assert (method, path) == ('POST', '/api/chat') and json.loads(body)['stream'] is True
+
+        def getresponse(self):
+            return FakeResponse(lines)
+
+        def close(self):
+            pass
+
+    checked = []
+    monkeypatch.setattr(step.support, 'local_model', checked.append)
+    monkeypatch.setattr(step.http.client, 'HTTPConnection', Connection)
+    payload = {'model': 'qwen2.5-coder:7b', 'messages': [], 'schema': {}, 'stream': stream}
+    stdin = io.TextIOWrapper(io.BytesIO(json.dumps(payload).encode()))
+    stdout = io.StringIO()
+    monkeypatch.setattr(step.sys, 'stdin', stdin)
+    monkeypatch.setattr(step.sys, 'stdout', stdout)
+    code = step.main()
+    assert checked == ['qwen2.5-coder:7b']                       # the local-model check still runs first
+    return code, [json.loads(line) for line in stdout.getvalue().splitlines()]
+
+
+def piece(text, done=False, **extra):
+    return {'message': {'role': 'assistant', 'content': text}, 'done': done, **extra}
+
+
+def test_worker_streams_reply_deltas_then_the_same_final_line(step, monkeypatch):
+    content = ['{"reply":"안', '녕\\n하', '세요","tool":"none","argument":"",', '"basis":"general","evidence_ids":[]}']
+    code, out = run_worker(step, monkeypatch, [piece(content[0]), piece(content[1]), piece(content[2]),
+                                               piece(content[3], done=True, done_reason='stop')])
+    assert code == 0
+    assert [line['delta'] for line in out[:-1]] == ['안', '녕\n하', '세요']
+    assert out[-1] == {'ok': True, 'result': {'reply': '안녕\n하세요', 'tool': 'none', 'argument': '',
+                                              'basis': 'general', 'evidence_ids': []}}
+
+
+def test_worker_refuses_a_cut_off_stream(step, monkeypatch):
+    code, out = run_worker(step, monkeypatch, [piece('{"reply":"abc'), piece('"}', done=True, done_reason='length')])
+    assert code == 1 and out[-1] == {'ok': False, 'error': 'ValueError'}
+    code, out = run_worker(step, monkeypatch, [piece('{"reply":"abc')])           # stream ended without done
+    assert code == 1 and out[-1]['ok'] is False
+
+
+def test_worker_stream_keeps_the_256_kb_cap(step, monkeypatch):
+    big = [piece('x' * 4000) for _ in range(80)]
+    code, out = run_worker(step, monkeypatch, big + [piece('', done=True)])
+    assert code == 1 and out[-1] == {'ok': False, 'error': 'ValueError'}
+
+
+# --- the service reads the worker's lines with the same guards ---
+
+def spawn(script):
+    return subprocess.Popen([sys.executable, '-c', script], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                            stderr=subprocess.DEVNULL)
+
+
+@pytest.fixture
+def service(tmp_path):
+    return ChatService(Guardrails(tmp_path))
+
+
+def test_streaming_infer_passes_deltas_and_returns_the_final_result(service):
+    script = ('import sys,json,time\nsys.stdin.buffer.read()\n'
+              'for d in ["a","b"]:\n print(json.dumps({"delta":d}),flush=True); time.sleep(0.05)\n'
+              'print(json.dumps({"ok":True,"result":{"reply":"ab"}}),flush=True)')
+    seen = []
+    result = service._infer_streaming(spawn(script), b'{}', time.monotonic() + 20, seen.append)
+    assert seen == ['a', 'b'] and result == {'reply': 'ab'}
+
+
+def test_streaming_infer_ignores_a_failing_draft_callback(service):
+    script = ('import sys,json\nsys.stdin.buffer.read()\nprint(json.dumps({"delta":"a"}))\n'
+              'print(json.dumps({"ok":True,"result":{"reply":"a"}}))')
+
+    def broken(_):
+        raise ChatError('storage busy')
+    assert service._infer_streaming(spawn(script), b'{}', time.monotonic() + 20, broken) == {'reply': 'a'}
+
+
+@pytest.mark.parametrize('script, message', [
+    ('import sys,time\nsys.stdin.buffer.read()\ntime.sleep(30)', 'timed out'),
+    ('import sys,json\nsys.stdin.buffer.read()\nsys.stdout.write((json.dumps({"delta":"x"*1000})+"\\n")*300)',
+     'invalid response'),
+    ('import sys\nsys.stdin.buffer.read()\nprint("not json")', 'invalid response'),
+    ('import sys,json\nsys.stdin.buffer.read()\nprint(json.dumps({"ok":False,"error":"ValueError"}))\nsys.exit(1)',
+     'invalid response'),
+])
+def test_streaming_infer_keeps_deadline_size_and_exit_checks(service, script, message):
+    process = spawn(script)
+    with pytest.raises(ChatError, match=message):
+        service._infer_streaming(process, b'{}', time.monotonic() + 1.5, lambda _: None)
+    assert process.poll() is not None                              # never left running
+
+
+class HangingProcess:
+    """Closed its stdout but does not exit within the 5 s grace period."""
+    returncode = None
+
+    def __init__(self):
+        self.stdin = io.BytesIO()
+        self.stdout = io.BytesIO(b'{"ok": true, "result": {}}\n')
+        self.killed = False
+
+    def poll(self):
+        return -9 if self.killed else None
+
+    def wait(self, timeout=None):
+        if timeout is not None and not self.killed:
+            raise subprocess.TimeoutExpired('worker', timeout)
+
+    def kill(self):
+        self.killed = True
+
+
+def test_streaming_infer_reports_a_worker_that_hangs_after_closing_stdout(service):
+    process = HangingProcess()
+    with pytest.raises(ChatError, match='invalid response'):
+        service._infer_streaming(process, b'{}', time.monotonic() + 20, lambda _: None)
+    assert process.killed and process.stdout.closed and process.stdin.closed
+
+
+def test_streaming_infer_closes_the_worker_pipes(service):
+    process = spawn('import sys,json\nsys.stdin.buffer.read()\nprint(json.dumps({"ok":True,"result":{}}))')
+    assert service._infer_streaming(process, b'{}', time.monotonic() + 20, lambda _: None) == {}
+    assert process.stdout.closed and process.stdin.closed
+
+
+def test_streaming_infer_honours_the_stop_marker(service, tmp_path):
+    (tmp_path / '.jarvis-stop').write_text('stop')
+    process = spawn('import sys,time\nsys.stdin.buffer.read()\ntime.sleep(30)')
+    with pytest.raises(Exception, match='stop'):
+        service._infer_streaming(process, b'{}', time.monotonic() + 20, lambda _: None)
+    assert process.poll() is not None
+
+
+# --- drafts: throttled, unverified, gone once the turn ends ---
+
+class FakeStore:
+    def __init__(self):
+        self.saved = []
+
+    def draft(self, identity, request_id, text):
+        self.saved.append(text)
+
+
+def test_draft_writer_saves_at_most_every_quarter_second():
+    now = [100.0]
+    store = FakeStore()
+    writer = DraftWriter(store, 'c', 'r', clock=lambda: now[0])
+    for delta in 'abcd':
+        writer.add(delta)
+        now[0] += 0.1
+    assert store.saved == ['a', 'abcd'] and writer.text == 'abcd'
+    writer.clear()
+    assert store.saved[-1] == '' and writer.text == ''
+
+
+def test_store_shows_a_draft_only_while_pending_and_finish_clears_it(tmp_path):
+    store = ChatStore(Guardrails(tmp_path))
+    conversation, request = store.create()['id'], uuid4().hex
+    store.begin(conversation, request, 'hi', time.time() + 60)
+    store.draft(conversation, request, '작성 중')
+    assert store.get(conversation)['turns'][0]['draft'] == '작성 중'
+    store.finish(conversation, request, reply='final')
+    turn = store.get(conversation)['turns'][0]
+    assert turn['draft'] == '' and turn['assistant'] == 'final'
+    store.draft(conversation, request, 'late')                       # a finished turn takes no draft
+    assert store.get(conversation)['turns'][0]['draft'] == ''
+
+
+def test_an_expired_pending_turn_hides_its_draft(tmp_path):
+    store = ChatStore(Guardrails(tmp_path))
+    conversation, request = store.create()['id'], uuid4().hex
+    store.begin(conversation, request, 'hi', time.time() + 0.2)
+    store.draft(conversation, request, 'half')
+    time.sleep(0.3)
+    turn = store.get(conversation)['turns'][0]
+    assert turn['status'] == 'interrupted' and turn['draft'] == ''
+
+
+def test_an_older_chat_database_gains_the_draft_column(tmp_path):
+    store = ChatStore(Guardrails(tmp_path))
+    path = tmp_path / ChatStore.DATABASE
+    db = sqlite3.connect(path)
+    columns = [row[1] for row in db.execute('PRAGMA table_info(turns)')]
+    db.execute('ALTER TABLE turns DROP COLUMN draft')
+    db.commit()
+    db.close()
+    assert 'draft' in columns
+    ChatStore(Guardrails(tmp_path))
+    db = sqlite3.connect(path)
+    assert 'draft' in [row[1] for row in db.execute('PRAGMA table_info(turns)')]
+    db.close()
+
+
+def test_send_streams_the_final_step_and_clears_a_tool_step_draft(service, monkeypatch):
+    saved = []
+    original = service.store.draft
+    monkeypatch.setattr(service.store, 'draft', lambda *args: (saved.append(args[2]), original(*args)))
+    steps = iter([ChatDecision(reply='검색해볼게', tool='get_system_status', argument=''),
+                  ChatDecision(reply='CPU는 여유', tool='none', argument='', basis='tool', evidence_ids=['e1'])])
+
+    def worker(messages, schema, deadline, on_delta=None):
+        decision = next(steps)
+        on_delta(decision.reply)
+        return decision
+    monkeypatch.setattr(service, '_worker', worker)
+    service.tools['get_system_status'] = lambda: {'cpu': 1}
+    conversation = service.store.create()['id']
+    turn = service.send(conversation, uuid4().hex, 'PC 상태 알려줘')['turns'][0]
+    assert saved == ['검색해볼게', '', 'CPU는 여유']                   # tool step draft cleared before the answer
+    assert turn['status'] == 'completed' and turn['draft'] == ''

@@ -23,7 +23,7 @@ async function harness() {
   const conversation={id:'c1',turns:[]};
   const context={document:{getElementById:id=>elements[id],createElement:tag=>Object.assign(new Element(),{tagName:tag.toUpperCase()}),querySelectorAll:()=>[]},
     window:{addEventListener:(name,fn)=>events[name]=fn}, crypto:{randomUUID:()=> 'request-1'},
-    setTimeout:fn=>{const t={fn};timers.push(t);return t;},clearTimeout:t=>{if(t)t.cancelled=true;},
+    setTimeout:(fn,ms)=>{const t={fn,ms};timers.push(t);return t;},clearTimeout:t=>{if(t)t.cancelled=true;},
     fetch:async(path,options)=>{requests.push({path,options});const data=handler ? await handler(path,options) :
       path.endsWith('/conversations') ? {model:'local',conversations:[{id:'c1',title:'test'}]} : conversation;
       return {ok:true,json:async()=>data};}};
@@ -137,4 +137,32 @@ test('an unclosed fence keeps the rest as code, and user text is never parsed',a
   const body=user.children[1];
   assert.equal(body.tagName,'P');
   assert.equal(body.textContent,'**mine** `raw`');
+});
+
+test('a pending draft shows dimmed, labelled and unparsed; the final reply replaces it with Markdown',async()=>{
+  const h=await harness(), post=deferred();
+  h.elements.chatInput.value='question';
+  const draft={id:'c1',turns:[{user:'question',assistant:'',status:'pending',draft:'**half** answer'}]};
+  h.setHandler((path,options)=>options.method==='POST'?post.promise:path.endsWith('/conversations')?{model:'local',conversations:[]}:draft);
+  const sending=h.elements.chatForm.events.submit({preventDefault(){}});
+  assert.equal(h.timers[0].ms,400);
+  await h.timers[0].fn();
+  const pending=h.elements.chatMessages.children.find(child=>String(child.className).includes('chat-draft'));
+  assert.ok(pending,'draft bubble shown while pending');
+  assert.equal(pending.children[0].textContent,'J.A.R.V.I.S. · 작성 중 · 확인 전');
+  assert.equal(pending.children[1].textContent,'**half** answer');          // plain text, not Markdown
+  assert.ok(!all(pending).some(n=>n.tagName==='STRONG'));
+  assert.equal(h.timers.at(-1).ms,400);                                     // keeps polling while pending
+  post.resolve({id:'c1',turns:[{user:'question',assistant:'**final** answer',status:'completed',draft:''}]});
+  await sending;
+  const kids=h.elements.chatMessages.children;
+  assert.ok(!kids.some(child=>String(child.className).includes('chat-draft')));
+  assert.ok(all(kids.at(-1)).some(n=>n.tagName==='STRONG'));
+});
+
+test('a draft is never shown once the turn is no longer pending',async()=>{
+  const h=await harness();h.elements.chatInput.value='q';
+  h.setHandler((path,options)=>options.method==='POST'?{id:'c1',turns:[{user:'q',assistant:'',status:'failed',draft:'stale'}]}:{model:'local',conversations:[]});
+  await h.elements.chatForm.events.submit({preventDefault(){}});
+  assert.doesNotMatch(flatten(h.elements.chatMessages),/stale/);
 });
