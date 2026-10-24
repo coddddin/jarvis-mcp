@@ -83,6 +83,49 @@ def test_process_monitor_failure_is_not_healthy_empty_list(setup):
     assert 'private-failure-detail' not in response.text
 
 
+def test_collaboration_snapshot_is_authenticated_read_only_and_origin_bound(setup):
+    store, selected, _, _ = setup
+    class Board:
+        calls = 0
+        def activity_snapshot(self):
+            self.calls += 1
+            return {'schema_version': 1, 'source': 'self_reported', 'read_only': True,
+                'agents': [], 'tasks': [], 'timeline': []}
+    board = Board()
+    client = TestClient(create_event_app(store, token='x' * 43, task_ids=[selected.task_id],
+        origins=['http://127.0.0.1:8787'], board=board))
+    headers = {'Authorization': 'Bearer ' + 'x' * 43}
+    # Exact Host is intentionally enforced, including requests without Origin.
+    assert client.get('/api/collaboration', headers=headers).status_code == 403
+    base = 'http://127.0.0.1:8787/api/collaboration'
+    assert client.get(base).status_code == 401
+    assert client.get(base + '?token=ignored', headers=headers).status_code == 403
+    assert client.get(base, headers={**headers, 'Origin': 'http://evil.example'}).status_code == 403
+    assert board.calls == 0
+    response = client.get(base, headers=headers)
+    assert response.status_code == 200
+    assert response.json()['source'] == 'self_reported'
+    assert response.headers['cache-control'] == 'no-store'
+    assert board.calls == 1
+    assert client.post(base, headers=headers).status_code == 405
+
+
+def test_collaboration_unavailable_does_not_report_idle_employees(setup):
+    store, selected, _, _ = setup
+    class BrokenBoard:
+        def activity_snapshot(self):
+            raise RuntimeError('private-board-error')
+    for board in (None, BrokenBoard()):
+        client = TestClient(create_event_app(store, token='x' * 43, task_ids=[selected.task_id],
+            origins=['http://127.0.0.1:8787'], board=board))
+        response = client.get('http://127.0.0.1:8787/api/collaboration',
+            headers={'Authorization': 'Bearer ' + 'x' * 43})
+        assert response.status_code == 503
+        assert response.json() == {'error': 'collaboration_unavailable'}
+    for asset in ('collaboration.js', 'collaboration.css'):
+        assert client.get('/assets/' + asset).status_code == 200
+
+
 def test_forgotten_omitted_but_stop_not_hidden_as_empty_success(setup):
     store, selected, _, client = setup
     store.interrupt(selected.task_id, 'Cancel', cancelled=True)

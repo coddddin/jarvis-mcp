@@ -7,6 +7,7 @@ import uvicorn
 
 from jarvis.agents.store import TaskStore
 from jarvis.agents.process_registry import ProcessRegistry
+from jarvis.features.board.service import BoardStore
 from jarvis.app.events import create_event_app, load_event_token
 from jarvis.app.chat import ChatService
 from jarvis.core.guardrails import Guardrails
@@ -43,7 +44,8 @@ def main():
     chat = ChatService(store.guard, model=args.model)
     processes = ProcessRegistry(store.guard)
     processes.register_current(kind='hud', label='JARVIS HUD', max_runtime_seconds=604800)
-    app = create_event_app(store, token=load_event_token(), task_ids=ids, origins=[url], chat=chat, processes=processes)
+    app = create_event_app(store, token=load_event_token(), task_ids=ids, origins=[url], chat=chat,
+        processes=processes, board=BoardStore(store.guard))
     print(f'J.A.R.V.I.S. local workspace: {url}', flush=True)
     print('Local chat enabled; task HUD read-only. Close this process to stop. Connection file: .jarvis-auth/agent-events-token.txt', flush=True)
     config = uvicorn.Config(app, host='127.0.0.1', port=args.port, ws='websockets-sansio',
