@@ -50,7 +50,8 @@ def test_existing_tool_contract_unchanged(tmp_path):
     original_names = {tool['name'] for tool in original}
     existing = [tool for tool in actual if tool['name'] in original_names]
     assert sorted(existing, key=lambda x: x['name']) == sorted(original, key=lambda x: x['name'])
-    assert len(actual) == 40
+    assert len(actual) == 42
+    assert {'index_obsidian_vault', 'search_obsidian_vault'} <= {tool['name'] for tool in actual}
     assert {'board_list', 'board_get', 'board_create', 'board_claim', 'board_heartbeat',
             'board_note', 'board_release', 'board_send', 'board_inbox'} <= {tool['name'] for tool in actual}
     assert 'read_public_web_page' in {tool['name'] for tool in actual}
@@ -206,3 +207,4 @@ def test_flat_legacy_tool_placement_is_not_silently_ignored(plugins):
     (directory / 'stray_tool.py').write_text(VALID)
     with pytest.raises(tools.PluginLoadError, match='placement'):
         tools.collect_tools(context)
+
