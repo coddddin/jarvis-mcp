@@ -597,7 +597,7 @@ def test_models_setting_is_ordered_bounded_and_exclusive_with_model():
     assert _settings(models=['opencode/a-free', 'opencode/b-free']).models == ['opencode/a-free', 'opencode/b-free']
     for bad in ({'models': []}, {'models': [f'opencode/m{i}' for i in range(9)]},
                 {'models': ['opencode/a', 'opencode/a']}, {'models': ['']}, {'models': ['bad model']},
-                {'models': ['opencode/a'], 'model': 'opencode/b'}, {'models': 'opencode/a'}):
+                {'models': ['opencode/a'], 'model': 'opencode/b'}, {'models': 'opencode/a'}, {'models': ['-f']}):
         with pytest.raises(ValidationError):
             _settings(**bad)
     assert _settings(model='opencode/b').models is None   # single-model employees keep working as before
@@ -614,7 +614,7 @@ def test_ledger_backs_off_only_the_model_that_hit_a_limit(tmp_path):
         ledger.set_model(run_id, model)
         ledger.finish(run_id, status=status, exit_code=1, input_tokens=None, output_tokens=None, note='')
     assert ledger.pick_model('opencode', models) == 'm/a'
-    run('m/a', 'eligibility')
+    run('m/a', 'limit')
     assert ledger.pick_model('opencode', models) == 'm/b'
     assert ledger.models_exhausted_until('opencode', models) is None and ledger.exhausted_until('opencode') is None
     run('m/b', 'model_missing')
@@ -667,3 +667,23 @@ def test_build_command_puts_the_picked_model_into_the_opencode_argv():
     config = DispatcherConfig.model_validate(json.loads(Path('config/dispatcher.json').read_text(encoding='utf-8')))
     argv = build_command('opencode', config, 'W', 'P', '{}', executable='oc', model='opencode/glm-5.3-flash-free')
     assert argv[argv.index('-m') + 1] == 'opencode/glm-5.3-flash-free'
+
+
+def test_eligibility_backs_off_the_rotating_employee_not_the_model(tmp_path):
+    from jarvis.agents.dispatch_policy import DispatchLedger
+    guard = Guardrails(tmp_path)
+    now = [1_000_000.0]
+    ledger = DispatchLedger(guard, clock=lambda: now[0], alive=lambda pid: False)
+    models = ['m/a', 'm/b']
+    run_id = ledger.try_start('opencode', daily_runs=100)
+    ledger.set_model(run_id, 'm/a')
+    ledger.finish(run_id, status='eligibility', exit_code=1, input_tokens=None, output_tokens=None, note='')
+    assert ledger.models_backed_off('opencode') == {}            # 403 FreeTierError is not the model's fault
+    assert ledger.rotation_exhausted_until('opencode', models) == now[0] + 3600
+    for model in models:                                        # all models out later: wait for the later time
+        run_id = ledger.try_start('opencode', daily_runs=100)
+        ledger.set_model(run_id, model)
+        ledger.finish(run_id, status='limit', exit_code=1, input_tokens=None, output_tokens=None, note='')
+    assert ledger.rotation_exhausted_until('opencode', models) == now[0] + 3600
+    now[0] += 3601
+    assert ledger.rotation_exhausted_until('opencode', models) is None

@@ -17,7 +17,8 @@ import psutil
 
 from jarvis.agents.dispatch_policy import (DispatchLedger, DispatcherConfig, EmployeeState, block_unsafe, build_command,
                                            build_env, build_digest, digest_due, due, models_line,
-                                           parse_usage_detail, run_status, should_run_lead, wake_prompt)
+                                           parse_usage_detail, run_status, should_run_lead, wake_prompt,
+                                           MODEL_BACKOFF_STATUSES)
 from jarvis.agents.lead_planner import LeadLedger, plan_next
 from jarvis.agents import process_watch
 from jarvis.agents import promotion as promotion_review
@@ -150,7 +151,9 @@ def run_employee(employee, run_id, config, guard, ledger, board):
     ahead = git('rev-list', '--count', f'main..{branch}', check=False).stdout.strip()
     if ahead not in ('', '0'):
         git('push', '-q', 'origin', branch, cwd=worktree, check=False)
-    if status != 'ok':
+    # A rotating employee's per-model backoff is routine (the digest shows it); alert once every model is out.
+    quiet = model and status in MODEL_BACKOFF_STATUSES and ledger.pick_model(employee, models) is not None
+    if status != 'ok' and not quiet:
         board.send(DISPATCHER_ID, 'user:heejun',
                    f'[알림] 디스패처: {employee} 실행 {status} (run {run_id}, exit {process.returncode}'
                    + (f', 모델 {model}' if model else '') + f'). 로그 {log_path.name}')
@@ -276,7 +279,7 @@ def tick(dry_run=False):
                 employee=employee, enabled=settings.enabled, roster_status=agent.status if agent else 'missing',
                 pending=board.pending_for_employee(employee) if agent else 0,
                 runs_today=ledger.runs_today(employee), running=ledger.running(employee, stale_after=stale_after) is not None,
-                exhausted_until=(ledger.models_exhausted_until(employee, settings.models) if settings.models
+                exhausted_until=(ledger.rotation_exhausted_until(employee, settings.models) if settings.models
                                  else ledger.exhausted_until(employee)),
                 tokens_today=ledger.tokens_today(employee)['total'] if settings.daily_tokens is not None else 0,
                 daily_tokens=settings.daily_tokens))

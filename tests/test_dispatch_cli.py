@@ -139,6 +139,8 @@ def test_rotation_moves_to_the_next_model_after_limit_or_missing_model(tmp_path,
     assert ledger.exhausted_until('opencode') is None          # the employee itself is not waiting
     assert ledger.models_exhausted_until('opencode', models) is None
     assert ledger.pick_model('opencode', models) == models[2]  # the model that just worked stays first choice
+    # Per-model backoff is routine while another model is usable: no per-run alert to the user.
+    assert board.inbox('user:heejun')['messages'] == []
 
 
 def test_rotation_with_every_model_backed_off_does_not_launch(tmp_path, monkeypatch):
@@ -170,3 +172,20 @@ def test_digest_shows_the_current_and_backed_off_models(tmp_path):
     body = board.inbox('user:heejun')['messages'][0]['body']
     line = next(x for x in body.splitlines() if x.startswith('- opencode 모델:'))
     assert line.startswith(f'- opencode 모델: 지금 {models[1]}, 소진 {models[0]}(')
+
+
+def test_one_alert_when_the_last_usable_model_backs_off(tmp_path, monkeypatch):
+    models = config().employees['opencode'].models
+    seen = []
+    _fake_worker(tmp_path, monkeypatch, [('Error: rate limit exceeded', 1)], seen)
+    guard = Guardrails(tmp_path)
+    board, ledger = BoardStore(guard), DispatchLedger(guard)
+    for model in models[:-1]:
+        run_id = ledger.try_start('opencode', daily_runs=100)
+        ledger.set_model(run_id, model)
+        ledger.finish(run_id, status='limit', exit_code=1, input_tokens=None, output_tokens=None, note='')
+    run_id = ledger.try_start('opencode', daily_runs=100)
+    assert dispatch.run_employee('opencode', run_id, config(), guard, ledger, board) == 'limit'
+    assert _model_of(seen[0]) == models[-1]
+    [message] = board.inbox('user:heejun')['messages']
+    assert f'모델 {models[-1]}' in message['body']

@@ -29,7 +29,11 @@ ELIGIBILITY_PATTERN = re.compile(r'FreeTierError|free tier can only be used', re
 # Free model lists change often; a retired model is backed off like a limit so rotation moves on.
 MODEL_MISSING_PATTERN = re.compile(r'\b(?:Provider)?ModelNotFoundError\b|Model not found: [A-Za-z0-9._-]+/[A-Za-z0-9._:-]+')
 BACKOFF_STATUSES = ('limit', 'eligibility', 'model_missing')
-ModelId = Annotated[str, Field(min_length=1, max_length=120, pattern=r'^[A-Za-z0-9._/:#-]+$')]
+# Backed off per model on a rotating employee. eligibility (403 FreeTierError) comes from how OpenCode is
+# invoked, not from the model, so it stays employee-level: rotating would only walk every model first.
+MODEL_BACKOFF_STATUSES = ('limit', 'model_missing')
+# No leading '-': the value follows -m on the command line and must never read as an option.
+ModelId = Annotated[str, Field(min_length=1, max_length=120, pattern=r'^[A-Za-z0-9._][A-Za-z0-9._/:#-]*$')]
 
 
 class EmployeeSettings(BaseModel):
@@ -39,7 +43,7 @@ class EmployeeSettings(BaseModel):
     model: str = Field(default='', max_length=120, pattern=r'^[A-Za-z0-9._/:#-]*$')
     # W5: tokens (input incl. cache + output) this employee may use per local day; None means no token cap.
     daily_tokens: int | None = Field(default=None, ge=1000, le=1_000_000_000)
-    # Rotation: models in priority order. A limit/eligibility/model_missing run backs off only that model;
+    # Rotation: models in priority order. A limit/model_missing run backs off only that model;
     # the employee waits only when every model is backed off. Exclusive with model, so the choice is clear.
     models: list[ModelId] | None = Field(default=None, min_length=1, max_length=8)
 
@@ -441,7 +445,8 @@ class DispatchLedger:
             db.execute('UPDATE runs SET model=? WHERE id=?', (model, run_id))
 
     def finish(self, run_id, *, status, exit_code, input_tokens, output_tokens, note, cache_tokens=None):
-        """A backoff status on a run with a model backs off only that model; without one, the employee."""
+        """limit/model_missing on a run with a model back off only that model; eligibility, or any backoff
+        status on a run without a model, backs off the employee."""
         now = self.clock()
         with self.connection() as db:
             row = db.execute('SELECT employee, model FROM runs WHERE id=?', (run_id,)).fetchone()
@@ -449,7 +454,7 @@ class DispatchLedger:
                        'cache_tokens=? WHERE id=?',
                        (now, status, exit_code, input_tokens, output_tokens, note[:500], cache_tokens, run_id))
             employee, model = row['employee'], row['model']
-            if status in BACKOFF_STATUSES and model:
+            if status in MODEL_BACKOFF_STATUSES and model:
                 prior = db.execute('SELECT backoff FROM model_exhaustion WHERE employee=? AND model=?',
                                    (employee, model)).fetchone()
                 backoff = next_backoff(prior['backoff'] if prior else None)
@@ -480,6 +485,15 @@ class DispatchLedger:
         """When the first model comes back if every model is backed off; otherwise None (one is usable)."""
         backed_off = self.models_backed_off(employee)
         return min(backed_off[m] for m in models) if all(m in backed_off for m in models) else None
+
+    def rotation_exhausted_until(self, employee, models):
+        """When a rotating employee may wake again: it needs both its own backoff over (eligibility) and one
+        usable model, so the later of the two; None when it may wake now."""
+        now = self.clock()
+        own = self.exhausted_until(employee)
+        waits = [t for t in (own if own is not None and own > now else None,
+                             self.models_exhausted_until(employee, models)) if t is not None]
+        return max(waits) if waits else None
 
     def running(self, employee, *, stale_after=None):
         with self.connection() as db:
