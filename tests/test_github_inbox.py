@@ -6,7 +6,7 @@ import pytest
 from urllib.request import Request
 from jarvis.cli import github_inbox as inbox
 from jarvis.cli.github_inbox import eligible, import_issue
-from jarvis.core.guardrails import Guardrails
+from jarvis.core.guardrails import GuardrailError, Guardrails
 from jarvis.features.board.service import BoardError, BoardStore
 
 
@@ -203,3 +203,113 @@ def test_cli_apply_distinguishes_receipt_from_assignment(tmp_path, monkeypatch, 
     assert duplicate['results'][0]['created'] is False
     assert duplicate['dispatch']['unclaimed_task_ids'] == []
     assert duplicate['dispatch']['automatic_execution'] is False
+
+
+# --- J1 follow-up: one rejected Issue never blocks the rest of the batch ---------------------------
+
+def _apply(tmp_path, monkeypatch, capsys, items):
+    monkeypatch.setenv('GITHUB_TOKEN', 'synthetic-token')
+    monkeypatch.setattr(inbox, 'fetch_issues', lambda *a: items)
+    rc = inbox.main(['--workspace', str(tmp_path), '--apply'])
+    captured = capsys.readouterr()
+    return rc, json.loads(captured.out), captured.err
+
+
+def _mixed():
+    bad = {**issue(13), 'title': 'Deploy with ghp_' + 'a' * 36}
+    return [issue(12), bad, {**issue(14), 'title': 12}, issue(15)]
+
+
+def test_mixed_batch_imports_good_issues_and_reports_fixed_codes(tmp_path, monkeypatch, capsys):
+    rc, out, err = _apply(tmp_path, monkeypatch, capsys, _mixed())
+    assert rc == 2 and out['halted'] is None
+    assert [r['issue'] for r in out['results']] == ['coddddin/jarvis-mcp#12', 'coddddin/jarvis-mcp#15']
+    assert all(r['created'] for r in out['results'])
+    assert out['rejected'] == [{'issue': 'coddddin/jarvis-mcp#13', 'error': 'title_redacted'},
+                               {'issue': 'coddddin/jarvis-mcp#14', 'error': 'invalid_title'}]
+    assert 'ghp_' not in json.dumps(out) + err and 'synthetic-token' not in json.dumps(out) + err
+    assert out['dispatch']['unclaimed_task_ids'] == [r['task_id'] for r in out['results']]
+    assert out['dispatch']['automatic_execution'] is False
+    assert len(BoardStore(Guardrails(tmp_path)).list()['tasks']) == 2
+
+
+def test_receiving_the_same_batch_again_creates_nothing_new(tmp_path, monkeypatch, capsys):
+    _, first, _ = _apply(tmp_path, monkeypatch, capsys, _mixed())
+    rc, again, _ = _apply(tmp_path, monkeypatch, capsys, _mixed())
+    assert rc == 2 and again['rejected'] == first['rejected']
+    assert [(r['task_id'], r['created']) for r in again['results']] == [(r['task_id'], False) for r in first['results']]
+    assert len(BoardStore(Guardrails(tmp_path)).list()['tasks']) == 2
+
+
+def test_clean_batch_still_returns_zero(tmp_path, monkeypatch, capsys):
+    rc, out, _ = _apply(tmp_path, monkeypatch, capsys, [issue(12), issue(13)])
+    assert rc == 0 and out['rejected'] == [] and out['halted'] is None and len(out['results']) == 2
+
+
+def _failing_after_first(monkeypatch, failure):
+    real, calls = inbox.import_issue, []
+    def flaky(board, item, *, repo):
+        calls.append(item['number'])
+        if len(calls) == 2:
+            failure(board)
+        return real(board, item, repo=repo)
+    monkeypatch.setattr(inbox, 'import_issue', flaky)
+    return calls
+
+
+@pytest.mark.parametrize('failure,code', [
+    (lambda board: (_ for _ in ()).throw(BoardError('Board storage unavailable.')), 'storage_unavailable'),
+    (lambda board: (_ for _ in ()).throw(__import__('sqlite3').OperationalError('disk I/O error')), 'storage_unavailable'),
+    (lambda board: (_ for _ in ()).throw(inbox.BoardFull('Board task limit reached')), 'board_full'),
+])
+def test_storage_failure_stops_safely_and_keeps_earlier_receipts(tmp_path, monkeypatch, capsys, failure, code):
+    calls = _failing_after_first(monkeypatch, failure)
+    rc, out, err = _apply(tmp_path, monkeypatch, capsys, [issue(12), issue(13), issue(14)])
+    assert rc == 1 and out['halted'] == code and code in err
+    assert calls == [12, 13]                                         # the third Issue is never tried
+    assert [r['issue'] for r in out['results']] == ['coddddin/jarvis-mcp#12']
+    assert out['dispatch'] == {'automatic_execution': False, 'unclaimed_task_ids': [],
+                               'next_action': 'resolve_failure_then_rerun'}
+    assert 'disk I/O' not in err and 'synthetic-token' not in err
+
+
+def test_stop_marker_between_issues_stops_before_the_next_write(tmp_path, monkeypatch, capsys):
+    real = inbox.import_issue
+    def then_stop(board, item, *, repo):
+        result = real(board, item, repo=repo)
+        (tmp_path / '.jarvis-stop').touch()
+        return result
+    monkeypatch.setattr(inbox, 'import_issue', then_stop)
+    rc, out, _ = _apply(tmp_path, monkeypatch, capsys, [issue(12), issue(13)])
+    assert rc == 1 and out['halted'] == 'stopped'
+    assert [r['issue'] for r in out['results']] == ['coddddin/jarvis-mcp#12']
+    (tmp_path / '.jarvis-stop').unlink()
+    assert len(BoardStore(Guardrails(tmp_path)).list()['tasks']) == 1
+
+
+def test_board_full_is_detected_inside_the_import_transaction(tmp_path, monkeypatch):
+    monkeypatch.setattr(inbox, 'MAX_TASKS', 1)
+    board = BoardStore(Guardrails(tmp_path))
+    import_issue(board, issue(12), repo=inbox.REPO)
+    with pytest.raises(inbox.BoardFull):
+        import_issue(board, issue(13), repo=inbox.REPO)
+
+
+def test_linked_storage_refusal_is_reported_as_storage_not_stop(tmp_path, monkeypatch, capsys):
+    calls = _failing_after_first(
+        monkeypatch, lambda board: (_ for _ in ()).throw(GuardrailError('Linked board storage is forbidden.')))
+    rc, out, err = _apply(tmp_path, monkeypatch, capsys, [issue(12), issue(13), issue(14)])
+    assert rc == 1 and out['halted'] == 'storage_unavailable' and calls == [12, 13]
+    assert [r['issue'] for r in out['results']] == ['coddddin/jarvis-mcp#12']
+    assert 'Linked' not in err
+
+
+def test_receipt_reread_failure_keeps_receipts_and_stops_safely(tmp_path, monkeypatch, capsys):
+    def broken_get(self, task_id, **kw):
+        raise __import__('sqlite3').OperationalError('database is locked')
+    monkeypatch.setattr(BoardStore, 'get', broken_get)
+    rc, out, err = _apply(tmp_path, monkeypatch, capsys, [issue(12), issue(13)])
+    assert rc == 1 and out['halted'] == 'storage_unavailable' and len(out['results']) == 2
+    assert out['dispatch'] == {'automatic_execution': False, 'unclaimed_task_ids': [],
+                               'next_action': 'resolve_failure_then_rerun'}
+    assert 'locked' not in err
