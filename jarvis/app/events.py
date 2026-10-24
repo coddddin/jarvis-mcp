@@ -15,6 +15,7 @@ from starlette.websockets import WebSocketDisconnect
 from jarvis.agents.events import AsyncEventBus, EventError
 from jarvis.agents.store import TaskNotFound
 from jarvis.agents.chat import ChatError, ChatBusy
+from jarvis.app.briefing_routes import briefing_routes
 from jarvis.app.dispatcher_routes import dispatcher_routes
 from jarvis.core.paths import AUTH_ROOT, PROJECT_ROOT
 
@@ -45,7 +46,7 @@ def load_event_token(root=AUTH_ROOT):
 
 
 def create_event_app(tasks, *, token, task_ids, origins, chat=None, processes=None, board=None, activity=None,
-                     sessions=None, dispatcher=None):
+                     sessions=None, dispatcher=None, briefing=None):
     if not isinstance(token, str) or not re.fullmatch(r'[A-Za-z0-9_-]{43}', token):
         raise ValueError('A strong local event token is required.')
     task_ids, origins = frozenset(task_ids), frozenset(origins)
@@ -71,7 +72,7 @@ def create_event_app(tasks, *, token, task_ids, origins, chat=None, processes=No
         filename = {'/': 'index.html', '/assets/hud.css': 'hud.css', '/assets/hud.js': 'hud.js',
                     '/assets/task-stream.js': 'task-stream.js', '/assets/chat.js': 'chat.js',
                     '/assets/collaboration.js': 'collaboration.js', '/assets/collaboration.css': 'collaboration.css',
-                    '/assets/dispatcher.js': 'dispatcher.js'}[request.url.path]
+                    '/assets/dispatcher.js': 'dispatcher.js', '/assets/briefing.js': 'briefing.js'}[request.url.path]
         return FileResponse(PROJECT_ROOT / 'frontend' / filename, headers=response_headers)
 
     def summaries():
@@ -282,7 +283,10 @@ def create_event_app(tasks, *, token, task_ids, origins, chat=None, processes=No
     # W5 integration-4: dispatcher status, pause and resume (token, Origin and Host checks live in the routes).
     extra = (dispatcher_routes(*dispatcher, valid=valid, origins=origins, headers=response_headers)
              if dispatcher is not None else [])
-    return Starlette(routes=extra + [Route('/', asset), Route('/assets/dispatcher.js', asset), Route('/assets/hud.css', asset), Route('/assets/hud.js', asset),
+    # Today's Google briefing card (read only; same gate, in-memory cache only).
+    if briefing is not None:
+        extra += briefing_routes(briefing, valid=valid, origins=origins, headers=response_headers)
+    return Starlette(routes=extra + [Route('/', asset), Route('/assets/dispatcher.js', asset), Route('/assets/briefing.js', asset), Route('/assets/hud.css', asset), Route('/assets/hud.js', asset),
         Route('/assets/task-stream.js', asset), Route('/assets/chat.js', asset),
         Route('/api/chat/conversations', chat_api, methods=['GET', 'POST']),
         Route('/api/chat/conversations/{conversation_id}', chat_api, methods=['GET']),
