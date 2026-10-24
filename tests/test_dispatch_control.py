@@ -250,3 +250,19 @@ def test_unreadable_record_is_unknown_without_raw_error(guard, monkeypatch):
     state = dispatch_control.service_state(guard)
     assert state['status'] == 'unknown' and state['reason'] == 'unreadable_record'
     assert 'PRIVATE' not in json.dumps(state)
+
+
+def test_snapshot_shows_a_rotating_employee_waiting_only_when_every_model_is_backed_off(guard, config):
+    data = json.loads(config.read_text(encoding='utf-8'))
+    data['employees']['opencode'] = {'enabled': True, 'models': ['m/a', 'm/b']}
+    config.write_text(json.dumps(data), encoding='utf-8')
+    ledger = DispatchLedger(guard)
+    def backed_off(model):
+        run_id = ledger.try_start('opencode', daily_runs=100)
+        ledger.set_model(run_id, model)
+        ledger.finish(run_id, status='limit', exit_code=1, input_tokens=None, output_tokens=None, note='')
+    backed_off('m/a')
+    assert dispatch_control.snapshot(guard, config)['employees']['opencode']['exhausted_until'] is None
+    backed_off('m/b')
+    until = dispatch_control.snapshot(guard, config)['employees']['opencode']['exhausted_until']
+    assert until == ledger.models_exhausted_until('opencode', ['m/a', 'm/b']) and until > time.time()
