@@ -220,3 +220,32 @@ test('an unreadable alert record is reported without hiding the rest', async () 
   assert.match(flatten(list), /알림 기록을 읽지 못했어요/);
   assert.match(flatten(h.panel), /켜짐/);
 });
+
+test('service status is told apart: not registered, stopped, identity and unknown are not all "stopped"', async () => {
+  const h = harness();
+  const list = () => find(h.panel, n => n.attributes['aria-label'] === '감시 경고');
+  const show = async (service, changes = {}) => {
+    h.setHandler(() => ({status:200, body:snapshot({service, watch:{findings:[], checked_at:NOW}, ...changes})}));
+    if (h.requests.length) await h.button('새로고침').events.click(); else await h.connect('t');
+    await h.settle();
+    return flatten(h.panel);
+  };
+  const missing = {running:false, pid:null, started:null, status:'not_registered', reason:'missing_record', source:'observed'};
+  let text = await show(missing);
+  assert.match(text, /설정은 켜졌지만 서비스 미등록/);
+  assert.doesNotMatch(text, /서비스 멈춤/);
+  assert.equal(list().hidden, false);
+  assert.match(flatten(list()), /서비스가 등록되지 않았어요/);
+  text = await show(missing, {paused:true, effective_enabled:false});   // paused: no warning line
+  assert.match(text, /서비스 미등록/);
+  assert.doesNotMatch(text, /설정은 켜졌지만/);
+  assert.equal(list().hidden, true);
+  assert.match(await show({running:false, pid:null, started:100, status:'stopped', reason:'process_missing', source:'observed'}), /서비스 멈춤/);
+  assert.match(await show({running:false, pid:null, started:100, status:'identity_mismatch', reason:'pid_reused', source:'observed'}),
+    /서비스 신원 미확인/);
+  text = await show({running:false, pid:null, started:null, status:'unknown', reason:'invalid_record', source:'observed'});
+  assert.match(text, /서비스 상태 미확인/);
+  assert.doesNotMatch(text, /서비스 멈춤/);
+  assert.match(await show({running:false, pid:null, started:null}), /서비스 멈춤/);          // old server: boolean only
+  assert.match(await show({running:false, pid:null, started:null, status:'<b>odd</b>'}), /서비스 상태 미확인/);
+});
