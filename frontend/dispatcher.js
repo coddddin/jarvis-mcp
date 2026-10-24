@@ -15,6 +15,10 @@
     hour:'2-digit', minute:'2-digit', second:'2-digit', hour12:false}).format(new Date(seconds * 1000));
   const count = value => typeof value === 'number' ? new Intl.NumberFormat('ko-KR').format(value) : '—';
   const isTime = value => typeof value === 'number' && Number.isFinite(value);
+  const amount = value => typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null;
+  // J2 usage quality per run; anything else (old rows, running, unknown text) is never shown raw.
+  const QUALITY = {measured:'측정', partial:'일부 보고', unknown:'읽지 못함', missing:'보고 없음'};
+  const qualityLabel = value => Object.prototype.hasOwnProperty.call(QUALITY, value) ? QUALITY[value] : null;
 
   function element(tag, className, text) {
     const node = document.createElement(tag);
@@ -157,6 +161,36 @@
     alertList.hidden = !show; alertTitle.hidden = !show;
   }
 
+  // J2/J4: known sums with per-side reporting coverage. A side no recorded run reported is '미보고', not 0.
+  // Older servers (no quality keys) and pre-quality rows only have totals, labeled unverified, never measured.
+  function tokenText(item) {
+    const runs = item.usage_quality_runs;
+    if (!runs || typeof runs !== 'object' || !('known_input_tokens' in item) || !('known_output_tokens' in item))
+      return '입력 ' + count(item.total_input_tokens) + ' · 출력 ' + count(item.total_output_tokens) + ' 토큰 (사용량 품질 미확인)';
+    const recorded = Object.keys(QUALITY).reduce((sum, key) => sum + (amount(runs[key]) || 0), 0);
+    const side = (label, tokens, reported) => {
+      const value = amount(tokens);
+      return label + ' ' + (value === null ? '— 미보고' : count(value))
+        + (recorded ? ' (보고 ' + count(amount(reported) || 0) + '/' + count(recorded) + '회)' : '');
+    };
+    const parts = [side('입력', item.known_input_tokens, item.known_input_runs) + ' · '
+      + side('출력', item.known_output_tokens, item.known_output_runs) + ' 토큰'];
+    const counts = [...Object.keys(QUALITY).map(key => [QUALITY[key], runs[key]]), ['기록 안 됨', runs.unrecorded]]
+      .filter(([, n]) => amount(n)).map(([label, n]) => label + ' ' + count(n));
+    if (counts.length) parts.push('품질 ' + counts.join(', '));
+    const oldInput = amount(item.unrecorded_input_tokens), oldOutput = amount(item.unrecorded_output_tokens);
+    if (oldInput !== null || oldOutput !== null)
+      parts.push('품질 기록 전 입력 ' + count(oldInput) + ' · 출력 ' + count(oldOutput) + ' (품질 미확인)');
+    return parts.join(' / ');
+  }
+
+  function runQuality(run) {
+    if (!run || typeof run !== 'object' || !('usage_quality' in run)) return '사용량 품질 미확인';  // older server
+    if (run.usage_quality === null) return '사용량 기록 안 됨';
+    const label = qualityLabel(run.usage_quality);
+    return label ? '사용량 ' + label : '사용량 품질 미확인';
+  }
+
   function render(data) {
     snapshot = data;
     const [label, kind] = data.effective_enabled ? ['켜짐', 'completed']
@@ -188,10 +222,11 @@
       const waiting = isTime(item.exhausted_until) && item.exhausted_until > now
         ? ' · 한도 대기 ' + stamp(item.exhausted_until) + '까지' : '';
       row.append(element('span', '', name + ' · 실행 ' + count(item.runs) + '회' + waiting),
-        element('span', 'muted small', '입력 ' + count(item.total_input_tokens) + ' · 출력 '
-          + count(item.total_output_tokens) + ' 토큰'));
+        element('span', 'muted small', tokenText(item)));
       employees.append(row);
     }
+    if (names.length) employees.append(element('li', 'empty-feed',
+      '측정은 보고된 이벤트의 입력·출력 값을 읽었다는 뜻이며 실행 전체를 관측했다는 뜻은 아닙니다. 미보고는 0이 아닙니다.'));
 
     recent.replaceChildren();
     const runs = data.recent.slice(0, 10);
@@ -201,6 +236,7 @@
       const details = [];
       if (run.input_tokens != null || run.output_tokens != null)
         details.push('입력 ' + count(run.input_tokens) + ' · 출력 ' + count(run.output_tokens));
+      details.push(runQuality(run));
       if (run.exit_code != null) details.push('종료 코드 ' + run.exit_code);
       if (isTime(run.ended) && isTime(run.started)) details.push(Math.max(0, Math.round((run.ended - run.started) / 60)) + '분');
       left.append(element('span', 'status ' + (runClass[run.status] || 'cancelled'), runLabels[run.status] || '상태 확인'),

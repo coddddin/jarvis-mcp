@@ -59,7 +59,105 @@ test('panel stays hidden until connected, then loads with the connection token',
   assert.match(text, /서비스 실행 중 \(PID 4242\)/);
   assert.match(text, /10분마다/);
   assert.match(text, /codex · 실행 3회 · 한도 대기/);
-  assert.match(text, /입력 12,000 · 출력 3,400 토큰/);
+  assert.match(text, /입력 12,000 · 출력 3,400 토큰 \(사용량 품질 미확인\)/);  // old server: totals only
+});
+
+// PR21 server shape for one employee; usage_quality_runs is replaced whole when given.
+const quality = (changes = {}) => ({runs:3, total_input_tokens:0, total_output_tokens:0, exhausted_until:null,
+  usage_quality_runs:{measured:0, partial:0, unknown:0, missing:0, unrecorded:0},
+  known_input_tokens:null, known_input_runs:0, known_output_tokens:null, known_output_runs:0,
+  unrecorded_input_tokens:null, unrecorded_output_tokens:null, ...changes});
+async function employeeRow(item, name = 'codex') {
+  const h = harness();
+  h.setHandler(() => ({status:200, body:snapshot({employees:{[name]:item}})}));
+  await h.connect('t');
+  const list = find(h.panel, n => n.attributes['aria-label'] === '직원별 누적');
+  return {row:flatten(list.children[0]), list:flatten(list)};
+}
+
+test('all-missing usage stays a dash marked unreported, never 0', async () => {
+  const {row, list} = await employeeRow(quality({usage_quality_runs:{measured:0, partial:0, unknown:0, missing:3, unrecorded:0}}));
+  assert.match(row, /입력 — 미보고 \(보고 0\/3회\) · 출력 — 미보고 \(보고 0\/3회\) 토큰/);
+  assert.match(row, /품질 보고 없음 3/);
+  assert.doesNotMatch(row, /입력 0|출력 0/);
+  assert.match(list, /실행 전체를 관측했다는 뜻은 아닙니다/);
+});
+
+test('an explicitly measured 0 stays 0', async () => {
+  const {row} = await employeeRow(quality({runs:1, usage_quality_runs:{measured:1, partial:0, unknown:0, missing:0, unrecorded:0},
+    known_input_tokens:0, known_input_runs:1, known_output_tokens:0, known_output_runs:1}));
+  assert.match(row, /입력 0 \(보고 1\/1회\) · 출력 0 \(보고 1\/1회\) 토큰/);
+  assert.match(row, /품질 측정 1/);
+  assert.doesNotMatch(row, /미보고|미확인/);
+});
+
+test('partial usage shows per-side coverage, quality counts and pre-quality numbers apart', async () => {
+  const {row} = await employeeRow(quality({runs:4, total_input_tokens:2200, total_output_tokens:300,
+    usage_quality_runs:{measured:1, partial:1, unknown:0, missing:1, unrecorded:1},
+    known_input_tokens:1500, known_input_runs:2, known_output_tokens:300, known_output_runs:1,
+    unrecorded_input_tokens:700, unrecorded_output_tokens:null}));
+  assert.match(row, /입력 1,500 \(보고 2\/3회\) · 출력 300 \(보고 1\/3회\) 토큰/);
+  assert.match(row, /품질 측정 1, 일부 보고 1, 보고 없음 1, 기록 안 됨 1/);
+  assert.match(row, /품질 기록 전 입력 700 · 출력 — \(품질 미확인\)/);
+  assert.doesNotMatch(row, /2,200/);  // the old mixed total is not shown as measured
+});
+
+test('older servers and half-new shapes fall back to totals labeled unverified', async () => {
+  let {row} = await employeeRow({runs:2, total_input_tokens:0, total_output_tokens:0});
+  assert.match(row, /입력 0 · 출력 0 토큰 \(사용량 품질 미확인\)/);
+  assert.doesNotMatch(row, /측정|보고 \d/);
+  ({row} = await employeeRow({runs:2, total_input_tokens:50, total_output_tokens:5, usage_quality_runs:{measured:2}}));
+  assert.match(row, /입력 50 · 출력 5 토큰 \(사용량 품질 미확인\)/);
+  ({row} = await employeeRow(quality({usage_quality_runs:{measured:0, partial:0, unknown:0, missing:0, unrecorded:3},
+    unrecorded_input_tokens:900, unrecorded_output_tokens:80})));
+  assert.match(row, /입력 — 미보고 · 출력 — 미보고 토큰/);  // no recorded run: no coverage fraction
+  assert.match(row, /품질 기록 안 됨 3 \/ 품질 기록 전 입력 900 · 출력 80 \(품질 미확인\)/);
+});
+
+test('recent runs show Korean quality labels; null and invalid values are never shown raw', async () => {
+  const h = harness();
+  const run = (id, changes) => ({id, employee:'codex', status:'ok', started:NOW - id, ended:NOW, exit_code:0,
+    input_tokens:10, output_tokens:2, ...changes});
+  h.setHandler(() => ({status:200, body:snapshot({recent:[run(1, {usage_quality:'measured'}), run(2, {usage_quality:'missing',
+    input_tokens:null, output_tokens:null}), run(3, {usage_quality:null}), run(4, {usage_quality:'<b>x</b>'}),
+    run(5, {usage_quality:'constructor'}), run(6, {})]})}));
+  await h.connect('t');
+  const recent = find(h.panel, n => n.attributes['aria-label'] === '최근 실행');
+  const rows = recent.children.map(flatten);
+  assert.match(rows[0], /입력 10 · 출력 2 · 사용량 측정/);
+  assert.match(rows[1], /사용량 보고 없음/);
+  assert.doesNotMatch(rows[1], /입력/);
+  assert.match(rows[2], /사용량 기록 안 됨/);
+  assert.match(rows[3], /사용량 품질 미확인/);
+  assert.match(rows[4], /사용량 품질 미확인/);
+  assert.match(rows[5], /사용량 품질 미확인/);  // older server without the key
+  assert.doesNotMatch(flatten(recent), /<b>x<\/b>|constructor|function/);
+});
+
+test('employee names and odd token values stay plain text', async () => {
+  const {row} = await employeeRow(quality({runs:1, usage_quality_runs:{measured:'<b>1</b>', partial:-2, unknown:0, missing:1,
+    unrecorded:0}, known_input_tokens:'<img src=x>', known_input_runs:1, known_output_tokens:-5, known_output_runs:1}),
+  '<img src=x onerror=1>');
+  assert.match(row, /<img src=x onerror=1> · 실행 1회/);  // the name is textContent, never parsed
+  assert.match(row, /입력 — 미보고 \(보고 1\/1회\) · 출력 — 미보고 \(보고 1\/1회\)/);
+  assert.match(row, /품질 보고 없음 1/);
+  assert.doesNotMatch(row, /<b>1<\/b>|<img src=x>|-5|-2/);
+  assert.doesNotMatch(fs.readFileSync('frontend/dispatcher.js', 'utf8'), /innerHTML|insertAdjacentHTML/);
+});
+
+test('cache is not added again to known input, totals or recent runs', async () => {
+  const {row} = await employeeRow(quality({runs:1, usage_quality_runs:{measured:1, partial:0, unknown:0, missing:0, unrecorded:0},
+    known_input_tokens:1000, known_input_runs:1, known_output_tokens:50, known_output_runs:1, cache_tokens:9000,
+    total_cache_tokens:9000}));
+  assert.match(row, /입력 1,000 \(보고 1\/1회\)/);
+  assert.doesNotMatch(row, /10,000|9,000|cache/i);
+  const h = harness();
+  h.setHandler(() => ({status:200, body:snapshot({recent:[{id:1, employee:'claude-code', status:'ok', started:NOW, ended:NOW,
+    exit_code:0, input_tokens:100, output_tokens:20, cache_tokens:500, usage_quality:'measured'}]})}));
+  await h.connect('t');
+  const recent = flatten(find(h.panel, n => n.attributes['aria-label'] === '최근 실행'));
+  assert.match(recent, /입력 100 · 출력 20 · 사용량 측정/);
+  assert.doesNotMatch(recent, /600|500|cache/i);
 });
 
 test('recent runs are capped at 10 and names are plain text', async () => {
