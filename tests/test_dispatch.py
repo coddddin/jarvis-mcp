@@ -557,9 +557,33 @@ def test_usage_detail_reads_cursor_camel_case_result():
                                               'cacheWriteTokens': 40}})])
     assert parse_usage_detail(cursor) == {'input': 360, 'cache': 340, 'output': 8, 'quality': 'measured'}
     assert parse_usage(cursor) == (360, 8)
-    # Claude cache names are not read from a Cursor event
+    # mixed shapes are never summed together: a snake cache key switches the event to snake mode
     assert parse_usage_detail(json.dumps({'usage': {'inputTokens': 2, 'outputTokens': 1,
-                                                    'cache_read_input_tokens': 50}}))['cache'] == 0
+                                                    'cache_read_input_tokens': 50}}))['input'] is None
+
+
+def test_usage_detail_review_cases():
+    from jarvis.agents.dispatch_policy import parse_usage_detail
+
+    def detail(usage):
+        return parse_usage_detail(json.dumps({'type': 'result', 'usage': usage}))
+    # Cursor writes 0 for fields it did not get: an all-zero result is not a measured 0
+    assert detail({'inputTokens': 0, 'outputTokens': 0, 'cacheReadTokens': 0, 'cacheWriteTokens': 0}) == {
+        'input': None, 'cache': 0, 'output': None, 'quality': 'unknown'}
+    assert detail({'inputTokens': 0, 'outputTokens': 3, 'cacheReadTokens': 50, 'cacheWriteTokens': 0}) == {
+        'input': 50, 'cache': 50, 'output': 3, 'quality': 'measured'}
+    # a cache-only event keeps its cache count instead of being dropped
+    assert detail({'cache_read_input_tokens': 100}) == {'input': None, 'cache': 100, 'output': None,
+                                                        'quality': 'partial'}
+    # mixed shapes: snake wins, camel values are ignored rather than mixed in
+    assert detail({'input_tokens': 3, 'outputTokens': 4}) == {'input': 3, 'cache': 0, 'output': None,
+                                                             'quality': 'partial'}
+    # a later partial event does not replace an earlier measured one
+    jsonl = '\n'.join(json.dumps({'usage': u}) for u in ({'input_tokens': 900, 'output_tokens': 40},
+                                                         {'input_tokens': 5}))
+    assert parse_usage_detail(jsonl) == {'input': 900, 'cache': 0, 'output': 40, 'quality': 'measured'}
+    only_partial = '\n'.join(json.dumps({'usage': u}) for u in ({'output_tokens': 1}, {'input_tokens': 5}))
+    assert parse_usage_detail(only_partial)['input'] == 5
 
 
 def test_usage_detail_takes_the_last_reporting_event_without_summing():
