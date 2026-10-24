@@ -53,6 +53,7 @@
 3. 그 도구의 MCP 설정에 자비스를 등록한다. 실행 파일·인자·작업공간 환경 변수는 Codex·Claude Code와 같다. Cursor는 `~/.cursor/mcp.json`.
 4. 도구 자체의 권한 설정에서 자비스 도구를 직원 등급에 맞게 허용·금지한다. 자동 실행(headless) 모드는 허용 목록에 없는 MCP 호출을 거부한다. Cursor는 프로젝트 `.cursor/cli.json`에 `Mcp(jarvis:<도구>)` 형식으로 게시판 7개만 허용하고 민감 도구 8개를 금지했다.
 5. 게시판에 첫 작업을 올려 실제 사용을 확인한다. Cursor 예: `agent -p --approve-mcps --trust "<지시>"`(파일 수정 허용 `--force`는 주지 않음).
+   - Cursor를 손으로 띄울 때는 PowerShell에서 `Remove-Item Env:SHELL` 뒤에 실행한다. Cursor는 Claude 훅(사용자·프로젝트·플러그인)을 PowerShell 스크립트로 감싸 실행하는데, `SHELL`이 있으면(Git Bash는 `/bin/bash.exe`) 그 셸로 돌려 문법 오류가 나고 Read·MCP 호출이 모두 'Hook blocked'로 거부된다(2026-10-24 확인). 디스패처는 작업자에게 `SHELL`을 넘기지 않는다.
 6. 전체 검사(`pytest -q`)로 명부 형식과 안내 파일 존재를 확인한다.
 
 ## OpenCode (무료 모델 직원)
