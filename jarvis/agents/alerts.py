@@ -21,6 +21,8 @@ RECENT = 20
 WATCH_TEXT = {'service_down': '디스패처 서비스가 꺼져 있음 (설정은 켜짐, 일시정지 아님)',
               'owner_dead': '실행 중 기록의 프로세스가 없음',
               'overdue': '실행 제한 시간 초과'}
+# Only a missing record while enabled and not paused; a stopped or reused pid is service_down above.
+SERVICE_TEXT = {'not_registered': '디스패처 설정은 켜졌지만 서비스가 등록되지 않음 (일시정지 아님)'}
 
 
 def day_of(now):
@@ -35,9 +37,10 @@ def _who(agent):
     return str(agent or '-').split(':')[0]
 
 
-def events(*, stale=(), blocked=(), problems=None, not_woken=(), findings=()):
+def events(*, stale=(), blocked=(), problems=None, not_woken=(), findings=(), service=None):
     """[(key, text)] in a stable order. stale/blocked: board task rows; problems: {employee: [codes]};
-    not_woken: employees with waiting work the adapter check kept asleep; findings: process_watch findings."""
+    not_woken: employees with waiting work the adapter check kept asleep; findings: process_watch findings;
+    service: dispatcher service status, passed only when the dispatcher is enabled and not paused."""
     found = []
     for task in stale:
         found.append((f"stale_claim:task:{task['id']}", f'멈춘 담당: {_title(task)}({_who(task.get("owner"))})'))
@@ -56,6 +59,8 @@ def events(*, stale=(), blocked=(), problems=None, not_woken=(), findings=()):
         employee = (item.get('detail') or {}).get('employee')
         suffix = f' ({_who(employee)}, {item.get("ref")})' if employee else ''
         found.append((f"watch:{kind}:{item.get('ref')}", WATCH_TEXT[kind] + suffix))
+    if service in SERVICE_TEXT:
+        found.append((f'service:{service}', SERVICE_TEXT[service]))
     return found
 
 
