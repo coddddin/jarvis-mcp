@@ -58,9 +58,69 @@
       list.append(button);
     }
   }
+  // Markdown subset for replies, built only from createElement and text nodes (no HTML strings): fenced code, inline code,
+  // **bold**, # headings, - / 1. lists and [label](http(s) URL) links. Anything else stays literal text.
+  const SAFE_URL = /^https?:\/\/[^\s<>"'`]+$/i;
+  const INLINE = /`([^`\n]+)`|\*\*([^*\n]+)\*\*|\[([^\]\n]+)\]\(([^()\s]+)\)/g;
+  function inline(text) {
+    const parts = [];
+    let last = 0;
+    for (const match of text.matchAll(INLINE)) {
+      if (match.index > last) parts.push(text.slice(last, match.index));
+      if (match[1] !== undefined) parts.push(node('code', 'chat-inline-code', match[1]));
+      else if (match[2] !== undefined) parts.push(node('strong', '', match[2]));
+      else if (SAFE_URL.test(match[4])) {
+        const link = node('a', 'chat-link', match[3]);
+        link.href = match[4]; link.target = '_blank'; link.rel = 'noopener noreferrer';
+        parts.push(link);
+      } else parts.push(match[0]);
+      last = match.index + match[0].length;
+    }
+    if (last < text.length) parts.push(text.slice(last));
+    return parts;
+  }
+  function markdown(text) {
+    const body = node('div', 'chat-body chat-markdown');
+    const lines = String(text).replace(/\r\n?/g, '\n').split('\n');
+    let paragraph = [], list = null;
+    const endParagraph = () => {
+      if (paragraph.length) {const p = node('p', ''); p.append(...inline(paragraph.join('\n'))); body.append(p);}
+      paragraph = [];
+    };
+    const endBlock = () => {endParagraph(); list = null;};
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      const fence = /^\s*```/.test(line), heading = /^(#{1,3})\s+(.+)$/.exec(line);
+      const item = /^\s*(?:([-*])|(\d{1,9})[.)])\s+(.*)$/.exec(line);
+      if (fence) {
+        endBlock();
+        const code = [];
+        while (++i < lines.length && !/^\s*```\s*$/.test(lines[i])) code.push(lines[i]);
+        const pre = node('pre', 'chat-code');
+        pre.append(node('code', '', code.join('\n')));
+        body.append(pre);
+      } else if (heading) {
+        endBlock();
+        const title = node('h4', 'chat-heading'); title.append(...inline(heading[2])); body.append(title);
+      } else if (item) {
+        endParagraph();
+        const tag = item[1] ? 'ul' : 'ol';
+        if (!list || list.tag !== tag) {
+          list = {tag, element: node(tag, 'chat-list')};
+          if (tag === 'ol' && Number(item[2]) !== 1) list.element.start = Number(item[2]);
+          body.append(list.element);
+        }
+        const entry = node('li', ''); entry.append(...inline(item[3])); list.element.append(entry);
+      } else if (!line.trim()) endBlock();
+      else {list = null; paragraph.push(line);}
+    }
+    endBlock();
+    return body;
+  }
   function bubble(role, text) {
     const article = node('article', 'chat-message ' + role);
-    article.append(node('span', 'chat-author', role === 'user' ? '나' : 'J.A.R.V.I.S.'), node('p', 'chat-body', text));
+    article.append(node('span', 'chat-author', role === 'user' ? '나' : 'J.A.R.V.I.S.'),
+      role === 'user' ? node('p', 'chat-body', text) : markdown(text));
     return article;
   }
   function render() {
