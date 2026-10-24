@@ -139,7 +139,8 @@ def test_fetch_bounds_and_redirect_policy(monkeypatch):
         inbox.NoRedirect().redirect_request(Request('https://api.github.com'), None, 302, '', {}, 'https://example.com')
 
 
-@pytest.mark.parametrize('payload', [b'{}', b'not json', b'x' * 1_000_001])
+@pytest.mark.parametrize('payload', [b'{}', b'not json', b'x' * 1_000_001],
+                         ids=['wrong-shape', 'invalid-json', 'oversized'])
 def test_invalid_api_responses_rejected(monkeypatch, payload):
     monkeypatch.setattr(inbox, 'urlopen', lambda *a, **kw: BytesIO(payload))
     with pytest.raises(ValueError):

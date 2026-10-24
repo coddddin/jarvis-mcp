@@ -85,7 +85,9 @@ class ObsidianStore(KnowledgeStore):
         metadata = parse_frontmatter(text)
         if metadata.review_status != 'approved' or metadata.sensitivity == 'secret':
             raise KnowledgeError('Note is not approved for local search.')
-        if '\x00' in text or redact(text) != text:
+        # Windows editors save CRLF. Only that pair is normalized for this check; a lone \r is still refused.
+        checked = text.replace('\r\n', '\n')
+        if '\x00' in checked or redact(checked) != checked:
             raise KnowledgeError('Vault note contains credentials or control characters.')
         return raw
 
