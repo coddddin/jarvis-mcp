@@ -521,11 +521,51 @@ def test_usage_detail_keeps_the_cache_share_apart():
     from jarvis.agents.dispatch_policy import parse_usage_detail
     claude = json.dumps({'usage': {'input_tokens': 12, 'cache_creation_input_tokens': 40,
                                    'cache_read_input_tokens': 100, 'output_tokens': 7}})
-    assert parse_usage_detail(claude) == {'input': 152, 'cache': 140, 'output': 7}
+    assert parse_usage_detail(claude) == {'input': 152, 'cache': 140, 'output': 7, 'quality': 'measured'}
     assert parse_usage(claude) == (152, 7)                                        # unchanged meaning
     codex = '{"type":"x"}\n' + json.dumps({'usage': {'input_tokens': 900, 'output_tokens': 40}})
-    assert parse_usage_detail(codex) == {'input': 900, 'cache': 0, 'output': 40}
+    assert parse_usage_detail(codex) == {'input': 900, 'cache': 0, 'output': 40, 'quality': 'measured'}
     assert parse_usage_detail('plain text') is None
+
+
+def test_usage_detail_marks_missing_or_invalid_counts_instead_of_guessing():
+    from jarvis.agents.dispatch_policy import parse_usage_detail
+
+    def detail(usage):
+        return parse_usage_detail(json.dumps({'type': 'result', 'usage': usage}))
+    # bool and negative numbers are reporting errors, not counts
+    assert detail({'input_tokens': True, 'output_tokens': -1}) == {
+        'input': None, 'cache': 0, 'output': None, 'quality': 'unknown'}
+    assert detail({'input_tokens': 1, 'output_tokens': -1}) == {
+        'input': 1, 'cache': 0, 'output': None, 'quality': 'partial'}
+    # a missing input is unknown, not 0, even when the output was reported
+    assert detail({'output_tokens': 5}) == {'input': None, 'cache': 0, 'output': 5, 'quality': 'partial'}
+    assert detail({'cache_read_input_tokens': 100, 'output_tokens': 5}) == {
+        'input': None, 'cache': 100, 'output': 5, 'quality': 'partial'}
+    # an invalid cache field makes the input total unknown too
+    assert detail({'input_tokens': 3, 'cache_read_input_tokens': '9', 'output_tokens': 5}) == {
+        'input': None, 'cache': None, 'output': 5, 'quality': 'partial'}
+    assert parse_usage(json.dumps({'usage': {'output_tokens': 5}})) == (None, 5)
+
+
+def test_usage_detail_reads_cursor_camel_case_result():
+    from jarvis.agents.dispatch_policy import parse_usage_detail
+    # Shape of a cursor-agent stream-json `result` event: inputTokens already excludes cache read/write.
+    cursor = '\n'.join([json.dumps({'type': 'thinking', 'subtype': 'completed'}),
+                        json.dumps({'type': 'result', 'subtype': 'success', 'is_error': False, 'result': 'ok',
+                                    'usage': {'inputTokens': 20, 'outputTokens': 8, 'cacheReadTokens': 300,
+                                              'cacheWriteTokens': 40}})])
+    assert parse_usage_detail(cursor) == {'input': 360, 'cache': 340, 'output': 8, 'quality': 'measured'}
+    assert parse_usage(cursor) == (360, 8)
+    # Claude cache names are not read from a Cursor event
+    assert parse_usage_detail(json.dumps({'usage': {'inputTokens': 2, 'outputTokens': 1,
+                                                    'cache_read_input_tokens': 50}}))['cache'] == 0
+
+
+def test_usage_detail_takes_the_last_reporting_event_without_summing():
+    from jarvis.agents.dispatch_policy import parse_usage_detail
+    jsonl = '\n'.join(json.dumps({'usage': {'input_tokens': n, 'output_tokens': n}}) for n in (5, 7))
+    assert parse_usage_detail(jsonl)['input'] == 7
 
 
 def test_tokens_today_sums_todays_runs_with_a_cache_breakdown(tmp_path):
