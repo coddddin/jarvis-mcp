@@ -208,3 +208,13 @@ Communication: user explicitly authorized messaging collaboration thread 01a1591
 검증 결과: main `78f9448` 통합과 최종 반복 시작 보완을 포함한 전체 pytest 990 passed, 기존 폐기 경고 1개(40.58초). 디스패처 프런트 검사 9개, collaboration.js 구문, 문서·구조 검사 통과. D1 수정 전에는 추가 재현 검사 3개가 실제 실패했다. Claude 수신기 브랜치의 subprocess 저장 검사는 별도 통합 담당에게 요청했으며 이 PR에서 완료했다고 주장하지 않는다. PR #2의 병합과 native hook 설치/신뢰는 별도 승인 단계다.
 
 추가 main 갱신: 전체 검사 중 main이 `5117a76`으로 전진해 `ecdf866`에 추가 통합했다. 이 기준에서 세션/HUD/프로세스/사용량/배정/승격 관련 178 passed, 1 skipped(기존 usage 수집기의 심볼릭 링크 권한 조건), 경고 1개(6.25초). 디스패처 화면 10개 및 문서·구조 검사 통과. 이는 이전 기준 전체 990개 검사와 별도이며 최신 기준 전체 실행으로 합산하지 않는다. Claude 한도 소진 안내를 받아 실제 Claude 추가 호출이나 깨우기는 하지 않았다.
+
+
+## 2026-10-22 — 운영 전환 준비: 서비스 관찰과 설정 구분
+
+- 기존 인증 `GET /api/dispatcher`를 재사용한다. config_enabled/paused/effective_enabled는 설정상 허용이며 실행 증거가 아니다. service.running/pid/started 호환 필드를 보존하고 status/reason/source를 추가했다. status는 running(기록 PID의 생성 시각 조건 일치), stopped(기록 PID 없음), not_registered(기록 없음), identity_mismatch(PID 재사용 가능성), unknown(기록 오류·읽기/프로세스 조회 거부)다. 원시 오류·명령줄·경로는 반환하지 않는다. 등록 파일은 인증된 프로세스 신원 증명이 아니다.
+- process_watch도 not_registered/unknown을 서비스 종료로 단정하지 않도록 맞췄다. 실제 종료/재사용 기록과 기존 직원 실행 감시는 유지한다. 조회 미확인은 error=service_observation_unavailable로 전달하며 다른 감시 결과를 보존한다. 기존 프런트가 running=false를 무조건 꺼짐으로 표시한다면 새 status에 맞춘 후속 소비 변경이 필요하며, 이 브랜치에서 프런트를 수정하지 않았다.
+- 채팅 metadata.model은 선택 모델 설정이다. 기존 API는 Ollama 추론 가용성을 관찰하지 않는다. 새 네트워크 probe API를 추가하지 않고 관찰이 없는 화면은 미확인으로 표시하도록 프런트 담당에게 계약을 전달했다. HTTP/포트 가용성과 모델 추론 성공은 구분한다.
+- 별도 검토용 설정 후보를 artifacts/service-readiness-20261022에 작성하고 스키마를 검증했다. 최상위 enabled=false, 직원 후보 codex/opencode만 enabled, claude-code/cursor는 false, 고정 무료 모델만 지정했다. 로컬 리드 Ollama는 유지한다. 이 준비에서 기존 config/dispatcher.json과 명부를 변경하지 않았고 실제 서비스를 시작하지 않았다. OpenCode는 메인의 최신 합성 호출이 provider.auth 403 FreeTierError였다는 보고가 있어 실제 가용성 미확인으로 명시한다. 권한 완화·유료 대체·반복 호출은 하지 않았다.
+- 읽기 전용 실제 관찰: 등록 service.json 없음(not_registered), 수신 포트는 11434만 확인됐고 8766/8787/8788/8791은 확인되지 않았다. 포트만으로 프로세스 정체나 추론 성공을 확인한 것은 아니다. 준비 체크에는 기본 HUD8787과 이전 시험 포트들, 실제 코드/작업공간 일치, 진행 중 작업/잠금/중단, 사용량의 신선도, 승인 경계를 구분했다.
+- 검증: PR #2가 병합된 main32765d0 통합 후 dispatch_control/process_watch/dispatch_service/HUD/session_status 113 passed, 기존 경고 1개(3.06초). 실제 서비스 시작·예약 등록·모델 호출·hook 설치·운영 설정 변경·main 병합·공유 WIP 정리는 수행하지 않았다. 다음은 독립 검토와 프런트의 추가 필드 소비 연결이다.

@@ -46,6 +46,45 @@ def test_events_cover_each_kind_with_whitelisted_text():
     assert '99' not in texts['watch:owner_dead:run:7'] and 'codex' in texts['watch:owner_dead:run:7']
 
 
+def test_not_registered_service_is_its_own_line_and_service_down_stays():
+    found = dict(alerts.events(service='not_registered',
+                               findings=[{'kind': 'service_down', 'ref': 'service', 'detail': {}}]))
+    assert found['service:not_registered'] == '디스패처 설정은 켜졌지만 서비스가 등록되지 않음 (일시정지 아님)'
+    assert found['watch:service_down:service'].startswith('디스패처 서비스가 꺼져 있음')
+    for status in (None, 'running', 'stopped', 'unknown', 'identity_mismatch'):
+        assert not any(key.startswith('service:') for key, _ in alerts.events(service=status))
+
+
+def _service_config(tmp_path, enabled):
+    path = tmp_path / 'dispatcher.json'
+    path.write_text(json.dumps({'version': 1, 'enabled': enabled, 'interval_minutes': 10, 'daily_runs': 10,
+                                'run_timeout_minutes': 30, 'employees': {'cursor': {}}}), encoding='utf-8')
+    return path
+
+
+@pytest.mark.parametrize('enabled,paused,expected', [(True, False, True), (False, False, False), (True, True, False)])
+def test_gather_reports_not_registered_only_when_enabled_and_not_paused(tmp_path, enabled, paused, expected):
+    workspace = tmp_path / 'ws'
+    workspace.mkdir()
+    guard, roster = Guardrails(workspace), load_roster()
+    if paused:
+        dispatch_control.pause(guard, 'test')
+    found = dict(cli_alerts.gather(guard, BoardStore(guard, roster=roster), roster, _service_config(tmp_path, enabled)))
+    assert ('service:not_registered' in found) is expected
+
+
+def test_gather_skips_not_registered_while_a_service_record_exists(tmp_path):
+    import os, time
+    workspace = tmp_path / 'ws'
+    workspace.mkdir()
+    guard, roster = Guardrails(workspace), load_roster()
+    info = workspace / '.jarvis-dispatch/service.json'
+    info.parent.mkdir(parents=True)
+    info.write_text(json.dumps({'pid': os.getpid(), 'started': time.time()}), encoding='utf-8')
+    found = dict(cli_alerts.gather(guard, BoardStore(guard, roster=roster), roster, _service_config(tmp_path, True)))
+    assert not any(key.startswith('service:') for key in found)
+
+
 def test_titles_are_redacted_again(monkeypatch):
     monkeypatch.setattr(alerts, 'redact', lambda text: text.replace('secret', '[REDACTED]'))
     (_, text), = alerts.events(stale=[{'id': 'c' * 32, 'title': 'my secret task', 'owner': 'codex:x'}])
@@ -177,7 +216,8 @@ def test_tick_alerts_the_user_about_a_kept_asleep_employee_once(tmp_path, monkey
     cli_dispatch.tick()
     assert launched == ['claude-code'] and len(logged) == 1        # only the existing adapter-check log line
     (message,) = board.inbox('user:heejun')['messages']
-    assert '깨우지 않음: cursor' in message['body'] and '서비스가 꺼져 있음' in message['body']
+    assert '깨우지 않음: cursor' in message['body'] and '서비스가 등록되지 않음' in message['body']
+    assert '서비스가 꺼져 있음' not in message['body']                 # no record is not a stop
     assert "'-f'" not in message['body'] and 'EXECUTABLE' not in message['body']   # no command fragments
     cli_dispatch.tick()
     assert board.inbox('user:heejun')['messages'] == []          # same events, same day: no repeat

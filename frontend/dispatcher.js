@@ -92,15 +92,31 @@
     }
   }
 
-  function renderWatch(report) {
+  // Older servers send only running; newer ones add status. A missing record is not a stopped service.
+  const SERVICE_TEXT = {stopped:'서비스 멈춤', identity_mismatch:'서비스 신원 미확인 (프로세스 번호 재사용)',
+    unknown:'서비스 상태 미확인'};
+  function serviceText(data) {
+    const status = data.service.status;
+    if (status === undefined) return '서비스 멈춤';
+    if (status === 'not_registered') return data.effective_enabled ? '설정은 켜졌지만 서비스 미등록' : '서비스 미등록';
+    return SERVICE_TEXT[status] || '서비스 상태 미확인';
+  }
+
+  function warn(text) {
+    const row = element('li');
+    row.append(element('span', 'status needs_user_input', '확인 필요'), element('span', '', ' ' + text));
+    watch.append(row);
+  }
+
+  function renderWatch(report, data) {
     watch.replaceChildren();
+    if (data && data.effective_enabled && !data.service.running && data.service.status === 'not_registered')
+      warn('자동 배정 설정은 켜져 있지만 서비스가 등록되지 않았어요. 일이 와도 직원을 자동으로 깨우지 못할 수 있어요.');
     const findings = report && Array.isArray(report.findings) ? report.findings : [];
     for (const item of findings.slice(0, 20)) {
       const text = item && typeof item === 'object' ? watchText(item) : null;
       if (!text) continue;
-      const row = element('li');
-      row.append(element('span', 'status needs_user_input', '확인 필요'), element('span', '', ' ' + text));
-      watch.append(row);
+      warn(text);
     }
     if (report && report.error) watch.append(element('li', 'empty-feed', '감시 결과를 읽지 못했어요.'));
     const show = watch.children.length > 0;
@@ -149,7 +165,7 @@
     const service = data.service.running
       ? '서비스 실행 중' + (data.service.pid ? ' (PID ' + data.service.pid + ')' : '')
         + (isTime(data.service.started) ? ' · 시작 ' + stamp(data.service.started) : '')
-      : '서비스 멈춤';
+      : serviceText(data);
     const parts = [service, count(data.interval_minutes) + '분마다', '직원당 하루 ' + count(data.daily_runs) + '회'];
     if (data.paused && isTime(data.paused_at)) parts.push('일시정지 ' + stamp(data.paused_at));
     if (!data.config_enabled) parts.push('설정 파일(config/dispatcher.json)에서 꺼져 있음');
@@ -158,7 +174,7 @@
     toggle.textContent = data.paused ? '재개' : '일시정지';
     toggle.disabled = acting;
 
-    renderWatch(data.watch);
+    renderWatch(data.watch, data);
     renderUsage(data.usage);
     renderAlerts(data.alerts);
 
