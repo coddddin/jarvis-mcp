@@ -7,8 +7,8 @@
   "digest_hour": 21,
   "lead": {"enabled": true, "daily_tasks": 3},
   "employees": {
-    "codex": {"enabled": true},
-    "claude-code": {"enabled": true, "max_turns": 60},
+    "codex": {"enabled": false},
+    "claude-code": {"enabled": false, "max_turns": 60},
     "cursor": {"enabled": true},
     "opencode": {"enabled": true, "models": ["opencode/deepseek-v4.1-flash-free", "opencode/glm-5.3-flash-free",
                                      "opencode/minimax-m3.1-flash-free", "opencode/mimo-v2.6-flash-free",
