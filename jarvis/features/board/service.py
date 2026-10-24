@@ -181,6 +181,11 @@ class BoardStore:
             raise BoardError('lease_minutes must be an integer from 5 to 240.')
         return minutes * 60
 
+    @staticmethod
+    def brief(task):
+        """The short reply of a write tool: the caller already knows the title, detail and paths it sent."""
+        return {key: task[key] for key in ('id', 'status', 'owner', 'lease_until', 'updated')}
+
     def create(self, agent, title, detail, paths, *, depends_on=None):
         agent = self._agent(agent)
         title, detail = _text(title, 'title', 200), _text(detail, 'detail', 2000, required=False)
@@ -281,7 +286,8 @@ class BoardStore:
             self._event(db, task['id'], 'claimed', status, agent, now)
             return self._load(db, task['id'])
 
-    def get(self, task_id, *, notes=10):
+    def get(self, task_id, *, notes=10, cut=None):
+        """cut (chars): shorten each note body to that length and mark it 'truncated'; None keeps full text."""
         if type(notes) is not int or not 1 <= notes <= 50:
             raise BoardError('notes must be 1-50.')
         with self.connection() as db:
@@ -290,6 +296,10 @@ class BoardStore:
                               (task['id'], notes)).fetchall()
             task['notes'] = [{'author': row['author'], 'kind': row['kind'], 'body': row['body'],
                               'refs': json.loads(row['refs']), 'created': int(row['created'])} for row in rows]
+            if cut is not None:
+                for note in task['notes']:
+                    if len(note['body']) > cut:
+                        note['body'], note['truncated'] = note['body'][:cut], True
             task['total_notes'] = db.execute('SELECT COUNT(*) FROM notes WHERE task_id=?', (task['id'],)).fetchone()[0]
             return task
 
@@ -441,10 +451,11 @@ class BoardStore:
             if mark_read:
                 db.executemany('INSERT OR IGNORE INTO reads VALUES (?,?)', [(row['id'], agent) for row in rows])
             return {'unread': unread,
-                    'messages': [{'from': row['sender'], 'to': row['recipient'], 'task_id': row['task_id'],
+                    'messages': [{'id': row['id'], 'from': row['sender'], 'to': row['recipient'], 'task_id': row['task_id'],
                                   'body': row['body'], 'created': int(row['created'])} for row in rows]}
 
-    def list(self, *, status='', agent='', limit=50):
+    def list(self, *, status='', agent='', limit=50, include_closed=True, full_paths=True):
+        """include_closed=False hides done/cancelled when no status is given; full_paths=False gives a path count."""
         if status and status not in STATUSES:
             raise BoardError('Unknown status filter.')
         if agent:
@@ -456,6 +467,8 @@ class BoardStore:
         if status:
             query += ' AND status=?'
             args.append(status)
+        elif not include_closed:
+            query += " AND status NOT IN ('done','cancelled')"
         if agent:
             query += ' AND (owner=? OR creator=?)'
             args += [agent, agent]
@@ -465,7 +478,8 @@ class BoardStore:
             for row in rows:
                 task = self._row(row, now)
                 tasks.append({'id': task['id'], 'title': task['title'], 'status': task['status'],
-                              'owner': task['owner'], 'stale': task['stale'], 'paths': task['paths'],
+                              'owner': task['owner'], 'stale': task['stale'],
+                              'paths': task['paths'] if full_paths else len(task['paths']),
                               'notes': db.execute('SELECT COUNT(*) FROM notes WHERE task_id=?', (task['id'],)).fetchone()[0],
                               'updated': int(task['updated'])})
             # Compact by design: details and notes come from board_get; board text is data, not instructions.
