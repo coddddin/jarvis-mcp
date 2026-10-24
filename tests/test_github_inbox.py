@@ -174,3 +174,32 @@ def test_import_does_not_wake_dispatcher_and_blocks_idle_lead(tmp_path):
     board.send('user:heejun', 'codex', 'Please review this task', task_id=result['task_id'])
     assert board.pending_for_employee('codex') == 1
 
+
+
+def test_cli_apply_distinguishes_receipt_from_assignment(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv('GITHUB_TOKEN', 'synthetic-token')
+    monkeypatch.setattr(inbox, 'fetch_issues', lambda *a: [issue()])
+    args = ['--workspace', str(tmp_path), '--apply']
+    assert inbox.main(args) == 0
+    received = json.loads(capsys.readouterr().out)
+    task_id = received['results'][0]['task_id']
+    assert received['dispatch'] == {
+        'automatic_execution': False, 'unclaimed_task_ids': [task_id],
+        'next_action': 'check_existing_assignment',
+    }
+    board = BoardStore(Guardrails(tmp_path))
+    assert board.pending_for_employee('codex') == 0
+    # A message may already be queued even though ownership is still open.
+    board.send('user:heejun', 'codex', 'Synthetic assignment', task_id=task_id)
+    assert inbox.main(args) == 0
+    queued = json.loads(capsys.readouterr().out)
+    assert queued['dispatch']['next_action'] == 'check_existing_assignment'
+    assert queued['dispatch']['unclaimed_task_ids'] == [task_id]
+    assert board.pending_for_employee('codex') == 1
+    board.claim('codex:acceptance', task_id)
+    board.release('codex:acceptance', task_id, 'review', 'Synthetic result', verification='fixture checked')
+    assert inbox.main(args) == 0
+    duplicate = json.loads(capsys.readouterr().out)
+    assert duplicate['results'][0]['created'] is False
+    assert duplicate['dispatch']['unclaimed_task_ids'] == []
+    assert duplicate['dispatch']['automatic_execution'] is False
