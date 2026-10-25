@@ -360,6 +360,7 @@ def test_recent_runs_carry_waking_ids_and_older_rows_say_not_recorded(guard, con
     assert rows[old]['input_ids'] is None
     assert rows[empty]['input_ids'] == []
     assert rows[woken]['input_ids'] == list(range(1, 21))
+    assert dispatch_control.input_ids('5,²,x,-1,,7') == [5, 7]  # odd values are skipped, never raise
     with ledger.connection() as db:
         assert db.execute('SELECT input_key FROM runs WHERE id=?', (woken,)).fetchone()[0] is None  # untouched
 

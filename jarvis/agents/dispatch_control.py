@@ -64,7 +64,8 @@ def input_ids(value):
     """The waking message ids of a run: None for an older row (not recorded), [] when woken with none."""
     if not isinstance(value, str):
         return None
-    return [int(part) for part in value.split(',') if part.isdigit()][:20]
+    # isascii: '²'.isdigit() is True but int('²') raises, which would fail the whole snapshot.
+    return [int(part) for part in value.split(',') if part.isascii() and part.isdigit()][:20]
 
 
 def run_messages(guard, board, run_id):
