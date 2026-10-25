@@ -248,6 +248,162 @@ def test_real_activity_store_http_reports_are_not_verification(setup):
     assert registration['token'] not in response.text
 
 
+class RecordingActivity:
+    def __init__(self, result=None, error=None):
+        self.calls, self.result, self.error = [], result, error
+    def trace(self, task_id):
+        self.calls.append(('trace', task_id))
+        if self.error:
+            raise self.error
+        return self.result
+    def inspect(self, **kwargs):
+        self.calls.append(('inspect', kwargs))
+        return {'runs': []}
+    def ingest(self, token, event):
+        self.calls.append(('ingest', token))
+        return {'status': 'accepted', 'run_id': event['run_id'], 'seq': event['seq']}
+
+
+def test_activity_trace_auth_host_origin_query_and_id_checks_precede_collector(setup):
+    store, selected, _, _ = setup
+    task = 'e' * 32
+    activity = RecordingActivity(result={'task_id': task, 'status': 'unknown', 'runs': [], 'links': [], 'verified': []})
+    client = TestClient(create_event_app(store, token='x' * 43, task_ids=[selected.task_id],
+        origins=['http://127.0.0.1:8787'], activity=activity, connect_code='k' * 43))
+    url = 'http://127.0.0.1:8787/api/activity/tasks/' + task + '/trace'
+    hud = {'Authorization': 'Bearer ' + 'x' * 43}
+    denied = [
+        (client.get(url), 401), (client.get(url, headers={'Authorization': 'x' * 43}), 401),
+        (client.get(url, headers={'Authorization': 'Bearer ' + 'r' * 43}), 401),
+        (client.get(url, headers={'Authorization': 'Bearer ' + 'k' * 43}), 401),
+        (client.get(url, headers={'Authorization': 'Bearer ' + 'x' * 42}), 401),
+        (client.get('/api/activity/tasks/' + task + '/trace', headers=hud), 403),
+        (client.get(url.replace('127.0.0.1', 'localhost'), headers=hud), 403),
+        (client.get(url, headers={**hud, 'Origin': 'https://evil.example'}), 403),
+        (client.get(url, headers={**hud, 'Origin': 'null'}), 403),
+        (client.get(url + '?limit=1000', headers=hud), 403),
+        (client.get(url + '?token=' + 'x' * 43), 403)]
+    for response, status in denied:
+        assert response.status_code == status
+        assert response.headers['cache-control'] == 'no-store'
+    for bad in ('E' * 32, 'e' * 31, 'e' * 33, 'g' * 32, 'e' * 31 + '%0A', 'e' * 31 + '%20', '-' * 32):
+        bad_url = 'http://127.0.0.1:8787/api/activity/tasks/' + bad + '/trace'
+        assert client.get(bad_url).status_code == 401
+        response = client.get(bad_url, headers=hud)
+        assert response.status_code == 400 and response.json() == {'error': 'invalid_activity_task'}
+        assert response.headers['cache-control'] == 'no-store'
+    for method in ('POST', 'PUT', 'PATCH', 'DELETE'):
+        assert client.request(method, url, headers=hud, json={}).status_code == 405
+        assert client.request(method, url, headers={'Authorization': 'Bearer ' + 'r' * 43},
+                              json={}).status_code == 405
+    assert activity.calls == []
+    for headers in (hud, {**hud, 'Origin': 'http://127.0.0.1:8787'}):
+        response = client.get(url, headers=headers)
+        assert response.status_code == 200 and response.json() == activity.result
+        assert response.headers['cache-control'] == 'no-store'
+    assert activity.calls == [('trace', task), ('trace', task)]
+    # The ingest route keeps its own run-token semantics and is not reachable through the trace path.
+    run_id = 'a' * 32
+    event = {'run_id': run_id, 'epoch': 1, 'seq': 1, 'kind': 'start', 'phase': 'working',
+             'reason_code': 'none', 'result_ref': None}
+    events = 'http://127.0.0.1:8787/api/activity/runs/' + run_id + '/events'
+    assert client.get(events, headers=hud).status_code == 405
+    assert client.post(events, json=event, headers={'Authorization': 'Bearer ' + 'r' * 43}).status_code == 200
+    assert activity.calls[-1] == ('ingest', 'r' * 43)
+
+
+def test_activity_trace_unavailable_or_failing_collector_is_generic_503(setup):
+    from jarvis.agents.activity import ActivityError
+    store, selected, _, _ = setup
+    url = 'http://127.0.0.1:8787/api/activity/tasks/' + 'e' * 32 + '/trace'
+    for activity in (None, RecordingActivity(error=RuntimeError('private-trace-detail C:\\secret')),
+                     RecordingActivity(error=ActivityError('private-storage-detail'))):
+        client = TestClient(create_event_app(store, token='x' * 43, task_ids=[selected.task_id],
+            origins=['http://127.0.0.1:8787'], activity=activity))
+        response = client.get(url, headers={'Authorization': 'Bearer ' + 'x' * 43})
+        assert response.status_code == 503 and response.json() == {'error': 'activity_unavailable'}
+        assert response.headers['cache-control'] == 'no-store'
+        assert 'private' not in response.text and 'secret' not in response.text
+        if activity is not None:
+            assert activity.calls == [('trace', 'e' * 32)]
+
+
+def test_real_activity_trace_over_http_preserves_lineage_and_unknowns_without_writing(setup):
+    from types import SimpleNamespace
+    from jarvis.agents.activity import ActivityStore
+    store, selected, _, _ = setup
+    clock = {'wall': 1000., 'mono': 10.}
+    # Only the process probe is replaced; no live process or worker is inspected.
+    process = SimpleNamespace(create_time=lambda: 900., ppid=lambda: 1, is_running=lambda: True, status=lambda: 'running')
+    def collector():
+        return ActivityStore(store.guard, clock=lambda: clock['wall'], monotonic=lambda: clock['mono'],
+                             lookup=lambda pid: process)
+    def app(activity):
+        return TestClient(create_event_app(store, token='x' * 43, task_ids=[selected.task_id],
+            origins=['http://127.0.0.1:8787'], activity=activity))
+    activity, task, ref = collector(), 'c' * 32, 'f' * 32
+    client = app(activity)
+    def register(owner, **links):
+        clock['wall'] += 1
+        return activity.register(owner, task, **links)
+    def report(run, seq, kind, phase='working', result_ref=None):
+        return client.post('http://127.0.0.1:8787/api/activity/runs/' + run['run_id'] + '/events',
+            json={'run_id': run['run_id'], 'epoch': run['epoch'], 'seq': seq, 'kind': kind, 'phase': phase,
+                  'reason_code': 'unknown' if kind == 'failed' else 'none', 'result_ref': result_ref},
+            headers={'Authorization': 'Bearer ' + run['token']})
+    parent = register('codex:lead')
+    first = register('codex:a', parent_run_id=parent['run_id'], step_id='p1')
+    tool = register('codex:b', parent_run_id=parent['run_id'], step_id='tool-1')
+    assert report(parent, 1, 'start').json()['status'] == 'accepted'
+    assert report(first, 1, 'start').status_code == 200
+    assert report(first, 2, 'failed', 'finished').status_code == 200
+    retry = register('codex:a', parent_run_id=parent['run_id'], step_id='p1', retry_of=first['run_id'])
+    assert report(first, 3, 'progress').status_code == 400
+    assert report(retry, 1, 'start').status_code == 200
+    assert report(retry, 2, 'result_received', 'review', ref).status_code == 200
+    assert report(retry, 3, 'completed', 'finished').status_code == 200
+    assert report(tool, 1, 'start').status_code == 200
+    assert report(tool, 3, 'completed', 'finished').status_code == 200
+    url = 'http://127.0.0.1:8787/api/activity/tasks/' + task + '/trace'
+    hud = {'Authorization': 'Bearer ' + 'x' * 43}
+    database = store.guard.workspace / '.jarvis-activity' / 'activity.sqlite3'
+    before = database.read_bytes()
+    response = client.get(url, headers=hud)
+    assert database.read_bytes() == before
+    assert response.status_code == 200 and response.headers['cache-control'] == 'no-store'
+    data = response.json()
+    assert data == activity.trace(task)
+    assert data['status'] == 'observed' and data['control_supported'] is False
+    assert data['verified'] == [] and data['trace_complete'] is False
+    runs = {run['run_id']: run for run in data['runs']}
+    assert list(runs) == [parent['run_id'], first['run_id'], tool['run_id'], retry['run_id']]
+    assert {'run_id': retry['run_id'], 'type': 'retry_of', 'target': first['run_id'],
+            'step_id': 'p1', 'in_trace': True} in data['links']
+    assert sorted((link['run_id'], link['type']) for link in data['links']) == sorted([
+        (first['run_id'], 'parent'), (tool['run_id'], 'parent'),
+        (retry['run_id'], 'parent'), (retry['run_id'], 'retry_of')])
+    assert runs[first['run_id']]['fenced'] and runs[first['run_id']]['end']['kind'] == 'failed'
+    assert not runs[retry['run_id']]['fenced'] and runs[retry['run_id']]['trace_complete']
+    assert runs[retry['run_id']]['result_refs'] == [{'source': 'self_reported', 'ref': ref, 'seq': 2}]
+    assert runs[parent['run_id']]['end'] == {'source': 'unknown', 'kind': None, 'seq': None}
+    assert runs[tool['run_id']]['sequence_gap'] and not runs[tool['run_id']]['trace_complete']
+    assert all(run['verified'] == [] and run['report']['source'] == 'self_reported' for run in data['runs'])
+    assert retry['token'] not in response.text and 'token_hash' not in response.text
+    # A fresh collector reads the same durable lineage but no longer vouches for heartbeats.
+    reopened = collector()
+    before = database.read_bytes()  # Opening a collector may touch storage; only the GET must not.
+    after_restart = app(reopened).get(url, headers=hud).json()
+    assert database.read_bytes() == before
+    assert after_restart == reopened.trace(task) and after_restart['links'] == data['links']
+    assert {run['heartbeat']['reason'] for run in after_restart['runs']} == {'collector_restarted'}
+    assert after_restart['generation'] != data['generation']
+    unknown = client.get('http://127.0.0.1:8787/api/activity/tasks/' + 'd' * 32 + '/trace', headers=hud)
+    assert unknown.status_code == 200
+    assert unknown.json()['status'] == 'unknown' and unknown.json()['runs'] == [] and unknown.json()['links'] == []
+    assert unknown.json()['trace_complete'] is False and unknown.json()['verified'] == []
+    assert database.read_bytes() == before
+
+
 def test_session_status_is_authenticated_read_only_and_never_receives_event_posts(setup):
     from jarvis.agents.session_status import SessionStatusStore
     store, selected, _, _ = setup
