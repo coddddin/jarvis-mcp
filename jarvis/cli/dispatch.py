@@ -159,9 +159,12 @@ def _changed_parts(data, employee, snapshot, history):
     return [part for part in ('shared', 'worktree') if known[part] is not None and known[part] != snapshot[part]]
 
 
-def _write_baseline(path, employee, snapshot, data):
-    data = {'shared': snapshot['shared'],
-            'worktrees': {**(data or {}).get('worktrees', {}), employee: snapshot['worktree']}}
+def _write_baseline(path, employee, snapshot, data, *, shared=True):
+    """shared=False keeps a recorded shared state: a clean run's 'after' must not replace one that a
+    parallel run's alarm has just recorded."""
+    data = data or {}
+    data = {'shared': snapshot['shared'] if shared or 'shared' not in data else data['shared'],
+            'worktrees': {**data.get('worktrees', {}), employee: snapshot['worktree']}}
     path.parent.mkdir(parents=True, exist_ok=True)
     temp = path.with_name(path.name + '.tmp')
     temp.write_text(json.dumps(data, indent=2), encoding='utf-8')
@@ -194,11 +197,12 @@ def check_git_before_run(guard, employee, snapshot, *, history, reason):
 
 
 def record_git_after_run(guard, employee, snapshot, *, alarm=None):
-    """The state the next run must start from. With an alarm reason the dispatcher is paused first."""
+    """The state the next run must start from. With an alarm reason the dispatcher is paused first.
+    A clean run (no alarm) left the shared part as it found it, so only its worktree part is written."""
     with _BASELINE_LOCK:
         path = _baseline_path(guard)
         if alarm is None or _pause(guard, alarm):
-            _write_baseline(path, employee, snapshot, _read_baseline(path))
+            _write_baseline(path, employee, snapshot, _read_baseline(path), shared=alarm is not None)
 
 
 def warn_user(board, body):
@@ -245,7 +249,9 @@ def kill_tree(pid):
         pass
 
 
-def run_employee(employee, run_id, config, guard, ledger, board):
+def prepare_run(employee, run_id, config, guard, ledger, board):
+    """Checks and the worktree for one run, before any run of the tick starts. Returns what
+    execute_run needs, or a status when the run does not start (its ledger row is closed)."""
     exe = executable(employee)
     if exe is None:
         ledger.finish(run_id, status='error', exit_code=None, input_tokens=None, output_tokens=None,
@@ -293,6 +299,16 @@ def run_employee(employee, run_id, config, guard, ledger, board):
     timeout = config.run_timeout_minutes * 60
     targets = git_targets(worktree)
     before = git_snapshot(targets)  # compared after the run, once nothing the run started is left
+    return {'employee': employee, 'run_id': run_id, 'model': model, 'models': models, 'worktree': worktree,
+            'argv': argv, 'log_path': log_path, 'timeout': timeout, 'targets': targets, 'before': before}
+
+
+def execute_run(run, guard, ledger, board):
+    """Spawn, wait, end everything the run started, check .git. Returns (status, push): push is the run
+    when it may push, done by push_after_runs once every run of the tick has ended."""
+    employee, run_id, model, models = run['employee'], run['run_id'], run['model'], run['models']
+    worktree, argv, log_path, timeout = run['worktree'], run['argv'], run['log_path'], run['timeout']
+    targets, before = run['targets'], run['before']
     run_job, bound = new_job(), False
     try:
         with log_path.open('w', encoding='utf-8', errors='replace') as log:
@@ -331,7 +347,7 @@ def run_employee(employee, run_id, config, guard, ledger, board):
     ledger.finish(run_id, status=status, exit_code=process.returncode, input_tokens=usage['input'],
                   output_tokens=usage['output'], cache_tokens=usage['cache'], usage_quality=usage['quality'],
                   note=log_path.name)
-    after = git_snapshot(targets)
+    after, push = git_snapshot(targets), None
     if not contained:
         # Something the run started may still be alive and could change .git after any check here.
         record_git_after_run(guard, employee, after, alarm=f'{employee} run {run_id} left processes behind')
@@ -347,16 +363,55 @@ def run_employee(employee, run_id, config, guard, ledger, board):
                          f'전에 그 파일들을 확인하고, 괜찮으면 HUD에서 다시 시작하세요. 로그 {log_path.name}')
     else:
         record_git_after_run(guard, employee, after)
-        branch = f'auto/{employee}'
-        ahead = git('rev-list', '--count', f'main..{branch}', check=False).stdout.strip()
-        if ahead not in ('', '0'):
-            git('push', '-q', 'origin', branch, cwd=worktree, check=False)
+        push = run
     # A rotating employee's per-model backoff is routine (the digest shows it); alert once every model is out.
     quiet = model and status in MODEL_BACKOFF_STATUSES and ledger.pick_model(employee, models) is not None
     if status != 'ok' and not quiet:
         board.send(DISPATCHER_ID, 'user:heejun',
                    f'[알림] 디스패처: {employee} 실행 {status} (run {run_id}, exit {process.returncode}'
                    + (f', 모델 {model}' if model else '') + f'). 로그 {log_path.name}')
+    return status, push
+
+
+
+
+def push_after_runs(guard, board, ready):
+    """Pushes wait until every run of the tick has ended: a run still alive could change .git/config
+    (sshCommand, credential.helper) between another run's check and its push. Then one fresh check against
+    the record, under the lock; any difference pauses (before recording) and nothing is pushed."""
+    if not ready:
+        return
+    with _BASELINE_LOCK:
+        if read_pause(guard)['paused']:
+            return
+        path = _baseline_path(guard)
+        data = _read_baseline(path)
+        now = {run['employee']: git_snapshot(run['targets']) for run in ready}
+        changed = [name for name, snapshot in now.items() if _changed_parts(data, name, snapshot, True)]
+        if changed:
+            if _pause(guard, 'git config/hooks changed before the push of ' + ', '.join(changed)):
+                for name, snapshot in now.items():
+                    data = _read_baseline(path) or {}
+                    _write_baseline(path, name, snapshot, data)
+    if changed:
+        warn_user(board, '[경고] 디스패처: 실행이 모두 끝난 뒤 push 직전에 .git/config, .git/hooks 또는 worktree 연결 '
+                         f'파일이 바뀌어 있었어요({", ".join(changed)}). push를 모두 건너뛰고 디스패처를 일시정지했어요. '
+                         '그 파일들을 확인하고, 괜찮으면 HUD에서 다시 시작하세요.')
+        return
+    for run in ready:
+        branch = f"auto/{run['employee']}"
+        ahead = git('rev-list', '--count', f'main..{branch}', check=False).stdout.strip()
+        if ahead not in ('', '0'):
+            git('push', '-q', 'origin', branch, cwd=run['worktree'], check=False)
+
+
+def run_employee(employee, run_id, config, guard, ledger, board):
+    """One run on its own: prepare, execute, then its push (tick does the same for several runs at once)."""
+    run = prepare_run(employee, run_id, config, guard, ledger, board)
+    if isinstance(run, str):
+        return run
+    status, push = execute_run(run, guard, ledger, board)
+    push_after_runs(guard, board, [push] if push else [])
     return status
 
 
@@ -517,7 +572,13 @@ def tick(dry_run=False):
                     unchanged=unchanged)
     except Exception as exc:
         log_service_error(exc)
-    threads = []
+    def failed(employee, run_id, exc):  # record, never crash the scheduler
+        ledger.finish(run_id, status='error', exit_code=None, input_tokens=None, output_tokens=None,
+                      note=type(exc).__name__ + ': ' + str(exc)[:300])
+        report['launched'][employee] = 'error'
+
+    # 1. Checks and worktrees one by one, before any run starts: no run can change .git under another's merge.
+    prepared = []
     for decision in decisions:
         if not decision.wake:
             continue
@@ -525,18 +586,42 @@ def tick(dry_run=False):
                                   input_key=keys.get(decision.employee))
         if run_id is None:
             continue
-        def work(employee=decision.employee, run_id=run_id):
+        try:
+            run = prepare_run(decision.employee, run_id, config, guard, ledger, board)
+        except Exception as exc:
+            failed(decision.employee, run_id, exc)
+            continue
+        if isinstance(run, str):
+            report['launched'][decision.employee] = run
+        else:
+            prepared.append(run)
+    if prepared and read_pause(guard)['paused']:  # a later employee's check alarmed after earlier ones passed
+        for run in prepared:
+            ledger.finish(run['run_id'], status='error', exit_code=None, input_tokens=None, output_tokens=None,
+                          note='dispatcher paused')
+            report['launched'][run['employee']] = 'error'
+        prepared = []
+    # 2. The runs, in parallel.
+    ready, threads = [], []
+    for run in prepared:
+        def work(run=run):
             try:
-                report['launched'][employee] = run_employee(employee, run_id, config, guard, ledger, board)
-            except Exception as exc:  # record, never crash the scheduler
-                ledger.finish(run_id, status='error', exit_code=None, input_tokens=None, output_tokens=None,
-                              note=type(exc).__name__ + ': ' + str(exc)[:300])
-                report['launched'][employee] = 'error'
+                status, push = execute_run(run, guard, ledger, board)
+                report['launched'][run['employee']] = status
+                if push:
+                    ready.append(push)
+            except Exception as exc:
+                failed(run['employee'], run['run_id'], exc)
         thread = threading.Thread(target=work)
         thread.start()
         threads.append(thread)
     for thread in threads:
         thread.join()
+    # 3. Pushes, once every run has ended and every job is emptied.
+    try:
+        push_after_runs(guard, board, ready)
+    except Exception as exc:
+        log_service_error(exc)
     return report
 
 

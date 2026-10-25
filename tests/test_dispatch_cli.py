@@ -3,6 +3,7 @@ import json
 import os
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -561,3 +562,55 @@ def test_the_first_run_ever_trusts_and_records_the_state(tmp_path, monkeypatch):
     assert dispatch.check_git_before_run(guard, 'opencode', snapshot, history=False, reason='x') == []
     assert json.loads((tmp_path / '.jarvis-dispatch' / 'git-baseline.json').read_text(encoding='utf-8')) == {
         'shared': snapshot['shared'], 'worktrees': {'opencode': snapshot['worktree']}}
+
+
+# --- review of #43, round 2: runs overlap, so pushes wait for the whole tick ------------------------------
+
+def _ready_run(tmp_path, monkeypatch):
+    common, _, worktree = _git_layout(tmp_path)
+    monkeypatch.setattr(dispatch, 'GIT_DIR', common)
+    guard = Guardrails(tmp_path)
+    targets = dispatch.git_targets(worktree)
+    dispatch.record_git_after_run(guard, 'opencode', dispatch.git_snapshot(targets), alarm=None)
+    git_calls = []
+    monkeypatch.setattr(dispatch, 'git', lambda *a, **kw: git_calls.append(a) or SimpleNamespace(stdout='1'))
+    return common, guard, {'employee': 'opencode', 'targets': targets, 'worktree': worktree}, git_calls
+
+
+def test_pushes_after_the_tick_check_git_once_more_and_push_when_unchanged(tmp_path, monkeypatch):
+    from jarvis.agents.dispatch_service import read_pause
+    _, guard, run, git_calls = _ready_run(tmp_path, monkeypatch)
+    board = BoardStore(guard)
+    dispatch.push_after_runs(guard, board, [run])
+    assert [call[0] for call in git_calls] == ['rev-list', 'push']
+    assert read_pause(guard)['paused'] is False
+
+
+def test_a_change_by_a_run_still_alive_when_another_finished_blocks_every_push(tmp_path, monkeypatch):
+    """B finished clean and queued its push; A, still running then, changed .git/config before it ended."""
+    from jarvis.agents.dispatch_service import read_pause
+    common, guard, run, git_calls = _ready_run(tmp_path, monkeypatch)
+    board = BoardStore(guard)
+    (common / 'config').write_text('[core]\n\tsshCommand = evil\n', encoding='utf-8')
+    dispatch.push_after_runs(guard, board, [run])
+    assert git_calls == [] and read_pause(guard)['paused'] is True
+    [message] = board.inbox('user:heejun')['messages']
+    assert 'push 직전에' in message['body'] and 'opencode' in message['body']
+
+
+def test_pushes_wait_while_paused(tmp_path, monkeypatch):
+    _, guard, run, git_calls = _ready_run(tmp_path, monkeypatch)
+    dispatch.dispatch_control.pause(guard, 'user')
+    dispatch.push_after_runs(guard, BoardStore(guard), [run])
+    assert git_calls == []
+
+
+def test_a_clean_run_does_not_overwrite_a_shared_state_another_runs_alarm_recorded(tmp_path, monkeypatch):
+    common, guard, run, _ = _ready_run(tmp_path, monkeypatch)
+    clean_after = dispatch.git_snapshot(run['targets'])
+    (common / 'config').write_text('[core]\n\tsshCommand = evil\n', encoding='utf-8')
+    alarmed = dispatch.git_snapshot(run['targets'])
+    dispatch.record_git_after_run(guard, 'codex', alarmed, alarm='codex changed it')
+    dispatch.record_git_after_run(guard, 'opencode', clean_after)
+    record = json.loads((tmp_path / '.jarvis-dispatch' / 'git-baseline.json').read_text(encoding='utf-8'))
+    assert record['shared'] == alarmed['shared'] and record['worktrees']['opencode'] == clean_after['worktree']

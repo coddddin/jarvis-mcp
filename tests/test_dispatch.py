@@ -651,7 +651,7 @@ def test_tick_skips_an_employee_over_its_token_cap(tmp_path, monkeypatch):
     monkeypatch.setattr(cli_dispatch, 'load_guardrails', lambda: guard)
     monkeypatch.setattr(cli_dispatch, 'load_roster', lambda **kw: roster)
     monkeypatch.setattr(cli_dispatch, 'BoardStore', lambda g: BoardStore(g, roster=roster))
-    monkeypatch.setattr(cli_dispatch, 'run_employee', lambda employee, *a: launched.append(employee) or 'ok')
+    monkeypatch.setattr(cli_dispatch, 'prepare_run', lambda employee, *a: launched.append(employee) or 'ok')
     monkeypatch.setattr(cli_dispatch, 'send_digest_if_due', lambda *a: None)
     monkeypatch.setattr(cli_dispatch, 'send_alerts', lambda *a, **k: 0, raising=False)
     monkeypatch.setattr(cli_dispatch, 'collect_codex', lambda g: None)
@@ -882,7 +882,7 @@ def _h02_tick(tmp_path, monkeypatch, finish_status='ok'):
     monkeypatch.setattr(cli_dispatch, 'load_guardrails', lambda: guard)
     monkeypatch.setattr(cli_dispatch, 'load_roster', lambda **kw: roster)
     monkeypatch.setattr(cli_dispatch, 'BoardStore', lambda g: BoardStore(g, roster=roster))
-    monkeypatch.setattr(cli_dispatch, 'run_employee', run)
+    monkeypatch.setattr(cli_dispatch, 'prepare_run', run)
     monkeypatch.setattr(cli_dispatch, 'send_digest_if_due', lambda *a: None)
     monkeypatch.setattr(cli_dispatch, 'send_alerts', lambda *a, **k: alerted.append(k.get('unchanged')) or 0)
     monkeypatch.setattr(cli_dispatch, 'collect_codex', lambda g: None)
@@ -1048,3 +1048,77 @@ def test_wake_prompt_names_the_waking_ids_instead_of_the_whole_inbox():
     assert "board_inbox(agent='codex:auto', ids=[12, 15])" in prompt
     assert "board_inbox(agent='codex:auto')" not in prompt and '"' not in prompt
     assert wake_prompt('codex', 'C:/p/python.exe') == wake_prompt('codex', 'C:/p/python.exe', ids=())
+
+
+def _two_employee_tick(tmp_path, monkeypatch):
+    from jarvis.cli import dispatch as cli_dispatch
+    from jarvis.core.roster import load_roster
+    from jarvis.features.board.service import BoardStore
+    workspace, config_root = tmp_path / 'ws', tmp_path / 'config'
+    workspace.mkdir(), config_root.mkdir()
+    (config_root / 'dispatcher.json').write_text(json.dumps({
+        'version': 1, 'enabled': True, 'interval_minutes': 10, 'daily_runs': 10, 'run_timeout_minutes': 30,
+        'employees': {'claude-code': {}, 'codex': {}}, 'lead': {'enabled': False}}), encoding='utf-8')
+    roster, guard = load_roster(), Guardrails(workspace)
+    board = BoardStore(guard, roster=roster)
+    board.send('user:heejun', 'claude-code', 'build please')
+    board.send('user:heejun', 'codex', 'build please')
+    monkeypatch.setattr(cli_dispatch, 'CONFIG_ROOT', config_root)
+    monkeypatch.setattr(cli_dispatch, 'load_guardrails', lambda: guard)
+    monkeypatch.setattr(cli_dispatch, 'load_roster', lambda **kw: roster)
+    monkeypatch.setattr(cli_dispatch, 'BoardStore', lambda g: BoardStore(g, roster=roster))
+    monkeypatch.setattr(cli_dispatch, 'send_digest_if_due', lambda *a: None)
+    monkeypatch.setattr(cli_dispatch, 'send_alerts', lambda *a, **k: 0, raising=False)
+    monkeypatch.setattr(cli_dispatch, 'collect_codex', lambda g: None)
+    return cli_dispatch, guard
+
+
+def test_tick_prepares_every_run_before_any_starts_and_pushes_only_after_all_ended(tmp_path, monkeypatch):
+    import threading
+    cli_dispatch, guard = _two_employee_tick(tmp_path, monkeypatch)
+    events, lock = [], threading.Lock()
+
+    def prepare(employee, run_id, *a):
+        events.append(('prepare', employee))
+        return {'employee': employee, 'run_id': run_id}
+
+    def execute(run, guard, ledger, board):
+        with lock:
+            events.append(('start', run['employee']))
+        time.sleep(0.2 if run['employee'] == 'codex' else 0)   # codex is still running when claude-code ends
+        ledger.finish(run['run_id'], status='ok', exit_code=0, input_tokens=1, output_tokens=1, note='')
+        with lock:
+            events.append(('end', run['employee']))
+        return 'ok', run
+
+    monkeypatch.setattr(cli_dispatch, 'prepare_run', prepare)
+    monkeypatch.setattr(cli_dispatch, 'execute_run', execute)
+    monkeypatch.setattr(cli_dispatch, 'push_after_runs',
+                        lambda guard, board, ready: events.append(('push', sorted(r['employee'] for r in ready))))
+    report = cli_dispatch.tick()
+    assert report['launched'] == {'claude-code': 'ok', 'codex': 'ok'}
+    kinds = [kind for kind, _ in events]
+    assert kinds[:2] == ['prepare', 'prepare'] and kinds[-1] == 'push'
+    assert events[-1] == ('push', ['claude-code', 'codex']) and events[-2] == ('end', 'codex')
+
+
+def test_tick_starts_nothing_when_a_later_check_paused_the_dispatcher(tmp_path, monkeypatch):
+    from jarvis.agents import dispatch_control
+    cli_dispatch, guard = _two_employee_tick(tmp_path, monkeypatch)
+    started = []
+
+    def prepare(employee, run_id, config, guard, ledger, board):
+        if started == ['first']:   # the second employee's check finds a change and pauses
+            dispatch_control.pause(guard, 'git changed')
+            ledger.finish(run_id, status='error', exit_code=None, input_tokens=None, output_tokens=None,
+                          note='git changed since last run')
+            return 'error'
+        started.append('first')
+        return {'employee': employee, 'run_id': run_id}
+
+    monkeypatch.setattr(cli_dispatch, 'prepare_run', prepare)
+    monkeypatch.setattr(cli_dispatch, 'execute_run', lambda *a: pytest.fail('no run may start'))
+    report = cli_dispatch.tick()
+    assert sorted(report['launched'].values()) == ['error', 'error']
+    notes = {row['note'] for row in DispatchLedger(guard).summary()['recent']}
+    assert notes == {'dispatcher paused', 'git changed since last run'}
