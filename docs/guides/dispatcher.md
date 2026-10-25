@@ -26,12 +26,19 @@ API 키 환경변수만으로 로그인한 CLI나 SSH 에이전트 환경에 의
 3. 직원별 git worktree(`%LOCALAPPDATA%\JarvisWorktrees\<직원>`, 브랜치 `auto/<직원>`)에서 실행한다. 기존 브랜치를 재설정하지 않는다. 사용자가 이전 작업을 머지했으면 브랜치를 main으로 앞당긴다. 검사는 프로젝트의 `.venv` 파이썬을 절대 경로로 쓴다(worktree 안의 `.venv` 연결은 링크 거부 검사에 걸려 쓰지 않는다).
 4. 직원별 가벼운 실행 명령(실측 기본 비용 약 21k 토큰, 일반 실행 약 34k):
    - Claude Code: `claude -p --setting-sources "" --strict-mcp-config`(자비스만) `--permission-mode acceptEdits`, 허용 도구는 파일 편집·git 상태/커밋·프로젝트 pytest·게시판 9개. 권한 우회 옵션은 쓰지 않는다.
-   - Codex: `codex -a never exec --sandbox workspace-write -C <worktree> --add-dir <.git>`. 네트워크 push는 디스패처가 한다.
+   - Codex: `codex -a never exec --ignore-user-config --sandbox workspace-write -C <worktree> --add-dir <.git>`. 사용자 설정(플러그인·다른 MCP·notify)은 읽지 않고, Windows 샌드박스는 `elevated`로 고정한다. 셸만 남기고 화면 조작·브라우저·앱·플러그인·훅 등은 `--disable`로 끄며, MCP는 자비스 게시판 9개만(`-c`로 지정·자동 승인) 쓴다. 네트워크 push는 디스패처가 한다.
    - Cursor(수습): `agent -p --approve-mcps --trust`, `--force` 없음. 파일 수정·커밋 없이 검토·제안만. 프로젝트 `.cursor/cli.json`이 게시판 도구만 허용한다.
    - OpenCode(수습, 무료 모델): `opencode-cli run --standalone -m <무료 모델> --format json`, 설정은 `OPENCODE_CONFIG_CONTENT`(파일 수정·웹·셸·작업 폴더 밖 접근 금지, 게시판 도구만). 403 FreeTierError는 `eligibility`로 기록하고 대기. 자세히는 [직원 명부](agents-roster.md).
 5. 끝나면 장부(`작업공간/.jarvis-dispatch/ledger.sqlite3`)에 상태·종료 코드·토큰을 기록한다. 로그는 `%LOCALAPPDATA%\JarvisDispatch\logs`.
 6. 한도 오류(usage/rate limit, quota, 429 등)면 1시간 대기 후 다시 시도하고, 연속이면 2배씩 최대 6시간. 회복은 다음 실행 결과로 확인한다(시간으로 추정하지 않음).
-7. 브랜치에 새 커밋이 있으면 `origin`에 push. 실패·시간 초과·한도는 `user:heejun`에게 게시판 메시지로 알린다.
+7. 브랜치에 새 커밋이 있으면 `origin`에 push. 실패·시간 초과·한도는 `user:heejun`에게 게시판 메시지로 알린다. 디스패처의 git은 모두 빈 훅 폴더(`%LOCALAPPDATA%\JarvisDispatch\no-hooks`)와 `core.fsmonitor=false`로 실행한다.
+   - 실행마다 따로 kill-on-close 작업 개체를 만든다. 실행이 끝나면 그 실행이 띄운 프로그램(백그라운드로 남은 것 포함)을 모두 끝낸 뒤 검사한다. 모두 끝내지 못하면 push를 건너뛰고 일시정지·경고한다.
+   - 실행 전후로 `.git/config`, `.git/hooks`, 그 worktree의 연결 파일(`.git`, `commondir`, `gitdir`, `config.worktree`)을 비교해 바뀌었으면 push를 건너뛰고 디스패처를 일시정지한 뒤 `user:heejun`에게 경고한다. `.git/config`는 git이 읽은 항목으로 비교하고, 다른 세션이 늘 바꾸는 `branch.<이름>.*`(upstream)는 빼되 `mergeOptions`는 센다.
+   - 마지막으로 확인한 상태를 `작업공간/.jarvis-dispatch/git-baseline.json`에 남기고, 다음 실행은 `ensure_worktree`(merge)보다 먼저 그와 비교한다. 실행 사이에 바뀌었으면 실행하지 않고(장부 메모 `git_changed`) 일시정지·경고한다. 처음 보는 직원은 그때 상태를 기준으로 삼는다. 기록 파일이 없는데 끝난 실행이 이미 있으면(지워졌거나 이 검사를 처음 적용함) 바뀐 것으로 본다.
+   - 틱은 세 단계다. (1) 깨울 직원마다 차례로 비교·worktree 준비를 끝낸다. 그 사이 일시정지되면 아무 실행도 시작하지 않는다(장부 메모 `paused`). (2) 실행은 동시에 한다. (3) 모든 실행이 끝나고 각 작업 개체가 비워진 뒤, 다시 한 번 기록과 비교하고 나서야 push한다. 한 직원이 끝났을 때 아직 실행 중인 다른 직원이 `.git/config`를 바꿔도 push가 그 설정을 읽지 않게 하기 위해서다. 다르면 push를 모두 건너뛰고 일시정지·경고한다.
+   - 직원들은 같은 틱에 동시에 실행된다. 경고할 때는 일시정지를 먼저 쓰고 새 상태를 나중에 기록하며, 둘 다 같은 잠금 안에서 한다. 비교를 통과한 실행도 일시정지 상태면 시작하지 않는다(장부 메모 `paused`). 그래서 다른 직원의 경고 직후 바뀐 설정으로 merge하는 일이 없다.
+   - 경고 뒤 HUD에서 다시 시작하면 그때 상태가 새 기준이 된다. 사람이 원격을 추가하는 등 정상 변경도 한 번 경고된다.
+   - 한계: 디스패처 git이 읽는 사용자 전역 설정(`~/.gitconfig`)은 비교하지 않는다. Claude 실행은 샌드박스가 아니어서(pytest가 conftest 등 저장소 코드를 실행) 전역 설정이나 작업 개체 밖 프로그램(예약 작업 등)을 만들 수 있다. 그래서 Claude 직원의 첫 실행들은 사람이 지켜본다.
 8. 실행 중 `.jarvis-stop`이 생기면 실행을 종료한다. `config/dispatcher.json`의 `enabled: false`면 아무것도 하지 않는다.
 
 ## 자비스 상시 서비스 (W5 통합-3)
@@ -74,7 +81,7 @@ tick은 하루 요약을 보낸 뒤 사용자에게 알릴 사건을 골라 `use
 
 **HUD 표시(J2·J4)**: "직원별 누적"은 `known_*` 합을 쪽별 보고 범위(`보고 2/3회`, 분모는 품질이 기록된 실행 수)와 품질별 실행 수(측정·일부 보고·읽지 못함·보고 없음·기록 안 됨)와 함께 보여 준다. 보고한 실행이 하나도 없는 쪽은 0이 아니라 `— 모름`이고, 측정된 0은 0이다. 품질 기록 전 옛 실행의 숫자와 이 키가 없는 예전 서버의 `total_*`는 `정확도 알 수 없음`으로 표시하며 측정값으로 보이지 않는다. 최근 실행은 정해진 품질 값만 한국어로 보이고, null은 `기록 안 됨`, 그 밖의 값이나 키 없음은 `사용량 정확도 알 수 없음`이다. 측정은 보고된 이벤트 값을 읽었다는 뜻일 뿐 실행 전체를 관측했다는 뜻이 아니다. cache는 다시 더하지 않고, 계정 사용률("마지막 사용량")과 섞지 않는다.
 
-**지금 일하는 직원**: 스냅숏의 `working`은 장부에서 아직 `running`인 실행(최대 20개)마다 `id`·`employee`·`model`·`started`와 관찰한 `state`를 보낸다. `working`은 실행이 띄운 프로그램이 살아 있음(생성 시각으로 번호 재사용 제외), `starting`은 시작 후 120초 안이라 아직 프로그램 번호가 없음, `ended`는 프로그램은 끝났지만 장부가 아직 결과를 기록하지 않음(성공·실패를 뜻하지 않음), `unknown`은 번호 없이 120초가 지났거나 프로그램을 확인할 수 없음이다. 읽기만 하고 장부를 고치지 않는다. 최근 실행에는 `model`과 `result`가 붙는다. `result`는 정해진 장부 메모(`executable_missing`·`models_backed_off`·`no_pid`·`owner_unverifiable`)만 코드로 보내고 로그 이름·예외 문구는 보내지 않는다(null). HUD는 이 목록과 최근 실행 5개(직원·모델·걸린 시간·결과 한 줄)를 보여 주고, 끝나지 않은 장부 행은 "실행 중"이 아니라 "안 끝남"으로 쓴다. `working` 키가 없는 예전 서버는 "알 수 없음"이다.
+**지금 일하는 직원**: 스냅숏의 `working`은 장부에서 아직 `running`인 실행(최대 20개)마다 `id`·`employee`·`model`·`started`와 관찰한 `state`를 보낸다. `working`은 실행이 띄운 프로그램이 살아 있음(생성 시각으로 번호 재사용 제외), `starting`은 시작 후 120초 안이라 아직 프로그램 번호가 없음, `ended`는 프로그램은 끝났지만 장부가 아직 결과를 기록하지 않음(성공·실패를 뜻하지 않음), `unknown`은 번호 없이 120초가 지났거나 프로그램을 확인할 수 없음이다. 읽기만 하고 장부를 고치지 않는다. 최근 실행에는 `model`과 `result`가 붙는다. `result`는 정해진 장부 메모(`executable_missing`·`models_backed_off`·`no_pid`·`owner_unverifiable`·`git_changed`·`paused`)만 코드로 보내고 로그 이름·예외 문구는 보내지 않는다(null). HUD는 이 목록과 최근 실행 5개(직원·모델·걸린 시간·결과 한 줄)를 보여 주고, 끝나지 않은 장부 행은 "실행 중"이 아니라 "안 끝남"으로 쓴다. `working` 키가 없는 예전 서버는 "알 수 없음"이다.
 
 **깨운 메시지**: 실행마다 `wake_prompt`에 넘긴 게시판 메시지 id(최대 20개)를 장부 `runs.input_ids`에 쉼표로 남긴다(`set_inputs`). `input_key` 계산은 그대로다. NULL은 기록 없음(이 칸이 생기기 전 실행, 또는 깨우는 단계 전에 끝난 실행), 빈 값은 id 없이 깨운 실행이다. 스냅숏의 최근 실행은 `input_ids`(목록 또는 null)를 보낸다. HUD에서 행을 펼치면 그때만 `GET /api/dispatcher/runs/{정수 id}/messages`를 부른다. 다른 디스패처 API와 같은 Bearer·Origin·Host 검사와 쿼리 거부를 거치고, 정수가 아닌 id나 없는 실행은 404다. 응답은 메시지마다 `id`·`sender`·`title`이며 title은 연결된 작업 제목, 없으면 본문의 첫 줄을 redact 후 60자로 자른 것이다. 본문 전체는 보내지 않고, 읽음 표시도 하지 않는다. 게시판에서 정리된 메시지는 `missing`으로 온다. id 저장은 디스패처 서비스가 새 코드로 다시 시작된 뒤부터라서, 그 전 실행은 "기록 없음"으로 보인다.
 

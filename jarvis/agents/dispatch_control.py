@@ -25,7 +25,8 @@ RUN_FIELDS = ('id', 'employee', 'status', 'started', 'ended', 'exit_code', 'inpu
 QUALITY_KEYS = USAGE_QUALITIES + ('unrecorded',)
 # Known ledger notes mapped to fixed codes. Any other note (log names, exception text) never leaves the server.
 RESULTS = {'executable not found': 'executable_missing', 'all models backed off': 'models_backed_off',
-           'no_pid': 'no_pid', 'owner_unverifiable': 'owner_unverifiable'}
+           'no_pid': 'no_pid', 'owner_unverifiable': 'owner_unverifiable', 'git changed since last run': 'git_changed',
+           'dispatcher paused': 'paused'}
 WORKING_LIMIT = 20
 PID_GRACE_SECONDS = 120  # same grace as process_watch: a run gets its pid right after spawn
 

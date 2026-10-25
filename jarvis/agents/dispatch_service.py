@@ -100,6 +100,9 @@ class KillOnCloseJob:
         kernel32.SetInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
         kernel32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
         kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
+        kernel32.QueryInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD,
+                                                       ctypes.c_void_p]
 
         class IoCounters(ctypes.Structure):
             _fields_ = [(name, ctypes.c_ulonglong) for name in (
@@ -138,6 +141,41 @@ class KillOnCloseJob:
         if self.handle is not None:
             self._kernel32.CloseHandle(self.handle)
             self.handle = None
+
+    def active_processes(self):
+        """Live processes in the job, or None when unknown."""
+        import ctypes
+
+        class Accounting(ctypes.Structure):  # JOBOBJECT_BASIC_ACCOUNTING_INFORMATION
+            _fields_ = [(name, ctypes.c_longlong) for name in (
+                'TotalUserTime', 'TotalKernelTime', 'ThisPeriodTotalUserTime', 'ThisPeriodTotalKernelTime')] + [
+                (name, ctypes.c_ulong) for name in (
+                'TotalPageFaultCount', 'TotalProcesses', 'ActiveProcesses', 'TotalTerminatedProcesses')]
+
+        if self.handle is None:
+            return None
+        info = Accounting()
+        if not self._kernel32.QueryInformationJobObject(self.handle, 1, ctypes.byref(info), ctypes.sizeof(info), None):
+            return None
+        return info.ActiveProcesses
+
+    def terminate(self, timeout=10.0):
+        """Kill every process in the job, wait until none is left, then close. True only when the job was
+        empty at the end; without a job (not Windows) there is nothing to wait for."""
+        if self.handle is None:
+            return os.name != 'nt'
+        try:
+            self._kernel32.TerminateJobObject(self.handle, 1)
+            deadline = time.monotonic() + timeout
+            while True:
+                left = self.active_processes()
+                if left == 0:
+                    return True
+                if time.monotonic() > deadline:
+                    return False
+                time.sleep(0.05)
+        finally:
+            self.close()
 
 
 class DispatchService:

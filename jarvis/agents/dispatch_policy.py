@@ -636,6 +636,11 @@ class DispatchLedger:
                 'cache': row['cache'], 'cache_unknown_runs': row['unknown'] or 0,
                 'partial_runs': row['partial_runs'] or 0, 'unknown_runs': row['unread_runs'] or 0}
 
+    def finished_runs(self):
+        """Runs that have ended, any employee (the git baseline check uses it to spot a deleted record)."""
+        with self.connection() as db:
+            return db.execute('SELECT COUNT(*) FROM runs WHERE ended IS NOT NULL').fetchone()[0]
+
     def runs_today(self, employee):
         start = time.mktime(time.localtime(self.clock())[:3] + (0, 0, 0, 0, 0, -1))
         with self.connection() as db:
