@@ -25,7 +25,10 @@ test('short first sentences keep the rest of the first line; blank lines and spa
 });
 
 test('empty, missing and tag-only text stay safe',()=>{
-  assert.equal(preview(''),'');assert.equal(preview(undefined),'');assert.equal(preview('[main]'),'');
+  assert.equal(preview(''),'');assert.equal(preview(undefined),'');
+  assert.equal(preview('[main]'),'[main]');assert.equal(preview('[main]\n\n'),'[main]');   // tag-only keeps the tag
+  const emoji=preview('A'.repeat(88)+'😀'+'B'.repeat(10));                                  // never splits a surrogate pair
+  assert.equal(emoji,'A'.repeat(88)+'😀…');
   assert.equal(preview('[이 태그는 스물다섯 글자를 넘기는 아주 긴 대괄호 문장입니다] 본문'),'[이 태그는 스물다섯 글자를 넘기는 아주 긴 대괄호 문장입니다] 본문');
 });
 

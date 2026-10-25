@@ -6,7 +6,7 @@
   let token=null, generation=0, busy=false, controller=null, fingerprint=null;
   const node=(tag, cls, text)=>{const n=document.createElement(tag);n.className=cls;if(text!==undefined)n.textContent=text;return n;};
   // One-line summary for a collapsed entry: drop a short leading [tag], squeeze whitespace, keep the first sentence or line.
-  const preview=text=>{const flat=String(text||'').replace(/^\s*\[[^\]\n]{1,24}\]\s*/,'');const first=(flat.split(/\n\s*\n|\n/).find(line=>line.trim())||'').replace(/\s+/g,' ').trim();const sentence=(first.match(/^.*?[.!?。](?=\s|$)/)||[first])[0];const line=sentence.length>=20?sentence:first;return line.length>90?line.slice(0,89).trimEnd()+'…':line;};
+  const preview=text=>{const raw=String(text||'');const flat=raw.replace(/^\s*\[[^\]\n]{1,24}\]\s*/,'').trim()?raw.replace(/^\s*\[[^\]\n]{1,24}\]\s*/,''):raw;const first=(flat.split(/\n\s*\n|\n/).find(line=>line.trim())||'').replace(/\s+/g,' ').trim();const sentence=(first.match(/^.*?[.!?。](?=\s|$)/)||[first])[0];const chars=Array.from(sentence.length>=20?sentence:first);return chars.length>90?chars.slice(0,89).join('').trimEnd()+'…':chars.join('');};
   const time=value=>Number.isFinite(value)?new Intl.DateTimeFormat('ko-KR',{timeZone:'Asia/Seoul',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false}).format(new Date(value*1000)):'기록 없음';
   function clear(){fingerprint=null;runFingerprint=null;sessionFingerprint=null;$('sessionNotice').textContent='';$('activityNotice').textContent='';for(const id of ['collaborationAgents','collaborationMessages','collaborationNotes','activityRuns','sessionCards'])$(id).replaceChildren();$('collaborationNotice').textContent='';$('collaborationUpdated').textContent='조회 대기';}
   function render(data){
