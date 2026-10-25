@@ -373,14 +373,13 @@ def execute_run(run, guard, ledger, board):
     return status, push
 
 
-
-
 def push_after_runs(guard, board, ready):
     """Pushes wait until every run of the tick has ended: a run still alive could change .git/config
     (sshCommand, credential.helper) between another run's check and its push. Then one fresh check against
     the record, under the lock; any difference pauses (before recording) and nothing is pushed."""
     if not ready:
         return
+    changed = []
     with _BASELINE_LOCK:
         if read_pause(guard)['paused']:
             return
