@@ -136,13 +136,24 @@ class HybridTeam:
     def _activity_reporter(self, folder, runtime, process, name):
         activity = getattr(self, 'activity_store', None)
         match = re.fullmatch(r'team-([a-f0-9]{32})-([a-f0-9]{32})', folder.name)
-        packet = re.fullmatch(r'(p[1-3])(?:-r[0-3])?', name)
+        packet = re.fullmatch(r'(p[1-3])(?:-r([0-3]))?', name)
         pid = getattr(process, 'pid', None)
         if activity is None or not match or not packet or type(pid) is not int:
             return None
         self.guard.check_running()
+        owner, task_id, step_id = runtime + ':jarvis-' + packet.group(1), match.group(2), packet.group(1)
         try:
-            registration = activity.register(runtime + ':jarvis-' + packet.group(1), match.group(2), pid=pid)
+            retry_of = None
+            if packet.group(2) not in (None, '0'):
+                # Corrections link only to a registered run of this exact owner, request and step;
+                # the latest is the highest epoch. Unknown or missing history is never guessed.
+                prior = [run for run in activity.trace(task_id)['runs']
+                         if run['task_id'] == task_id and run['owner'] == owner
+                         and run['lineage']['source'] == 'registered' and run['lineage']['step_id'] == step_id
+                         and run['lineage']['parent_run_id'] is None]
+                if prior:
+                    retry_of = max(prior, key=lambda run: run['epoch'])['run_id']
+            registration = activity.register(owner, task_id, pid=pid, step_id=step_id, retry_of=retry_of)
             reporter = ActivityReporter(activity, registration, interval=10)
             reporter.start()
             return reporter
