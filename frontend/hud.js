@@ -87,7 +87,7 @@ const serviceOverview = (() => {
       const observedRunning=legacy?service.running:validStatus&&service.status==='running';
       const label=legacy?(service.running?'실행 중':'실행 안 보임')
         :!validStatus?'알 수 없음':({running:'실행 중',stopped:'멈춤',
-          not_registered:'시작 안 함',unknown:'알 수 없음',identity_mismatch:'다른 프로그램일 수 있음'})[service.status];
+          not_registered:'등록 기록 없음',unknown:'알 수 없음',identity_mismatch:'다른 프로그램일 수 있음'})[service.status];
       const reason=legacy?(service.running?'서비스가 실행 중이에요.'
         :'돌아가는 서비스가 보이지 않아요. 시작하지 않았거나 멈췄을 수 있어요.')
         :validStatus?reasons[service.reason]:'서버 응답을 이해하지 못했어요.';
@@ -95,7 +95,12 @@ const serviceOverview = (() => {
       dispatchCard.status.textContent=label;
       dispatchCard.status.className='status '+(observedRunning?'completed':'needs_user_input');
       dispatchCard.detail.textContent=setting+' · '+stamp(data.read_at)+' 확인 · '+reason;
-      dispatchCard.next.textContent=!observedRunning?'다음: 자동 배정 서비스를 시작하세요.'
+      // Ask to start only when the service is observed off. Unknown or a reused number may still be running.
+      const observedOff=validStatus&&(service.status==='stopped'||service.status==='not_registered');
+      dispatchCard.next.textContent=observedOff?'다음: 자동 배정 서비스를 시작하세요.'
+        :legacy&&!service.running?'다음: 자동 배정 서비스가 켜져 있는지 확인하세요.'
+        :validStatus&&service.status==='identity_mismatch'?'다음: 작업 관리자에서 그 번호의 프로그램을 확인하세요.'
+        :!observedRunning?'다음: 잠시 뒤 다시 확인해요.'
         :!data.config_enabled?'다음: 자동 배정을 쓰려면 설정을 켜세요.'
         :data.paused?'다음: 작업 현황에서 다시 시작할지 정하세요.'
         :'다음: 작업 현황에서 배정 결과를 보세요.';
@@ -140,7 +145,8 @@ const serviceOverview = (() => {
       modelCard.detail.textContent=data.model+' · '+stamp(data.observed_at)+' 확인 · '+reasons[data.reason];
       modelCard.next.textContent=installed?'다음: 대화 탭에서 물어보세요.'
         :data.status==='responding'?'다음: 터미널에서 ollama pull '+data.model+' 로 설치하세요. 자동으로 받지 않아요.'
-        :'다음: Ollama를 실행하세요.';
+        :data.status==='connection_refused'?'다음: Ollama를 실행하세요.'
+        :'다음: 잠시 뒤 다시 확인해요.';  // unknown may still be running: never ask to start it
     } catch(error) {
       if(selected===token&&revision===version)modelUnknown(error.message==='old_server'
         ?'이 자비스 화면은 예전 버전이에요. 다시 시작하면 확인할 수 있어요.'

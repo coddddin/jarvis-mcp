@@ -53,6 +53,7 @@ test('enabled config without service observation does not report running',async(
   await h.connect('synthetic');const body=h.dispatch();
   assert.match(body,/실행 안 보임/);assert.match(body,/설정 켜짐/);
   assert.doesNotMatch(body,/실행 중/);assert.match(body,/시작하지 않았거나 멈췄을 수/);
+  assert.match(body,/켜져 있는지 확인하세요/);assert.doesNotMatch(body,/시작하세요/); // legacy false is not proof of off
 });
 test('paused and disabled config remain distinct from service execution',async()=>{
   for(const [config_enabled,paused,label] of [[true,true,'일시정지'],[false,false,'설정 꺼짐']]){
@@ -80,7 +81,7 @@ test('HUD connection and demo never assert chat or model readiness',()=>{
 });
 test('new observed status contract separates stopped, absent records, unknown and reused identity',async()=>{
   const cases=[['running','matching_pid','실행 중'],['stopped','process_missing','멈춤'],
-    ['not_registered','missing_record','시작 안 함'],['unknown','invalid_record','기록의 형식'],
+    ['not_registered','missing_record','등록 기록 없음'],['unknown','invalid_record','기록의 형식'],
     ['unknown','unreadable_record','기록을 읽을 수 없'],['unknown','process_unreadable','프로그램을 확인할 수 없'],
     ['identity_mismatch','pid_reused','다른 프로그램일 수 있음']];
   for(const [status,reason,label] of cases){
@@ -89,7 +90,12 @@ test('new observed status contract separates stopped, absent records, unknown an
     await h.connect('synthetic');const body=h.dispatch();assert.ok(body.includes(label),status+': '+body);
     if(status!=='running')assert.doesNotMatch(body,/실행 중/);
     if(status!=='stopped')assert.doesNotMatch(body,/멈춤/);
-    if(['unknown','identity_mismatch'].includes(status))assert.doesNotMatch(body,/시작 안 함/);
+    if(['unknown','identity_mismatch'].includes(status))assert.doesNotMatch(body,/등록 기록 없음/);
+    // Only an observed stop asks to start the service; unknown or a reused number may still be running.
+    if(['stopped','not_registered'].includes(status))assert.match(body,/서비스를 시작하세요/);
+    else assert.doesNotMatch(body,/시작하세요|실행하세요/);
+    if(status==='unknown')assert.match(body,/잠시 뒤 다시 확인/);
+    if(status==='identity_mismatch')assert.match(body,/작업 관리자에서 그 번호의 프로그램/);
   }
 });
 test('explicit unknown, inconsistent or future status cannot fall back to a positive running flag',async()=>{
@@ -102,13 +108,15 @@ test('explicit unknown, inconsistent or future status cannot fall back to a posi
   ]){
     const h=harness();h.setReply(async()=>({ok:true,json:async()=>({service,config_enabled:true,paused:false,read_at:1000})}));
     await h.connect('synthetic');assert.match(h.dispatch(),/응답을 이해하지 못했/);assert.doesNotMatch(h.dispatch(),/실행 중/);
+    assert.doesNotMatch(h.dispatch(),/시작하세요/);
   }
 });
 test('Ollama card reads the model-status endpoint with GET after connection and shows the observed result',async()=>{
   const cases=[[observed('responding',true,'model_listed'),'실행 중 · 모델 있음'],
     [observed('responding',false,'model_not_listed'),'실행 중 · 모델 없음'],
     [observed('connection_refused',null,'connection_refused'),'연결 안 됨'],
-    [observed('unknown',null,'timeout'),'알 수 없음']];
+    ...['timeout','http_error','unsupported_encoding','response_too_large','malformed_response','connection_error']
+      .map(reason=>[observed('unknown',null,reason),'알 수 없음'])];
   for(const [body,label] of cases){
     const h=harness();h.route('/api/dispatcher',ok(running));h.route('/api/model-status',ok(body));
     await h.connect('synthetic');
@@ -119,7 +127,8 @@ test('Ollama card reads the model-status endpoint with GET after connection and 
     const card=h.ollama();assert.ok(card.includes(label),label+': '+card);
     assert.match(card,/1000 확인/);
     if(label!=='실행 중 · 모델 있음')assert.doesNotMatch(card,/모델 있음/);
-    if(label==='알 수 없음')assert.doesNotMatch(card,/연결 안 됨|실행 중/);   // unknown is never shown as off
+    if(label==='알 수 없음'){assert.doesNotMatch(card,/연결 안 됨|실행 중|실행하세요/);assert.match(card,/잠시 뒤 다시 확인/);} // unknown is never shown as off
+    if(label==='연결 안 됨')assert.match(card,/Ollama를 실행하세요/);
   }
 });
 test('invalid model-status contracts and old servers are unknown, never a guess',async()=>{

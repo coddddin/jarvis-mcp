@@ -91,7 +91,7 @@
         if(run.sequence_gap)card.append(node('p','collaboration-warning','중간 기록이 빠졌어요.'));
         list.append(card);
       }
-      if(!data.runs.length)list.append(node('p','muted small','여기서 시작한 실행이 없어요.'));
+      if(!data.runs.length)list.append(node('p','muted small','여기서 시작한 실행이 없어요. 직원이 쉬고 있다는 뜻은 아니에요.'));
       if(data.runs.length>20)list.append(node('p','muted small','실행 '+(data.runs.length-20)+'건 더 있어요.'));
     }catch(error){if(selected===token&&version===generation)$('activityNotice').textContent='새로 가져오지 못했어요. 아래는 이전 기록이에요.';}
     finally{clearTimeout(timeout);runController=null;runBusy=false;}
@@ -116,11 +116,11 @@
       for(const session of data.sessions.slice(0,20)){
         const card=node('article','collaboration-agent');
         card.append(node('h3','',session.employee+' · '+String(session.session_id).slice(0,12)));
-        card.append(node('p','',labels[session.state]||'알 수 없음'));
+        card.append(node('p','','마지막 소식: '+(labels[session.state]||'알 수 없음')));
         card.append(node('p','muted small',(receipts[session.receipt?.status]||'소식 알 수 없음')+' · '+time(session.receipt?.received_at)));
         list.append(card);
       }
-      if(!data.sessions.length)list.append(node('p','muted small','아직 받은 소식이 없어요. 훅 설치나 세션 재시작이 필요할 수 있어요.'));
+      if(!data.sessions.length)list.append(node('p','muted small','아직 받은 소식이 없어요. 훅 설치나 세션 재시작이 필요할 수 있어요. 직원이 쉬고 있다는 뜻은 아니에요.'));
       if(data.sessions.length>20)list.append(node('p','muted small','세션 '+(data.sessions.length-20)+'개 더 있어요.'));
     }catch(error){if(selected===token&&version===generation)$('sessionNotice').textContent='새로 가져오지 못했어요. 아래는 이전 기록이에요.';}
     finally{clearTimeout(timeout);sessionController=null;sessionBusy=false;}
