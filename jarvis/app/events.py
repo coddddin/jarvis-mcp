@@ -17,6 +17,7 @@ from jarvis.agents.store import TaskNotFound
 from jarvis.agents.chat import ChatError, ChatBusy
 from jarvis.app.briefing_routes import briefing_routes
 from jarvis.app.dispatcher_routes import dispatcher_routes
+from jarvis.app.model_status import model_status_routes, observer_for
 from jarvis.core.paths import AUTH_ROOT, PROJECT_ROOT
 
 
@@ -286,6 +287,8 @@ def create_event_app(tasks, *, token, task_ids, origins, chat=None, processes=No
     # Today's Google briefing card (read only; same gate, in-memory cache only).
     if briefing is not None:
         extra += briefing_routes(briefing, valid=valid, origins=origins, headers=response_headers)
+    # Ollama card: last /api/tags observation for the configured chat model (same gate; no chat => 503).
+    extra += model_status_routes(observer_for(chat), valid=valid, origins=origins, headers=response_headers)
     return Starlette(routes=extra + [Route('/', asset), Route('/assets/dispatcher.js', asset), Route('/assets/briefing.js', asset), Route('/assets/hud.css', asset), Route('/assets/hud.js', asset),
         Route('/assets/task-stream.js', asset), Route('/assets/chat.js', asset),
         Route('/api/chat/conversations', chat_api, methods=['GET', 'POST']),
