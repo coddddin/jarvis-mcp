@@ -5,6 +5,8 @@
   const rosterStatuses={active:'정식',probation:'수습',candidate:'후보',retired:'퇴직',disabled:'사용 중지'};
   let token=null, generation=0, busy=false, controller=null, fingerprint=null;
   const node=(tag, cls, text)=>{const n=document.createElement(tag);n.className=cls;if(text!==undefined)n.textContent=text;return n;};
+  // One-line summary for a collapsed entry: drop a short leading [tag], squeeze whitespace, keep the first sentence or line.
+  const preview=text=>{const flat=String(text||'').replace(/^\s*\[[^\]\n]{1,24}\]\s*/,'');const first=(flat.split(/\n\s*\n|\n/).find(line=>line.trim())||'').replace(/\s+/g,' ').trim();const sentence=(first.match(/^.*?[.!?。](?=\s|$)/)||[first])[0];const line=sentence.length>=20?sentence:first;return line.length>90?line.slice(0,89).trimEnd()+'…':line;};
   const time=value=>Number.isFinite(value)?new Intl.DateTimeFormat('ko-KR',{timeZone:'Asia/Seoul',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false}).format(new Date(value*1000)):'기록 없음';
   function clear(){fingerprint=null;runFingerprint=null;sessionFingerprint=null;$('sessionNotice').textContent='';$('activityNotice').textContent='';for(const id of ['collaborationAgents','collaborationMessages','collaborationNotes','activityRuns','sessionCards'])$(id).replaceChildren();$('collaborationNotice').textContent='';$('collaborationUpdated').textContent='조회 대기';}
   function render(data){
@@ -39,7 +41,7 @@
         const row=node('details','collaboration-entry');
         row.dataset.recordId=item.id;row.open=opened.has(item.id);
         const summary=node('summary','',time(item.created)+' · '+item.from+(item.to?' → '+(item.to==='*'?'모두':item.to):' · 작업 기록'));
-        summary.append(node('span','collaboration-preview',String(item.text||'').slice(0,140)));
+        summary.append(node('span','collaboration-preview',preview(item.text)));
         row.append(summary,node('p','collaboration-body',item.text||''));
         if(Array.isArray(item.readers)&&item.readers.length)row.append(node('p','muted small','우편함 조회: '+item.readers.join(', ')+' · 동의·착수 확인은 아닙니다.'));
         feed.append(row);
