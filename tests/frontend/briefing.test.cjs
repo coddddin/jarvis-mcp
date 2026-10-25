@@ -23,8 +23,15 @@ function briefing(changes = {}) {
       {from:'Alice <alice@example.com>', subject:'<img src=x onerror=alert(1)>', date:'Sat, 25 Oct'}]}, ...changes};
 }
 
-function harness() {
+// Default is the older page with only #workspace (fallback); {common:true} adds index.html's
+// #briefingHost beside the hidden-by-tab #chatPanel and #workspace.
+function harness({common = false} = {}) {
   const elements = {workspace:new Element('section')};
+  const root = new Element('main');
+  if (common) {
+    Object.assign(elements, {workspaceTabs:new Element('nav'), briefingHost:new Element('div'), chatPanel:new Element('section')});
+    root.append(elements.workspaceTabs, elements.briefingHost, elements.chatPanel, elements.workspace);
+  } else root.append(elements.workspace);
   const windowEvents = {}, requests = [], intervals = [];
   let handler = () => ({status:200, body:briefing()});
   const document = {hidden:false, getElementById:id => elements[id], createElement:tag => new Element(tag),
@@ -34,12 +41,16 @@ function harness() {
     fetch:async (path, options) => { requests.push({path, options}); const r = await handler(path, options);
       return {ok:r.status < 400, status:r.status, json:async () => r.body}; }};
   vm.runInNewContext(fs.readFileSync('frontend/briefing.js', 'utf8'), context);
-  const panel = elements.workspace.children[0];
+  const panel = (elements.briefingHost || elements.workspace).children[0];
   const settle = () => new Promise(r => setImmediate(r));
   const connect = async token => { windowEvents['jarvis-connection']({detail:{token}}); await settle(); await settle(); };
   const button = text => find(panel, n => n.tag === 'button' && n.textContent === text);
   const list = label => find(panel, n => n.attributes['aria-label'] === label && n.tag === 'ul');
-  return {panel, requests, intervals, connect, settle, button, list, setHandler:fn => handler=fn};
+  // Like hud.js tab buttons: exactly one of chat/workspace is hidden; briefing.js is not told.
+  const selectTab = name => { if (elements.chatPanel) elements.chatPanel.hidden = name !== 'chat'; elements.workspace.hidden = name !== 'tasks'; };
+  const shown = (node = root) => !node.hidden && (node === panel || node.children.some(shown));
+  const panels = () => all(root, n => n.id === 'briefingPanel').length;
+  return {panel, elements, requests, intervals, connect, settle, button, list, selectTab, shown, panels, setHandler:fn => handler=fn};
 }
 
 test('hidden until connected, then one GET with the token and no polling', async () => {
@@ -117,4 +128,53 @@ test('refresh reloads on demand and a disconnect hides the card', async () => {
   await h.connect(null);
   assert.equal(h.panel.hidden, true);
   assert.equal(h.requests.length, 2);
+});
+
+test('pages without #briefingHost still append the one card to #workspace', () => {
+  const h = harness();
+  assert.equal(h.elements.workspace.children.length, 1);
+  assert.equal(h.panels(), 1);
+});
+
+test('one card in the common host is visible on both tabs with one load and no requests on tab switches', async () => {
+  const h = harness({common:true});
+  assert.equal(h.elements.briefingHost.children.length, 1);
+  assert.equal(h.elements.workspace.children.length, 0);
+  assert.equal(h.elements.chatPanel.children.length, 0);
+  assert.equal(h.panels(), 1);
+  h.selectTab('chat');
+  assert.equal(h.shown(), false);                       // still hidden before a connection
+  await h.connect('tok');
+  assert.equal(h.requests.length, 1);
+  for (const tab of ['chat', 'tasks', 'chat', 'tasks']) {
+    h.selectTab(tab); await h.settle();
+    assert.equal(h.shown(), true, tab);
+    assert.match(flatten(h.list('오늘 일정')), /휴가/);
+  }
+  await h.connect('tok');                               // same connection again: no reload
+  assert.equal(h.requests.length, 1);
+  assert.equal(h.panels(), 1);
+  assert.equal(h.intervals.length, 0);
+});
+
+test('disconnect clears private contents on either tab and a late response cannot restore them', async () => {
+  const h = harness({common:true});
+  await h.connect('tok');
+  h.selectTab('chat');
+  assert.match(flatten(h.panel), /팀 회의/);
+  await h.connect(null);
+  assert.equal(h.shown(), false);
+  assert.doesNotMatch(flatten(h.panel), /팀 회의|휴가|alice@example\.com|42통/);
+
+  let release;
+  h.setHandler(() => new Promise(r => { release = () => r({status:200, body:briefing()}); }));
+  await h.connect('late');
+  assert.equal(h.requests.length, 2);
+  await h.connect(null);                                // disconnect while the GET is in flight
+  release(); await h.settle(); await h.settle();
+  h.selectTab('tasks');
+  assert.equal(h.shown(), false);
+  assert.doesNotMatch(flatten(h.panel), /팀 회의|휴가|alice@example\.com|42통/);
+  assert.equal(h.requests.length, 2);
+  assert.equal(h.panels(), 1);
 });

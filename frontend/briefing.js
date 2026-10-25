@@ -1,6 +1,7 @@
 'use strict';
 // "오늘 브리핑" card: today's calendar and unread mail headers from GET /api/briefing (read only).
-// Builds its own DOM inside #workspace like dispatcher.js; the token comes from hud.js through the
+// Builds its own DOM inside #briefingHost (outside both tabs, so chat and tasks both show it), falling
+// back to #workspace on older pages without the host; the token comes from hud.js through the
 // 'jarvis-connection' event. Mail and calendar text is untrusted: textContent only, no links, no HTML.
 // Loads once per connection and on the refresh button; no polling (the server also caches for 60s).
 (() => {
@@ -16,8 +17,8 @@
   }
   const str = value => typeof value === 'string' ? value : '';
 
-  const workspace = byId('workspace');
-  if (!workspace) return;
+  const host = byId('briefingHost') || byId('workspace');
+  if (!host) return;
   const panel = element('section', 'detail-panel panel');
   panel.id = 'briefingPanel'; panel.hidden = true; panel.setAttribute('aria-label', '오늘 브리핑');
   if (panel.style) panel.style.marginTop = '24px';
@@ -37,7 +38,7 @@
   const mail = element('ul', 'activity'); mail.setAttribute('aria-label', '안 읽은 메일');
   const sections = [calendarTitle, calendar, mailTitle, mail];
   panel.append(heading, summary, notice, actions, ...sections);
-  workspace.append(panel);
+  host.append(panel);
 
   let token = null, generation = 0, loading = false;
 
