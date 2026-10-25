@@ -176,10 +176,12 @@ function stopStream(){state.generation++;stream.stop();}
 function resetTimings(){state.timings=new JarvisDisplayTimings();$('latencyMetric').textContent='새 기록이 도착하면 갱신 속도를 측정합니다. 과거 기록은 제외해요.';}
 // The token survives a reload of this tab only (sessionStorage); closing the tab or disconnecting forgets it.
 const SAVED_CONNECTION='jarvis-hud-connection';
+// Connection intent is independent of stream/display generations (which change on visibility).
+let connectionVersion=0;
 function remember(token){try{sessionStorage.setItem(SAVED_CONNECTION,token);}catch(error){}}
 function forget(){try{sessionStorage.removeItem(SAVED_CONNECTION);}catch(error){}}
 function saved(){try{return sessionStorage.getItem(SAVED_CONNECTION);}catch(error){return null;}}
-function disconnect(){forget(); stopStream(); state.token=null; state.demo=false; state.jobs=[]; state.cursors.clear(); state.feeds.clear(); state.recovery.clear();state.selected=null;resetTimings(); $('connectionFile').value=''; $('workspace').hidden=true; $('welcome').hidden=false; $('refresh').hidden=true; $('disconnect').hidden=true; connection('연결 전'); notice(); window.dispatchEvent(new CustomEvent('jarvis-connection',{detail:{token:null}}));}
+function disconnect(){connectionVersion++; forget(); stopStream(); state.token=null; state.demo=false; state.jobs=[]; state.cursors.clear(); state.feeds.clear(); state.recovery.clear();state.selected=null;resetTimings(); $('connectionFile').value=''; $('workspace').hidden=true; $('welcome').hidden=false; $('refresh').hidden=true; $('disconnect').hidden=true; connection('연결 전'); notice(); window.dispatchEvent(new CustomEvent('jarvis-connection',{detail:{token:null}}));}
 function render(){
   $('welcome').hidden=true; $('workspace').hidden=false; $('refresh').hidden=state.demo; $('disconnect').hidden=false; $('demoNote').hidden=!state.demo;
   $('totalCount').textContent=state.jobs.length; $('taskCount').textContent=state.jobs.length+'개';
@@ -202,13 +204,13 @@ function render(){
   for(const item of [...feed].reverse().slice(0,14)){const row=element('li'); row.append(element('span','',roles[item.agent_id]+' · '+(labels[item.payload.status]||'변경'))); const time=element('time','',stamp(item.timestamp)); time.dateTime=new Date(item.timestamp*1000).toISOString(); row.append(time); $('activity').append(row);}
 }
 async function loadJobs(){
-  const token=state.token;
+  const token=state.token, version=connectionVersion;
   const response=await fetch('/api/tasks',{headers:{Authorization:'Bearer '+token},cache:'no-store',credentials:'omit'});
-  if(state.token!==token||state.demo)return;
+  if(version!==connectionVersion||state.token!==token||state.demo)return;
   if(response.status===401){disconnect(); throw new Error('연결 파일을 다시 선택해주세요.');}
   if(!response.ok)throw new Error('자비스 상태를 가져오지 못했어요. 실행 상태를 확인해주세요.');
   const data=await response.json(); if(!Array.isArray(data.tasks)||data.read_only!==true)throw new Error('작업 응답을 확인할 수 없어요.');
-  if(state.token!==token||state.demo)return;
+  if(version!==connectionVersion||state.token!==token||state.demo)return;
   state.jobs=data.tasks; if(!state.jobs.some(j=>j.task_id===state.selected))state.selected=state.jobs[0]?.task_id||null;
   render(); connection('연결됨','connected');window.dispatchEvent(new CustomEvent('jarvis-connection',{detail:{token}}));
 }
@@ -258,22 +260,25 @@ $('connectionFile').addEventListener('change',async event=>{
 async function connect(token, fromSaved=false){
   if(typeof token!=='string'||!/^[A-Za-z0-9_-]{43}$/.test(token)){if(fromSaved)forget();notice('올바른 자비스 연결 파일이 아닙니다.');return false;}
   stopStream(); state.demo=false; state.token=token; state.cursors.clear(); state.feeds.clear();state.recovery.clear();resetTimings();notice(); connection('연결 중');
-  try{await loadJobs(); if(state.token!==token)return false; remember(token); watch(); return true;}
-  catch(error){if(fromSaved)forget(); if(state.token===token){state.token=null; connection('연결 확인 필요');notice(error.message);} return false;}
+  const version=++connectionVersion;
+  try{await loadJobs(); if(version!==connectionVersion||state.token!==token)return false; remember(token); watch(); return true;}
+  catch(error){if(version!==connectionVersion)return false; if(fromSaved)forget(); if(state.token===token){state.token=null; connection('연결 확인 필요');notice(error.message);} return false;}
 }
 // `hud --open` puts a one-time code in the URL fragment. Remove it from the address bar at once and trade it for
 // the connection first (it is fresh); if that fails, a reload of the same tab reconnects from sessionStorage.
 // The file picker stays the fallback.
 async function exchange(code){
+  const version=connectionVersion;
   connection('연결 중');
   try{
     const response=await fetch('/api/connect',{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({code}),cache:'no-store',credentials:'omit',signal:AbortSignal.timeout(10000)});
+    if(version!==connectionVersion)return true;
     const data=response.ok?await response.json():null;
-    if(state.token||state.demo)return true;
+    if(version!==connectionVersion||state.token||state.demo)return true;
     if(typeof data?.token==='string')return await connect(data.token);
     connection('연결 전');notice('자동 연결 시간이 지났어요. 연결 파일을 선택해주세요.');
-  }catch(error){if(!state.token&&!state.demo){connection('연결 전');notice('자동으로 연결하지 못했어요. 연결 파일을 선택해주세요.');}}
+  }catch(error){if(version!==connectionVersion)return true; if(!state.token&&!state.demo){connection('연결 전');notice('자동으로 연결하지 못했어요. 연결 파일을 선택해주세요.');}}
   return false;
 }
 async function autoConnect(){
@@ -292,12 +297,12 @@ $('refresh').addEventListener('click',async()=>{notice();try{await loadJobs();
 $('disconnect').addEventListener('click',disconnect);
 $('demo').addEventListener('click',()=>{
   window.dispatchEvent(new CustomEvent('jarvis-connection',{detail:{token:null}}));
-  forget(); stopStream(); state.token=null; state.demo=true; state.cursors.clear(); state.feeds.clear();state.recovery.clear();resetTimings();$('latencyMetric').textContent='샘플 모드에서는 갱신 속도를 측정하지 않습니다.';notice();
+  connectionVersion++; forget(); stopStream(); state.token=null; state.demo=true; state.cursors.clear(); state.feeds.clear();state.recovery.clear();resetTimings();$('latencyMetric').textContent='샘플 모드에서는 갱신 속도를 측정하지 않습니다.';notice();
   const now=Date.now()/1000; state.jobs=[
     {task_id:'sample-complete',title:'정수 합계 함수를 작성하고 검증하기',status:'completed',role:'qa',steps_started:3,corrections:0,resumes:0,updated_at:now-90,model_reserved:18432,model_limit:65536,qa:{checker:'python_container_cases_v1',passed:true,cases_passed:4,cases_total:4},latest_sequence:7,events_available:true},
     {task_id:'sample-active',title:'파일 정리 도우미의 개선안 살펴보기',status:'running',role:'coder',steps_started:2,corrections:0,resumes:0,updated_at:now-30,model_reserved:18432,model_limit:65536,qa:null,latest_sequence:4,events_available:true},
     {task_id:'sample-attention',title:'수정 결과를 다시 확인하기',status:'needs_user_input',role:'qa',steps_started:9,corrections:3,resumes:0,updated_at:now-180,model_reserved:46080,model_limit:65536,qa:{checker:'python_integer_cases_v1',passed:false,cases_passed:2,cases_total:3},latest_sequence:19,events_available:true}];
   state.selected='sample-complete'; state.feeds.set(state.selected,[{agent_id:'planner',timestamp:now-120,payload:{status:'running'}},{agent_id:'coder',timestamp:now-110,payload:{status:'running'}},{agent_id:'qa',timestamp:now-92,payload:{status:'running'}},{agent_id:'qa',timestamp:now-90,payload:{status:'completed'}}]); render(); connection('샘플 모드','demo'); $('streamLabel').textContent='예시 기록';
 });
-window.addEventListener('pagehide',()=>{stopStream();state.token=null;});
+window.addEventListener('pagehide',()=>{connectionVersion++;stopStream();state.token=null;});
 document.addEventListener('visibilitychange',()=>{state.generation++;if(!state.demo)resetTimings();});
