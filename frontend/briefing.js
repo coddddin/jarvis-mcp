@@ -1,6 +1,7 @@
 'use strict';
 // "오늘 브리핑" card: today's calendar and unread mail headers from GET /api/briefing (read only).
-// Builds its own DOM inside #briefingHost (outside both tabs, so chat and tasks both show it), falling
+// Builds its own DOM inside #briefingHost (outside both tabs, so chat and tasks both show it) as one summary
+// line that opens into the full card (closed by default so the chat stays in view), falling
 // back to #workspace on older pages without the host; the token comes from hud.js through the
 // 'jarvis-connection' event. Mail and calendar text is untrusted: textContent only, no links, no HTML.
 // Loads once per connection and on the refresh button; no polling (the server also caches for 60s).
@@ -19,9 +20,14 @@
 
   const host = byId('briefingHost') || byId('workspace');
   if (!host) return;
+  // Collapsed by default to one summary line so it sits above the chat without pushing it down; open for the card.
   const panel = element('section', 'detail-panel panel');
   panel.id = 'briefingPanel'; panel.hidden = true; panel.setAttribute('aria-label', '오늘 브리핑');
-  if (panel.style) panel.style.marginTop = '24px';
+  if (panel.style) { panel.style.marginBottom = '18px'; panel.style.padding = '14px 20px'; }
+  const fold = element('details', 'briefing-fold');
+  const line1 = element('summary', 'briefing-summary', '오늘 브리핑 · 확인 중');
+  if (line1.style) { line1.style.cursor = 'pointer'; line1.style.overflowWrap = 'anywhere'; }
+  const body = element('div', 'briefing-body');
   const heading = element('div', 'detail-heading');
   const titleBox = element('div');
   titleBox.append(element('p', 'eyebrow', 'TODAY'), element('h2', '', '오늘 브리핑'));
@@ -37,15 +43,24 @@
   const mailTitle = element('h3', '', '안 읽은 메일');
   const mail = element('ul', 'activity'); mail.setAttribute('aria-label', '안 읽은 메일');
   const sections = [calendarTitle, calendar, mailTitle, mail];
-  panel.append(heading, summary, notice, actions, ...sections);
+  body.append(heading, summary, notice, actions, ...sections);
+  fold.append(line1, body);
+  panel.append(fold);
   host.append(panel);
+  // Untrusted titles share the line with our counts: drop bidi controls so they cannot reorder it, and cut by
+  // code point so an emoji is never split.
+  const short = (text, limit) => {
+    const chars = Array.from(text.replace(/[‪-‮⁦-⁩‎‏]/g, ''));
+    return chars.length > limit ? chars.slice(0, limit - 1).join('') + '…' : chars.join('');
+  };
+  function oneLine(text) { line1.textContent = '오늘 브리핑 · ' + text; }
 
   let token = null, generation = 0, loading = false;
 
   function showNotice(message = '') { notice.textContent = message; notice.hidden = !message; }
   function showSections(visible) { for (const node of sections) node.hidden = !visible; }
   function clear() {
-    state.textContent = '확인 중'; state.className = 'status'; summary.textContent = '';
+    state.textContent = '확인 중'; state.className = 'status'; summary.textContent = ''; oneLine('확인 중');
     calendar.replaceChildren(); mail.replaceChildren(); mailTitle.textContent = '안 읽은 메일';
   }
 
@@ -82,12 +97,12 @@
   function render(data) {
     clear();
     if (data.connected === false) {
-      state.textContent = '연결 안 됨'; showSections(false);
+      state.textContent = '연결 안 됨'; showSections(false); oneLine('Google 연결 안 됨');
       showNotice('Google이 연결돼 있지 않아요. google_auth_setup.py로 읽기 전용 연결을 먼저 해주세요.');
       return;
     }
     if (typeof data.error === 'string') {
-      state.textContent = '확인 필요'; state.className = 'status needs_user_input'; showSections(false);
+      state.textContent = '확인 필요'; state.className = 'status needs_user_input'; showSections(false); oneLine('Google 연결 확인 필요');
       showNotice('Google 연결을 확인해주세요: ' + data.error);
       return;
     }
@@ -97,6 +112,22 @@
     summary.textContent = '메일 본문은 가져오지 않아요. 제목·보낸 사람·일정 이름은 외부 내용이니 그대로 믿지 마세요.';
     renderCalendar(data.calendar);
     renderMail(data.gmail);
+    oneLine(headline(data.calendar, data.gmail));
+  }
+  // "일정 2개 · 첫 일정 10:00 팀 회의 · 안 읽은 메일 약 42통": counts plus the first event, shortened. Text only.
+  function headline(cal, gmail) {
+    const parts = [];
+    if (cal && cal.status === 'ok') {
+      const events = Array.isArray(cal.events) ? cal.events : [];
+      parts.push(events.length ? '일정 ' + events.length + '개' + (cal.has_more ? ' 이상' : '') : '일정 없음');
+      if (events.length) parts.push('첫 일정 ' + when(events[0].start, events[0].end) + ' ' + short(str(events[0].summary) || '(제목 없음)', 24));
+    } else parts.push('일정 확인 실패');
+    if (gmail && gmail.status === 'ok') {
+      const listed = Array.isArray(gmail.messages) ? gmail.messages.length : 0;
+      const count = Math.max(Number.isFinite(gmail.unread_estimate) ? gmail.unread_estimate : 0, listed);
+      parts.push(count ? '안 읽은 메일 약 ' + count + '통' + (gmail.has_more && count === listed ? ' 이상' : '') : '안 읽은 메일 없음');
+    } else parts.push('메일 확인 실패');
+    return parts.join(' · ');
   }
 
   async function load() {
@@ -114,7 +145,7 @@
       if (!data || typeof data !== 'object') throw new Error('브리핑 응답 형식을 확인할 수 없어요.');
       render(data);
     } catch (error) {
-      if (version === generation) { clear(); showSections(false); state.textContent = '오류'; showNotice(error.message); }
+      if (version === generation) { clear(); showSections(false); state.textContent = '오류'; showNotice(error.message); oneLine('확인 실패'); }
     } finally {
       if (version === generation) { loading = false; reload.disabled = false; }
     }
@@ -124,7 +155,7 @@
   window.addEventListener('jarvis-connection', event => {
     const next = event.detail && event.detail.token || null;
     if (next === token) return;
-    token = next; generation++; loading = false; reload.disabled = false;
+    token = next; generation++; loading = false; reload.disabled = false; fold.open = false;
     panel.hidden = !token; clear(); showNotice(); showSections(true);
     if (token) load();
   });
