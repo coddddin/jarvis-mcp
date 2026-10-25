@@ -343,6 +343,57 @@ class ChatService:
             return '\n\n'.join(references)
         return answer
 
+    HISTORY_TURNS = 8
+    HISTORY_CHARACTERS = 6000
+
+    @classmethod
+    def _history(cls, turns, request_id):
+        """Recent completed turns of this conversation as chat messages, oldest first. Skips the current request,
+        failed, interrupted or pending turns (their drafts were never confirmed) and empty replies; keeps at most
+        HISTORY_TURNS turns and HISTORY_CHARACTERS characters, dropping the oldest first."""
+        history, used = [], 0
+        for turn in reversed(turns):
+            if turn['id'] == request_id or turn['status'] != 'completed' or not turn['assistant'].strip():
+                continue
+            size = len(turn['user']) + len(turn['assistant'])
+            if len(history) >= 2 * cls.HISTORY_TURNS or used + size > cls.HISTORY_CHARACTERS:
+                break
+            history[0:0] = [{'role': 'user', 'content': turn['user']}, {'role': 'assistant', 'content': turn['assistant']}]
+            used += size
+        return history
+
+    # The whole message must be the request, and its object must be what the user said itself ("내가 말한 거"),
+    # not something they mentioned ("내가 말한 버그 왜 생겨?"); those go to the model with the history.
+    _WHEN = r'(?:(?:아까|방금|전에|앞에서|처음에|마지막에)\s*)?'
+    _SAID = r'(?:말한|말했던|한|했던|물어본|물었던|얘기한|질문한)\s*(?:거|것|게|말|질문|내용)(?:을|를|이|가|은|는)?\s*'
+    RECALL = re.compile(
+        r'\s*' + _WHEN + r'(?:'
+        r'(?:내가|제가|나)\s*' + _WHEN + _SAID + r'(?:다시\s*)?(?:말해|알려|보여|반복|읊어|해|뭐였|뭐야|뭐지)'
+        r'|(?:내가|제가)\s*' + _WHEN + r'뭐라고\s*(?:했|말했|물어봤|물었|그랬)'
+        r'|내\s*말\s*(?:을\s*)?(?:다시|반복)\s*(?:말해|해)?'
+        r')(?:[해하줘줄래주세요봐바요지어야더라죠나했니냐]|\s)*[?!.~\s]*'
+        r'|\s*(?:what\s+did\s+i\s+(?:just\s+)?(?:say|ask)|repeat\s+what\s+i\s+(?:just\s+)?(?:said|asked))[?!.\s]*', re.I)
+
+    @classmethod
+    def _is_recall(cls, message):
+        return len(message) <= 40 and cls.RECALL.fullmatch(message) is not None
+
+    @classmethod
+    def _recall_reply(cls, message, turns, request_id):
+        """Answers "repeat what I said" from the stored conversation, without the model. The local model tends to
+        copy its own earlier reply instead (seen in the HUD on 2026-10-25), so only this narrow, explicit request
+        is answered here; every other question still goes to the model with the history."""
+        if not cls._is_recall(message):
+            return None
+        said = [turn['user'] for turn in turns if turn['id'] != request_id and turn['status'] == 'completed'
+                and not cls._is_recall(turn['user'])][-3:]
+        if not said:
+            return '이 대화에서는 아직 앞서 하신 말이 없어요.'
+        if len(said) == 1:
+            return '앞에서 하신 말은 이거예요.\n\n> ' + said[0].replace('\n', '\n> ')
+        return '최근에 하신 말이에요.\n\n' + '\n'.join(f'{index}. ' + text.replace('\n', ' ')
+                                                    for index, text in enumerate(said, 1))
+
     def send(self, identity, request_id, message, mode='chat'):
         if not self.lock.acquire(blocking=False):
             raise ChatBusy('자비스가 답변 중입니다. 잠시 후 다시 보내주세요.')
@@ -352,6 +403,13 @@ class ChatService:
             if not begun:
                 return self.store.get(identity)
             plan = None
+            recall = self._recall_reply(message, self.store.get(identity)['turns'], request_id) if mode in {'chat', 'auto'} else None
+            if recall is not None:
+                if mode == 'auto':
+                    self.store.resolve_auto(identity, request_id, 'chat', RequestPlan(mode='chat', evidence='general',
+                        web_action='none', unsupported=False).model_dump())
+                self.store.finish(identity, request_id, reply=recall)
+                return self.store.get(identity)
             if mode == 'auto' and re.search(r'무료\s*(?:API|에이전트|모델).{0,15}(?:로|사용|써|맡)', message, re.I):
                 plan = RequestPlan(mode='chat' if '요약' in message else 'team-local', evidence='general',
                     web_action='none', unsupported=False, agent_policy='free')
@@ -403,16 +461,7 @@ class ChatService:
                 answer, traces = self.team.run(identity, request_id, message, external=mode == 'team')
                 self.store.finish(identity, request_id, reply=answer, tools=traces)
                 return self.store.get(identity)
-            conversation = self.store.get(identity)
-            history = []
-            used = 0
-            for turn in reversed(conversation['turns'][:-1]):
-                if turn['status'] != 'completed':
-                    continue
-                if used + len(turn['user']) + len(turn['assistant']) > 6000:
-                    break
-                history[0:0] = [{'role': 'user', 'content': turn['user']}, {'role': 'assistant', 'content': turn['assistant']}]
-                used += len(turn['user']) + len(turn['assistant'])
+            history = self._history(self.store.get(identity)['turns'], request_id)
             system = ('너는 사용자의 PC에서 실행되는 개인 비서 J.A.R.V.I.S.다. 자연스러운 한국어로 간결하게 대화하라. '
                 '대화를 기억하되 실제로 관찰하거나 도구로 확인하지 않은 실행/설치/분석 성공을 주장하지 마라. '
                 '사용 가능 기능은 일반 대화, PC 상태 확인, 로컬 문서 검색, 등록된 공개 피드 읽기, 명시한 파일의 정적 분석이다. '
