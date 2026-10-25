@@ -1,6 +1,7 @@
 """Operator-started local workspace with bounded chat and read-only task HUD."""
 import argparse
 import asyncio
+import secrets
 import webbrowser
 
 import uvicorn
@@ -47,6 +48,9 @@ def main():
     store = TaskStore(Guardrails(DEFAULT_WORKSPACE))
     ids = args.task_id or [task.task_id for task in store.recent()]
     url = f'http://127.0.0.1:{args.port}'
+    # The browser we open connects by itself with a one-time code in the URL fragment (browsers never send the
+    # fragment to the server). The connection file stays the fallback.
+    code = secrets.token_urlsafe(32) if args.open else None
     sessions = SessionStatusStore(store.guard)
     activity = ActivityStore(store.guard)
     chat = ChatService(store.guard, model=args.model)
@@ -55,14 +59,15 @@ def main():
     processes.register_current(kind='hud', label='JARVIS HUD', max_runtime_seconds=604800)
     app = create_event_app(store, token=load_event_token(), task_ids=ids, origins=[url], chat=chat,
         processes=processes, board=BoardStore(store.guard), activity=activity, sessions=sessions,
-        dispatcher=(store.guard, CONFIG_ROOT / 'dispatcher.json'), briefing=GoogleBriefing())
+        dispatcher=(store.guard, CONFIG_ROOT / 'dispatcher.json'), briefing=GoogleBriefing(),
+        connect_code=code)
     print(f'J.A.R.V.I.S. local workspace: {url}', flush=True)
     print('Local chat enabled; task HUD read-only. Close this process to stop. Connection file: .jarvis-auth/agent-events-token.txt', flush=True)
     config = uvicorn.Config(app, host='127.0.0.1', port=args.port, ws='websockets-sansio',
                 ws_max_size=1024, ws_max_queue=16, limit_concurrency=32,
                 ws_per_message_deflate=False, access_log=False, log_level='warning', server_header=False)
     # Load the chat model in the background once the port is bound, so the first reply does not wait for it.
-    HUDServer(config, open_url=url if args.open else None, on_start=chat.warm_up).run()
+    HUDServer(config, open_url=f'{url}/#connect={code}' if code else None, on_start=chat.warm_up).run()
 
 
 if __name__ == '__main__':

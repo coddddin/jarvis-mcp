@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import re
 import secrets
+import time
 from urllib.parse import urlsplit
 
 from starlette.applications import Starlette
@@ -46,10 +47,20 @@ def load_event_token(root=AUTH_ROOT):
     return token
 
 
+CONNECT_SECONDS = 300
+CONNECT_FAILURES = 5
+
+
 def create_event_app(tasks, *, token, task_ids, origins, chat=None, processes=None, board=None, activity=None,
-                     sessions=None, dispatcher=None, briefing=None):
+                     sessions=None, dispatcher=None, briefing=None, connect_code=None):
     if not isinstance(token, str) or not re.fullmatch(r'[A-Za-z0-9_-]{43}', token):
         raise ValueError('A strong local event token is required.')
+    if connect_code is not None and (not isinstance(connect_code, str)
+                                     or not re.fullmatch(r'[A-Za-z0-9_-]{43}', connect_code)):
+        raise ValueError('A strong one-time connect code is required.')
+    # The browser that `hud --open` starts gets this code in the URL fragment, never the token itself, so a saved
+    # or synced history entry holds only a spent code. One use, CONNECT_SECONDS, CONNECT_FAILURES wrong guesses.
+    pairing = {'code': connect_code, 'expires': time.monotonic() + CONNECT_SECONDS, 'failures': 0}
     task_ids, origins = frozenset(task_ids), frozenset(origins)
     if (not task_ids and chat is None) or len(task_ids) > 32 or not origins:
         raise ValueError('Explicit task and Origin allowlists are required.')
@@ -189,6 +200,40 @@ def create_event_app(tasks, *, token, task_ids, origins, chat=None, processes=No
         except Exception:
             return JSONResponse({'error': 'activity_unavailable'}, status_code=503, headers=response_headers)
 
+    def gate(request, *, post=False):
+        origin = request.headers.get('origin')
+        if (request.url.query or request.url.netloc not in {urlsplit(item).netloc for item in origins}
+                or origin is not None and origin not in origins or post and origin not in origins):
+            return JSONResponse({'error': 'origin_denied'}, status_code=403, headers=response_headers)
+        return None
+
+    async def connect_api(request):
+        denied = gate(request, post=True)
+        if denied:
+            return denied
+        if request.headers.get('content-type', '').split(';')[0].strip() != 'application/json':
+            return JSONResponse({'error': 'json_required'}, status_code=415, headers=response_headers)
+        raw = bytearray()
+        async for chunk in request.stream():
+            raw.extend(chunk)
+            if len(raw) > 256:
+                return JSONResponse({'error': 'request_too_large'}, status_code=413, headers=response_headers)
+        try:
+            data = json.loads(raw)
+        except ValueError:
+            data = None
+        candidate = data.get('code') if isinstance(data, dict) and set(data) == {'code'} else None
+        if (pairing['code'] is None or time.monotonic() > pairing['expires']
+                or pairing['failures'] >= CONNECT_FAILURES):
+            pairing['code'] = None
+            return JSONResponse({'error': 'connect_code_expired'}, status_code=410, headers=response_headers)
+        if (not isinstance(candidate, str) or not re.fullmatch(r'[A-Za-z0-9_-]{43}', candidate)
+                or not secrets.compare_digest(candidate, pairing['code'])):
+            pairing['failures'] += 1
+            return JSONResponse({'error': 'connect_code_invalid'}, status_code=401, headers=response_headers)
+        pairing['code'] = None
+        return JSONResponse({'token': token}, headers=response_headers)
+
     async def chat_api(request):
         header = request.headers.get('authorization', '')
         origin = request.headers.get('origin')
@@ -294,6 +339,7 @@ def create_event_app(tasks, *, token, task_ids, origins, chat=None, processes=No
         Route('/api/chat/conversations', chat_api, methods=['GET', 'POST']),
         Route('/api/chat/conversations/{conversation_id}', chat_api, methods=['GET']),
         Route('/api/chat/conversations/{conversation_id}/messages', chat_api, methods=['POST']),
+        Route('/api/connect', connect_api, methods=['POST']),
         Route('/api/sessions', session_status), Route('/api/activity', activity_api), Route('/api/activity/runs/{run_id}/events', activity_api, methods=['POST']),
         Route('/assets/collaboration.js', asset), Route('/assets/collaboration.css', asset), Route('/api/collaboration', collaboration),
         Route('/api/tasks', listing), Route('/api/processes', listing), WebSocketRoute('/tasks/{task_id}/events', watch)])
