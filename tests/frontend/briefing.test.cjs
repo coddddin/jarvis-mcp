@@ -184,7 +184,15 @@ test('the summary line shortens long titles and reports each failure briefly', a
   }
   h.setHandler(() => ({status:503, body:{}}));
   await h.button('새로고침').events.click();
-  assert.equal(summaryLine(h.panel).textContent, '오늘 브리핑 · 불러오지 못함');
+  assert.equal(summaryLine(h.panel).textContent, '오늘 브리핑 · 확인 실패');
+  h.setHandler(() => ({status:200, body:briefing({calendar:{status:'ok', has_more:false, events:[
+    {summary:'‮회의⁦' + 'A'.repeat(22) + '😀끝', start:'2026-10-25T09:00:00+09:00'}]},
+    gmail:{status:'ok', has_more:true, unread_estimate:0, messages:[{subject:'s', from:'f'}]}})}));
+  await h.button('새로고침').events.click();
+  const mixed = summaryLine(h.panel).textContent;
+  assert.doesNotMatch(mixed, /[‪-‮⁦-⁩]/);           // bidi controls removed
+  assert.match(mixed, /첫 일정 09:00 회의A{21}… · 안 읽은 메일 약 1통 이상$/);   // listed mail beats a 0 estimate
+  assert.doesNotMatch(mixed, /[\uD800-\uDBFF](?![\uDC00-\uDFFF])/);    // no half emoji
   h.setHandler(() => ({status:200, body:briefing({calendar:{status:'ok', has_more:false, events:[]},
     gmail:{status:'ok', has_more:false, unread_estimate:0, messages:[]}})}));
   await h.button('새로고침').events.click();
@@ -194,8 +202,10 @@ test('the summary line shortens long titles and reports each failure briefly', a
 test('disconnect resets the summary line so no event title stays visible', async () => {
   const h = harness({common:true});
   await h.connect('tok');
+  fold(h.panel).open = true;
   await h.connect(null);
   assert.equal(summaryLine(h.panel).textContent, '오늘 브리핑 · 확인 중');
+  assert.equal(fold(h.panel).open, false);                // a new connection starts folded
 });
 
 test('disconnect clears private contents on either tab and a late response cannot restore them', async () => {

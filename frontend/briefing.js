@@ -47,7 +47,12 @@
   fold.append(line1, body);
   panel.append(fold);
   host.append(panel);
-  const short = (text, limit) => text.length > limit ? text.slice(0, limit - 1) + '…' : text;
+  // Untrusted titles share the line with our counts: drop bidi controls so they cannot reorder it, and cut by
+  // code point so an emoji is never split.
+  const short = (text, limit) => {
+    const chars = Array.from(text.replace(/[‪-‮⁦-⁩‎‏]/g, ''));
+    return chars.length > limit ? chars.slice(0, limit - 1).join('') + '…' : chars.join('');
+  };
   function oneLine(text) { line1.textContent = '오늘 브리핑 · ' + text; }
 
   let token = null, generation = 0, loading = false;
@@ -118,9 +123,9 @@
       if (events.length) parts.push('첫 일정 ' + when(events[0].start, events[0].end) + ' ' + short(str(events[0].summary) || '(제목 없음)', 24));
     } else parts.push('일정 확인 실패');
     if (gmail && gmail.status === 'ok') {
-      const count = typeof gmail.unread_estimate === 'number' ? gmail.unread_estimate
-        : Array.isArray(gmail.messages) ? gmail.messages.length : 0;
-      parts.push(count ? '안 읽은 메일 약 ' + count + '통' : '안 읽은 메일 없음');
+      const listed = Array.isArray(gmail.messages) ? gmail.messages.length : 0;
+      const count = Math.max(Number.isFinite(gmail.unread_estimate) ? gmail.unread_estimate : 0, listed);
+      parts.push(count ? '안 읽은 메일 약 ' + count + '통' + (gmail.has_more && count === listed ? ' 이상' : '') : '안 읽은 메일 없음');
     } else parts.push('메일 확인 실패');
     return parts.join(' · ');
   }
@@ -140,7 +145,7 @@
       if (!data || typeof data !== 'object') throw new Error('브리핑 응답 형식을 확인할 수 없어요.');
       render(data);
     } catch (error) {
-      if (version === generation) { clear(); showSections(false); state.textContent = '오류'; showNotice(error.message); oneLine('불러오지 못함'); }
+      if (version === generation) { clear(); showSections(false); state.textContent = '오류'; showNotice(error.message); oneLine('확인 실패'); }
     } finally {
       if (version === generation) { loading = false; reload.disabled = false; }
     }
@@ -150,7 +155,7 @@
   window.addEventListener('jarvis-connection', event => {
     const next = event.detail && event.detail.token || null;
     if (next === token) return;
-    token = next; generation++; loading = false; reload.disabled = false;
+    token = next; generation++; loading = false; reload.disabled = false; fold.open = false;
     panel.hidden = !token; clear(); showNotice(); showSections(true);
     if (token) load();
   });
