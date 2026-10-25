@@ -101,6 +101,59 @@ def test_snapshot_exposes_whitelisted_fields_only(guard, config):
     assert paused['paused'] is True and paused['effective_enabled'] is False and paused['config_enabled'] is True
 
 
+def test_recent_runs_show_model_and_only_known_result_codes(guard, config):
+    ledger = DispatchLedger(guard)
+    notes = ['executable not found', 'all models backed off', 'cursor-20261026.log',
+             'OSError: C:\\Users\\someone\\secret path']
+    for note in notes:
+        run_id = ledger.start('cursor', pid=None)
+        ledger.set_model(run_id, 'gpt-free')
+        ledger.finish(run_id, status='error', exit_code=None, input_tokens=None, output_tokens=None, note=note)
+    state = dispatch_control.snapshot(guard, config)
+    results = [row['result'] for row in reversed(state['recent'])]
+    assert results == ['executable_missing', 'models_backed_off', None, None]
+    assert {row['model'] for row in state['recent']} == {'gpt-free'}
+    assert 'secret' not in json.dumps(state) and '.log' not in json.dumps(state)
+
+
+class _Created:
+    def __init__(self, created):
+        self.created = created
+
+    def create_time(self):
+        return self.created
+
+
+def test_working_runs_are_observed_without_settling_the_ledger(guard, config):
+    old = DispatchLedger(guard, clock=lambda: 500.0)
+    stale = old.start('opencode', pid=None)  # no pid long after the start
+    ledger = DispatchLedger(guard, clock=lambda: 1000.0)
+    spawning = ledger.start('codex', pid=None)
+    alive, gone, denied = (ledger.start(name, pid=None) for name in ('cursor', 'claude-code', 'gemini'))
+    for run_id, pid in ((alive, 111), (gone, 222), (denied, 333)):
+        ledger.set_pid(run_id, pid)
+    ledger.set_model(alive, 'gpt-free')
+
+    def lookup(pid):
+        if pid == 333:
+            raise psutil.AccessDenied(pid)
+        return _Created(900.0)
+
+    state = dispatch_control.snapshot(guard, config, clock=lambda: 1050.0, alive=lambda pid: pid != 222, lookup=lookup)
+    by_id = {item['id']: item for item in state['working']}
+    assert {run_id: item['state'] for run_id, item in by_id.items()} == {
+        stale: 'unknown', spawning: 'starting', alive: 'working', gone: 'ended', denied: 'unknown'}
+    assert by_id[alive] == {'id': alive, 'employee': 'cursor', 'model': 'gpt-free', 'started': 1000.0, 'state': 'working'}
+    assert set(by_id[gone]) == {'id', 'employee', 'model', 'started', 'state'}  # no pid or note
+    # Reading never closes a row: the dead owner's run is still 'running' in the ledger.
+    with ledger.connection() as db:
+        assert db.execute('SELECT status FROM runs WHERE id=?', (gone,)).fetchone()[0] == 'running'
+
+
+def test_working_is_empty_when_nothing_runs(guard, config):
+    assert dispatch_control.snapshot(guard, config)['working'] == []
+
+
 def test_api_requires_token_origin_and_host(client):
     assert client.get('/api/dispatcher').status_code == 401
     assert client.get('/api/dispatcher', headers={**AUTH, 'Origin': 'https://example.org'}).status_code == 403
