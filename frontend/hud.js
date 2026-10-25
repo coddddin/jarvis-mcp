@@ -25,8 +25,8 @@ async function loadProcesses(){
     const descriptions={parent_exited:'실행한 부모 프로그램 종료',parent_unverifiable:'부모 상태 확인 불가',runtime_exceeded:'설정된 실행 시간 초과',clock_regressed:'시각 확인 필요',process_unverifiable:'실행 상태 확인 불가',process_pid_reused:'프로세스 번호 재사용'};
     const warnings=data.processes.filter(item=>Array.isArray(item.warnings)&&item.warnings.length);
     const message=warnings.slice(0,3).map(item=>item.label+' (PID '+item.pid+'): '+item.warnings.map(code=>descriptions[code]||'상태 확인 필요').join(', ')).join(' · ');
-    processNotice(warnings.length||data.has_more?'프로세스 확인: '+message+(warnings.length>3?' · 추가 경고 '+(warnings.length-3)+'개':'')+(data.has_more?' · 등록 목록 일부만 확인':'')+' · 자동 종료하지 않습니다.':'');
-  }catch(error){if(state.token===token&&!state.demo)processNotice('프로세스 감시 상태를 가져오지 못했어요. 정상 여부는 확인되지 않았습니다.');}
+    processNotice(warnings.length||data.has_more?'확인이 필요한 프로그램: '+message+(warnings.length>3?' 외 '+(warnings.length-3)+'개':'')+(data.has_more?' · 일부만 확인함':'')+' · 자동으로 끄지 않아요.':'');
+  }catch(error){if(state.token===token&&!state.demo)processNotice('실행 중인 프로그램 목록을 가져오지 못했어요.');}
   finally{processPollBusy=false;}
 }
 window.addEventListener('jarvis-connection',event=>{if(event.detail.token)loadProcesses();else processNotice();});
@@ -34,37 +34,33 @@ setInterval(loadProcesses,30000);
 // Service roles use only existing read APIs. A missing observation is never an offline verdict.
 const serviceOverview = (() => {
   const panel=element('section','collaboration-panel panel');
-  panel.id='serviceOverview'; panel.setAttribute('aria-label','서비스별 역할과 확인 상태');
+  panel.id='serviceOverview'; panel.setAttribute('aria-label','자비스 준비 상태');
   panel.append(element('h2','','자비스가 일하려면'), element('p','muted small',
-    'Ollama만 켜면 자동 업무가 시작되는 것은 아니에요. 모델 서버, 대화·작업 화면, 자동 배정은 각각 준비되어야 해요.'));
+    '셋이 모두 준비돼야 자비스가 일해요. Ollama만 켠다고 자동 업무가 시작되지는 않아요.'));
   const cards=element('div','collaboration-agents');
   function card(title, role, reason, action) {
-    const box=element('article','collaboration-agent'), status=element('p','status','미확인');
+    const box=element('article','collaboration-agent'), status=element('p','status','알 수 없음');
     const detail=element('p','muted small',reason), next=element('p','small',action);
     box.append(element('h3','',title),element('p','muted small',role),status,detail,next); cards.append(box);
     return {status,detail,next};
   }
-  const modelCard=card('Ollama · 모델 서버','로컬 AI가 답변을 만드는 데 필요해요.',
-    '연결 전에는 모델 서버를 확인하지 않아요. 모델 이름이나 화면 연결만으로 실행 여부를 판단하지 않아요.',
-    '다음: 연결 파일을 선택하면 모델 서버의 마지막 관찰 결과를 보여 드려요.');
-  const hudCard=card('자비스 · 대화와 작업 화면','대화하고 작업 기록을 확인하는 창이에요.',
-    '아직 작업 기록에 연결하지 않았어요. 채팅 응답 가능 여부는 별도로 확인해야 해요.',
-    '다음: 자비스 화면을 실행한 뒤 연결 파일을 선택하세요.');
-  const dispatchCard=card('디스패처 · 자동 배정','받은 일을 직원에게 자동으로 배정해요.',
-    '연결 후 서비스 기록을 조회할 수 있어요. 설정의 켜짐과 실제 실행은 달라요.',
-    '다음: 연결 후 자동 배정 서비스와 설정을 확인하세요.');
-  panel.append(cards,element('p','muted small','표시된 상태는 마지막 확인 근거입니다. 직원 가용성, 작업 성공, 검증 통과를 보장하지 않아요.'));
+  const modelCard=card('Ollama · 모델 서버','로컬 AI가 답변을 만드는 데 필요해요.','연결하면 확인해요.','');
+  const hudCard=card('자비스 · 대화와 작업 화면','대화하고 작업 기록을 보는 이 창이에요.','아직 연결하지 않았어요.',
+    '다음: 연결 파일을 선택하세요.');
+  const dispatchCard=card('디스패처 · 자동 배정','받은 일을 직원에게 자동으로 나눠 줘요.','연결하면 확인해요.','');
+  // One footnote for the whole panel instead of a disclaimer on every card. Unknown never means off.
+  panel.append(cards,element('p','muted small','마지막으로 확인한 상태예요. 확인하지 못하면 "알 수 없음"으로 보여요. 꺼졌다는 뜻은 아니에요.'));
   $('processNotice').after(panel);
   let token=null, version=0, pending=null;
   function unknown(reason) {
-    dispatchCard.status.textContent='미확인'; dispatchCard.status.className='status';
+    dispatchCard.status.textContent='알 수 없음'; dispatchCard.status.className='status';
     dispatchCard.detail.textContent=reason;
-    dispatchCard.next.textContent='다음: 연결 파일과 자비스 실행 상태를 확인하고 새로고침하세요.';
+    dispatchCard.next.textContent='';
   }
   async function refresh() {
     if(!token||document.hidden||pending)return;
     const selected=token, revision=version, request=new AbortController(); pending=request;
-    unknown('서비스 기록을 확인하고 있어요.');
+    unknown('확인하고 있어요.');
     const timeout=setTimeout(()=>request.abort(),8000);
     try {
       const response=await fetch('/api/dispatcher',{headers:{Authorization:'Bearer '+selected},
@@ -75,13 +71,13 @@ const serviceOverview = (() => {
       if(typeof data?.service?.running!=='boolean'||typeof data.config_enabled!=='boolean'
         ||typeof data.paused!=='boolean'||!Number.isFinite(data.read_at))throw new Error('invalid_snapshot');
       const service=data.service;
-      const reasons={matching_pid:'등록 기록에 맞는 프로세스가 관찰됐어요.',
-        process_missing:'등록 기록의 프로세스가 종료된 것으로 관찰됐어요.',
-        missing_record:'서비스 등록 기록이 없어요. 별도로 실행한 프로그램의 상태는 알 수 없어요.',
-        invalid_record:'서비스 기록의 형식을 확인할 수 없어요.',
+      const reasons={matching_pid:'서비스가 실행 중이에요.',
+        process_missing:'서비스가 멈췄어요.',
+        missing_record:'서비스를 시작한 기록이 없어요. 따로 실행한 프로그램은 여기서 보이지 않아요.',
+        invalid_record:'서비스 기록의 형식이 맞지 않아요.',
         unreadable_record:'서비스 기록을 읽을 수 없어요.',
-        process_unreadable:'등록된 프로세스를 확인할 수 없어요.',
-        pid_reused:'프로세스 번호가 다른 실행에 사용되어 자비스 서비스인지 확인할 수 없어요.'};
+        process_unreadable:'서비스 프로그램을 확인할 수 없어요.',
+        pid_reused:'기록된 번호를 다른 프로그램이 쓰고 있어요. 자비스 서비스가 아닐 수 있어요.'};
       const allowed={running:['matching_pid'],stopped:['process_missing'],not_registered:['missing_record'],
         unknown:['invalid_record','unreadable_record','process_unreadable'],identity_mismatch:['pid_reused']};
       // Old servers expose only the boolean. Explicit new statuses must never fall back to it.
@@ -89,31 +85,35 @@ const serviceOverview = (() => {
       const validStatus=!legacy&&service.source==='observed'&&allowed[service.status]?.includes(service.reason)
         &&service.running===(service.status==='running');
       const observedRunning=legacy?service.running:validStatus&&service.status==='running';
-      const label=legacy?(service.running?'서비스 실행 관찰':'실행 확인 안 됨')
-        :!validStatus?'미확인':({running:'서비스 실행 관찰',stopped:'등록 프로세스 종료 관찰',
-          not_registered:'등록 기록 없음 · 실행 미확인',unknown:'미확인',identity_mismatch:'실행 신원 미확인'})[service.status];
-      const reason=legacy?(service.running?'서비스 프로세스가 관찰됐어요.'
-        :'실행 중인 서비스 기록을 확인하지 못했어요. 미등록 또는 중지 상태일 수 있어요.')
-        :validStatus?reasons[service.reason]:'서비스 상태 응답을 해석할 수 없어요. 실행 여부는 미확인이에요.';
-      const setting=!data.config_enabled?'자동 배정 설정 꺼짐':data.paused?'자동 배정 일시정지':'자동 배정 설정 켜짐';
+      const label=legacy?(service.running?'실행 중':'실행 안 보임')
+        :!validStatus?'알 수 없음':({running:'실행 중',stopped:'멈춤',
+          not_registered:'등록 기록 없음',unknown:'알 수 없음',identity_mismatch:'다른 프로그램일 수 있음'})[service.status];
+      const reason=legacy?(service.running?'서비스가 실행 중이에요.'
+        :'돌아가는 서비스가 보이지 않아요. 시작하지 않았거나 멈췄을 수 있어요.')
+        :validStatus?reasons[service.reason]:'서버 응답을 이해하지 못했어요.';
+      const setting=!data.config_enabled?'설정 꺼짐':data.paused?'일시정지':'설정 켜짐';
       dispatchCard.status.textContent=label;
       dispatchCard.status.className='status '+(observedRunning?'completed':'needs_user_input');
-      dispatchCard.detail.textContent=setting+' · 마지막 조회 '+stamp(data.read_at)
-        +' · '+reason+(observedRunning?' 실제 업무 진행은 작업 기록에서 확인하세요.':'');
-      dispatchCard.next.textContent=!observedRunning?'다음: 자동 배정 서비스의 등록·실행 여부를 확인하세요. Ollama 실행만으로 시작되지 않아요.'
-        :!data.config_enabled?'다음: 자동 배정을 원하면 담당자에게 설정 확인을 요청하세요.'
-        :data.paused?'다음: 작업 현황의 자동 순환 패널에서 재개 여부를 결정하세요.'
-        :'다음: 작업 현황에서 배정 결과와 직원별 제한을 확인하세요.';
+      dispatchCard.detail.textContent=setting+' · '+stamp(data.read_at)+' 확인 · '+reason;
+      // Ask to start only when the service is observed off. Unknown or a reused number may still be running.
+      const observedOff=validStatus&&(service.status==='stopped'||service.status==='not_registered');
+      dispatchCard.next.textContent=observedOff?'다음: 자동 배정 서비스를 시작하세요.'
+        :legacy&&!service.running?'다음: 자동 배정 서비스가 켜져 있는지 확인하세요.'
+        :validStatus&&service.status==='identity_mismatch'?'다음: 작업 관리자에서 그 번호의 프로그램을 확인하세요.'
+        :!observedRunning?'다음: 잠시 뒤 다시 확인해요.'
+        :!data.config_enabled?'다음: 자동 배정을 쓰려면 설정을 켜세요.'
+        :data.paused?'다음: 작업 현황에서 다시 시작할지 정하세요.'
+        :'다음: 작업 현황에서 배정 결과를 보세요.';
     } catch(error) {
-      if(selected===token&&revision===version)unknown('조회하지 못했어요. 이전 상태는 현재 실행 근거로 사용할 수 없어요. 서비스가 꺼졌다고 단정할 수는 없어요.');
+      if(selected===token&&revision===version)unknown('상태를 가져오지 못했어요.');
     } finally {clearTimeout(timeout);if(pending===request)pending=null;}
   }
   // Ollama card: last /api/tags observation only. Installed is not loaded, inference-ready or chat success.
   let modelPending=null;
   function modelUnknown(reason) {
-    modelCard.status.textContent='미확인'; modelCard.status.className='status';
+    modelCard.status.textContent='알 수 없음'; modelCard.status.className='status';
     modelCard.detail.textContent=reason;
-    modelCard.next.textContent='다음: Ollama 실행 상태를 확인하고 잠시 후 다시 확인하세요.';
+    modelCard.next.textContent='';
   }
   async function refreshModel() {
     if(!token||document.hidden||modelPending)return;
@@ -133,42 +133,41 @@ const serviceOverview = (() => {
       if(data?.source!=='observed'||!Number.isFinite(data.observed_at)||typeof data.model!=='string'||!data.model
         ||!own(allowed,data.status)||!own(allowed[data.status],data.reason)
         ||allowed[data.status][data.reason]!==data.model_installed)throw new Error('invalid_status');
-      const reasons={model_listed:'설치 목록에 설정된 모델이 있어요.',model_not_listed:'설치 목록에 설정된 모델이 없어요.',
-        connection_refused:'모델 서버가 연결을 거부했어요. 실행 중이 아닐 수 있어요.',timeout:'응답을 기다리다 확인하지 못했어요.',
-        http_error:'모델 서버가 정상 응답을 주지 않았어요.',unsupported_encoding:'응답 형식을 확인할 수 없어요.',
-        response_too_large:'응답이 너무 커서 확인하지 않았어요.',malformed_response:'응답 형식을 확인할 수 없어요.',
-        connection_error:'모델 서버 연결을 확인하지 못했어요.'};
+      const reasons={model_listed:'모델이 설치돼 있어요.',model_not_listed:'모델이 설치돼 있지 않아요.',
+        connection_refused:'Ollama가 꺼져 있는 것 같아요.',timeout:'응답이 너무 늦었어요.',
+        http_error:'Ollama가 오류를 돌려줬어요.',unsupported_encoding:'응답을 이해하지 못했어요.',
+        response_too_large:'응답이 너무 컸어요.',malformed_response:'응답을 이해하지 못했어요.',
+        connection_error:'Ollama에 연결하지 못했어요.'};
       const installed=data.status==='responding'&&data.model_installed;
-      modelCard.status.textContent=data.status==='responding'?(installed?'서버 응답 · 모델 설치 확인':'서버 응답 · 모델 없음')
-        :data.status==='connection_refused'?'연결 안 됨':'미확인';
+      modelCard.status.textContent=data.status==='responding'?(installed?'실행 중 · 모델 있음':'실행 중 · 모델 없음')
+        :data.status==='connection_refused'?'연결 안 됨':'알 수 없음';
       modelCard.status.className='status'+(installed?' completed':data.status==='unknown'?'':' needs_user_input');
-      modelCard.detail.textContent='마지막 확인 '+stamp(data.observed_at)+' · 모델 '+data.model+' · '+reasons[data.reason]
-        +' 마지막 관찰일 뿐 모델 로딩이나 답변 가능 여부를 확인한 것은 아니에요.';
-      modelCard.next.textContent=installed?'다음: 실제 답변 가능 여부는 대화 탭에서 확인하세요.'
-        :data.status==='responding'?'다음: 설정된 모델을 직접 설치했는지 확인하세요. 자동으로 내려받지 않아요.'
-        :'다음: Ollama 실행 상태를 확인하고 잠시 후 다시 확인하세요.';
+      modelCard.detail.textContent=data.model+' · '+stamp(data.observed_at)+' 확인 · '+reasons[data.reason];
+      modelCard.next.textContent=installed?'다음: 대화 탭에서 물어보세요.'
+        :data.status==='responding'?'다음: 터미널에서 ollama pull '+data.model+' 로 설치하세요. 자동으로 받지 않아요.'
+        :data.status==='connection_refused'?'다음: Ollama를 실행하세요.'
+        :'다음: 잠시 뒤 다시 확인해요.';  // unknown may still be running: never ask to start it
     } catch(error) {
       if(selected===token&&revision===version)modelUnknown(error.message==='old_server'
-        ?'이 자비스 화면 서버는 모델 서버 확인을 지원하지 않아요. 화면 서버를 다시 시작하면 확인할 수 있어요.'
-        :'모델 서버 상태를 조회하지 못했어요. 이전 상태는 현재 근거로 사용할 수 없고, 꺼졌다고 단정할 수도 없어요.');
+        ?'이 자비스 화면은 예전 버전이에요. 다시 시작하면 확인할 수 있어요.'
+        :'상태를 가져오지 못했어요.');
     } finally {clearTimeout(timeout);if(modelPending===request)modelPending=null;}
   }
   window.addEventListener('jarvis-connection',event=>{
     const next=event.detail.token||null;
     if(next!==token){version++;pending?.abort();pending=null;modelPending?.abort();modelPending=null;token=next;
-      modelUnknown(token?'모델 서버 상태를 확인하고 있어요.':'실제 서비스에 연결하지 않았어요. 모델 서버 상태는 미확인이에요.');}
-    if(token){refresh();refreshModel();}else unknown('실제 서비스에 연결하지 않았어요. 샘플 기록으로 실행 여부를 알 수 없어요.');
+      modelUnknown(token?'확인하고 있어요.':'연결하면 확인해요.');}
+    if(token){refresh();refreshModel();}else unknown('연결하면 확인해요.');
   });
   document.addEventListener('visibilitychange',()=>{if(!document.hidden){refresh();refreshModel();}});
   setInterval(()=>Promise.all([refresh(),refreshModel()]),30000);
   return {hud(text,mode){
-    hudCard.status.textContent=mode==='connected'?'작업 기록 연결 확인':mode==='demo'?'샘플 · 실제 상태 미확인':'미확인';
+    hudCard.status.textContent=mode==='connected'?'연결됨':mode==='demo'?'샘플':'알 수 없음';
     hudCard.status.className='status';
-    hudCard.detail.textContent=mode==='connected'?'최근 연결 확인 '+stamp(Date.now()/1000)+' · 작업 기록 연결의 근거예요. 모델 서버와 채팅 응답 준비를 확인한 것은 아니에요.'
-      :mode==='demo'?'예시 화면이에요. 실제 자비스나 직원의 실행 상태를 나타내지 않아요.'
-      :'화면 연결: '+text+' · 서비스가 꺼졌다고 단정할 수는 없어요.';
-    hudCard.next.textContent=mode==='connected'?'다음: 대화 탭에서 채팅 연결 안내를 확인하세요. 자동 업무는 디스패처 상태도 확인해야 해요.'
-      :'다음: 자비스 화면을 실행한 뒤 연결 파일을 선택하세요.';
+    hudCard.detail.textContent=mode==='connected'?stamp(Date.now()/1000)+' 연결 · 답변하려면 Ollama 카드도 준비돼야 해요.'
+      :mode==='demo'?'예시 화면이에요. 실제 상태가 아니에요.'
+      :'화면 연결: '+text;
+    hudCard.next.textContent=mode==='connected'?'':'다음: 연결 파일을 선택하세요.';
   }};
 })();
 function connection(text, mode=''){ $('connectionLabel').textContent=text; $('connectionDot').className='dot '+mode; serviceOverview.hud(text, mode); }

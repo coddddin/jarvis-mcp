@@ -59,7 +59,7 @@ test('panel stays hidden until connected, then loads with the connection token',
   assert.match(text, /서비스 실행 중 \(PID 4242\)/);
   assert.match(text, /10분마다/);
   assert.match(text, /codex · 실행 3회 · 한도 대기/);
-  assert.match(text, /입력 12,000 · 출력 3,400 토큰 \(사용량 품질 미확인\)/);  // old server: totals only
+  assert.match(text, /입력 12,000 · 출력 3,400 토큰 \(정확도 알 수 없음\)/);  // old server: totals only
 });
 
 // PR21 server shape for one employee; usage_quality_runs is replaced whole when given.
@@ -77,10 +77,10 @@ async function employeeRow(item, name = 'codex') {
 
 test('all-missing usage stays a dash marked unreported, never 0', async () => {
   const {row, list} = await employeeRow(quality({usage_quality_runs:{measured:0, partial:0, unknown:0, missing:3, unrecorded:0}}));
-  assert.match(row, /입력 — 미보고 \(보고 0\/3회\) · 출력 — 미보고 \(보고 0\/3회\) 토큰/);
+  assert.match(row, /입력 — 모름 \(보고 0\/3회\) · 출력 — 모름 \(보고 0\/3회\) 토큰/);
   assert.match(row, /품질 보고 없음 3/);
   assert.doesNotMatch(row, /입력 0|출력 0/);
-  assert.match(list, /실행 전체를 관측했다는 뜻은 아닙니다/);
+  assert.match(list, /"모름"은 0이 아니라/);
 });
 
 test('an explicitly measured 0 stays 0', async () => {
@@ -88,7 +88,7 @@ test('an explicitly measured 0 stays 0', async () => {
     known_input_tokens:0, known_input_runs:1, known_output_tokens:0, known_output_runs:1}));
   assert.match(row, /입력 0 \(보고 1\/1회\) · 출력 0 \(보고 1\/1회\) 토큰/);
   assert.match(row, /품질 측정 1/);
-  assert.doesNotMatch(row, /미보고|미확인/);
+  assert.doesNotMatch(row, /모름|알 수 없음/);
 });
 
 test('partial usage shows per-side coverage, quality counts and pre-quality numbers apart', async () => {
@@ -98,20 +98,20 @@ test('partial usage shows per-side coverage, quality counts and pre-quality numb
     unrecorded_input_tokens:700, unrecorded_output_tokens:null}));
   assert.match(row, /입력 1,500 \(보고 2\/3회\) · 출력 300 \(보고 1\/3회\) 토큰/);
   assert.match(row, /품질 측정 1, 일부 보고 1, 보고 없음 1, 기록 안 됨 1/);
-  assert.match(row, /품질 기록 전 입력 700 · 출력 — \(품질 미확인\)/);
+  assert.match(row, /품질 기록 전 입력 700 · 출력 — \(정확도 알 수 없음\)/);
   assert.doesNotMatch(row, /2,200/);  // the old mixed total is not shown as measured
 });
 
 test('older servers and half-new shapes fall back to totals labeled unverified', async () => {
   let {row} = await employeeRow({runs:2, total_input_tokens:0, total_output_tokens:0});
-  assert.match(row, /입력 0 · 출력 0 토큰 \(사용량 품질 미확인\)/);
+  assert.match(row, /입력 0 · 출력 0 토큰 \(정확도 알 수 없음\)/);
   assert.doesNotMatch(row, /측정|보고 \d/);
   ({row} = await employeeRow({runs:2, total_input_tokens:50, total_output_tokens:5, usage_quality_runs:{measured:2}}));
-  assert.match(row, /입력 50 · 출력 5 토큰 \(사용량 품질 미확인\)/);
+  assert.match(row, /입력 50 · 출력 5 토큰 \(정확도 알 수 없음\)/);
   ({row} = await employeeRow(quality({usage_quality_runs:{measured:0, partial:0, unknown:0, missing:0, unrecorded:3},
     unrecorded_input_tokens:900, unrecorded_output_tokens:80})));
-  assert.match(row, /입력 — 미보고 · 출력 — 미보고 토큰/);  // no recorded run: no coverage fraction
-  assert.match(row, /품질 기록 안 됨 3 \/ 품질 기록 전 입력 900 · 출력 80 \(품질 미확인\)/);
+  assert.match(row, /입력 — 모름 · 출력 — 모름 토큰/);  // no recorded run: no coverage fraction
+  assert.match(row, /품질 기록 안 됨 3 \/ 품질 기록 전 입력 900 · 출력 80 \(정확도 알 수 없음\)/);
 });
 
 test('recent runs show Korean quality labels; null and invalid values are never shown raw', async () => {
@@ -128,9 +128,9 @@ test('recent runs show Korean quality labels; null and invalid values are never 
   assert.match(rows[1], /사용량 보고 없음/);
   assert.doesNotMatch(rows[1], /입력/);
   assert.match(rows[2], /사용량 기록 안 됨/);
-  assert.match(rows[3], /사용량 품질 미확인/);
-  assert.match(rows[4], /사용량 품질 미확인/);
-  assert.match(rows[5], /사용량 품질 미확인/);  // older server without the key
+  assert.match(rows[3], /사용량 정확도 알 수 없음/);
+  assert.match(rows[4], /사용량 정확도 알 수 없음/);
+  assert.match(rows[5], /사용량 정확도 알 수 없음/);  // older server without the key
   assert.doesNotMatch(flatten(recent), /<b>x<\/b>|constructor|function/);
 });
 
@@ -139,7 +139,7 @@ test('employee names and odd token values stay plain text', async () => {
     unrecorded:0}, known_input_tokens:'<img src=x>', known_input_runs:1, known_output_tokens:-5, known_output_runs:1}),
   '<img src=x onerror=1>');
   assert.match(row, /<img src=x onerror=1> · 실행 1회/);  // the name is textContent, never parsed
-  assert.match(row, /입력 — 미보고 \(보고 1\/1회\) · 출력 — 미보고 \(보고 1\/1회\)/);
+  assert.match(row, /입력 — 모름 \(보고 1\/1회\) · 출력 — 모름 \(보고 1\/1회\)/);
   assert.match(row, /품질 보고 없음 1/);
   assert.doesNotMatch(row, /<b>1<\/b>|<img src=x>|-5|-2/);
   assert.doesNotMatch(fs.readFileSync('frontend/dispatcher.js', 'utf8'), /innerHTML|insertAdjacentHTML/);
@@ -289,7 +289,7 @@ test('last observed usage shows per employee with stale marking; absent keeps it
   assert.match(text, /codex · 5시간 81% · 주간 44%/);
   assert.match(text, /<b>x<\/b> · 5시간 24%/);
   assert.match(text, /오래됨/);
-  assert.match(text, /판단에는 쓰지 않음/);
+  assert.match(text, /배정에 쓰지 않아요/);
 });
 
 test('todays alerts show as plain text; none keeps the section hidden', async () => {
@@ -340,10 +340,10 @@ test('service status is told apart: not registered, stopped, identity and unknow
   assert.equal(list().hidden, true);
   assert.match(await show({running:false, pid:null, started:100, status:'stopped', reason:'process_missing', source:'observed'}), /서비스 멈춤/);
   assert.match(await show({running:false, pid:null, started:100, status:'identity_mismatch', reason:'pid_reused', source:'observed'}),
-    /서비스 신원 미확인/);
+    /다른 프로그램일 수 있음/);
   text = await show({running:false, pid:null, started:null, status:'unknown', reason:'invalid_record', source:'observed'});
-  assert.match(text, /서비스 상태 미확인/);
+  assert.match(text, /서비스 상태 알 수 없음/);
   assert.doesNotMatch(text, /서비스 멈춤/);
   assert.match(await show({running:false, pid:null, started:null}), /서비스 멈춤/);          // old server: boolean only
-  assert.match(await show({running:false, pid:null, started:null, status:'<b>odd</b>'}), /서비스 상태 미확인/);
+  assert.match(await show({running:false, pid:null, started:null, status:'<b>odd</b>'}), /서비스 상태 알 수 없음/);
 });

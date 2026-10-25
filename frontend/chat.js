@@ -150,12 +150,12 @@
           reconciliation_required: '이전 호출의 완료 여부를 먼저 확인해야 해.',
           deadline_exceeded: '요청 시간이 초과됐어.', selected: '조건에 맞는 무료 후보를 선택했어.'};
         if (turn.dispatch.selection?.status) dispatch.append(node('p', '', selectionLabels[turn.dispatch.selection.status] || '배정 기록을 확인해줘.'));
-        const reasons = {unavailable:'실행 준비 안 됨', access_not_verified:'실제 접근 미확인',
+        const reasons = {unavailable:'실행 준비 안 됨', access_not_verified:'접근 확인 안 됨',
           verification_expired:'접근 확인 만료', authentication_required:'인증 필요',
           cost_not_allowed:'무료 조건 불일치', quota_exhausted:'한도 소진', capability_mismatch:'작업 종류 불일치', input_budget_exceeded:'입력 한도 초과'};
         for (const rejected of turn.dispatch.selection?.rejected || []) dispatch.append(node('p', '', rejected.id + ' · ' + (reasons[rejected.reason] || '조건 확인 필요')));
         for (const attempt of turn.dispatch.budget?.attempts || []) dispatch.append(node('p', '',
-          attempt.provider_id + ' · ' + ({reserved:'호출 예약됨',completed:'응답 수신',failed:'실패 확인',unknown:'완료 여부 미확인'}[attempt.status] || '확인 필요') +
+          attempt.provider_id + ' · ' + ({reserved:'호출 예약됨',completed:'응답 수신',failed:'실패 확인',unknown:'완료 여부 알 수 없음'}[attempt.status] || '확인 필요') +
           ' · 예약 ' + attempt.reserved_tokens));
         if (!turn.assistant && turn.dispatch.reply) dispatch.append(node('pre', '', turn.dispatch.reply));
         dispatch.append(node('p', '', '유료 모델·로컬 모델로 자동 전환하지 않아.'));
