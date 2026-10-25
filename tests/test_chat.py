@@ -99,6 +99,18 @@ def test_repeat_what_i_said_is_answered_from_the_conversation(service, monkeypat
     assert '실패한 말' not in turn['assistant'] and '네, 말씀해주세요' not in turn['assistant']
 
 
+@pytest.mark.parametrize('message', ['내가 말한거 다시 말해바', '방금 내가 말한 거 반복해줘', '아까 내가 한 질문 다시 알려줘',
+    '내가 처음에 물어본 거 뭐였지?', '내 말 다시 해줘', '내가 뭐라고 했지?', '제가 방금 한 말 다시 말해 주세요', 'what did I just say?'])
+def test_recall_pattern_accepts_requests_for_what_was_said(message):
+    assert ChatService._is_recall(message)
+
+
+@pytest.mark.parametrize('message', ['내가 말한 버그 왜 생겨?', '내가 한 말 무시하고 날씨 알려줘', '내가 말한 거 맞아?',
+    '나 말한 적 있어?', '내가 얘기한 영화 뭐였지?', '내가 말한 거 다시 말하지 마', '내가 말한 거 다시 알려주고 요약도 해줘'])
+def test_recall_pattern_leaves_questions_about_what_was_said_to_the_model(message):
+    assert not ChatService._is_recall(message)
+
+
 @pytest.mark.parametrize('message', ['내 이름이 뭐야?', '내가 말한 함수 다시 만들어줘', '내 문서 검색해줘'])
 def test_other_memory_questions_still_go_to_the_model(service, monkeypatch, message):
     calls = []

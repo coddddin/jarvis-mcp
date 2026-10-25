@@ -362,15 +362,21 @@ class ChatService:
             used += size
         return history
 
-    RECALL = re.compile(r'(?:내가|제가|나|내)\s*(?:아까|방금|전에|앞에서|처음에)?\s*(?:뭐라고|무슨\s*말|말한|말했던|한\s*말|했던\s*말|얘기한)'
-                        r'|\bwhat\s+did\s+i\s+(?:just\s+)?(?:say|ask)\b|\brepeat\s+what\s+i\s+(?:said|asked)\b', re.I)
-    RECALL_ASK = re.compile(r'다시|뭐|무엇|무슨|기억|알려|말해|\?|\bwhat\b|\brepeat\b', re.I)
-    RECALL_TASK = re.compile(r'구현|만들|작성|코드|함수|검색|찾아|요약|번역|분석|실행|고쳐|수정', re.I)
+    # The whole message must be the request, and its object must be what the user said itself ("내가 말한 거"),
+    # not something they mentioned ("내가 말한 버그 왜 생겨?"); those go to the model with the history.
+    _WHEN = r'(?:(?:아까|방금|전에|앞에서|처음에|마지막에)\s*)?'
+    _SAID = r'(?:말한|말했던|한|했던|물어본|물었던|얘기한|질문한)\s*(?:거|것|게|말|질문|내용)(?:을|를|이|가|은|는)?\s*'
+    RECALL = re.compile(
+        r'\s*' + _WHEN + r'(?:'
+        r'(?:내가|제가|나)\s*' + _WHEN + _SAID + r'(?:다시\s*)?(?:말해|알려|보여|반복|읊어|해|뭐였|뭐야|뭐지)'
+        r'|(?:내가|제가)\s*' + _WHEN + r'뭐라고\s*(?:했|말했|물어봤|물었|그랬)'
+        r'|내\s*말\s*(?:을\s*)?(?:다시|반복)\s*(?:말해|해)?'
+        r')(?:[해하줘줄래주세요봐바요지어야더라죠나했니냐]|\s)*[?!.~\s]*'
+        r'|\s*(?:what\s+did\s+i\s+(?:just\s+)?(?:say|ask)|repeat\s+what\s+i\s+(?:just\s+)?(?:said|asked))[?!.\s]*', re.I)
 
     @classmethod
     def _is_recall(cls, message):
-        return (len(message) <= 40 and bool(cls.RECALL.search(message)) and bool(cls.RECALL_ASK.search(message))
-                and not cls.RECALL_TASK.search(message))
+        return len(message) <= 40 and cls.RECALL.fullmatch(message) is not None
 
     @classmethod
     def _recall_reply(cls, message, turns, request_id):
