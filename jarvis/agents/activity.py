@@ -65,7 +65,8 @@ class ActivityStore:
             db.execute('CREATE TABLE IF NOT EXISTS events('
                        'event_id INTEGER PRIMARY KEY AUTOINCREMENT,run_id TEXT,seq INTEGER,'
                        'payload TEXT NOT NULL,digest TEXT NOT NULL,received_at REAL NOT NULL,UNIQUE(run_id,seq))')
-            if 'terminal_seq' not in {row['name'] for row in db.execute('PRAGMA table_info(runs)')}:
+            columns = {row['name'] for row in db.execute('PRAGMA table_info(runs)')}
+            if 'terminal_seq' not in columns:
                 db.execute('ALTER TABLE runs ADD COLUMN terminal_seq INTEGER')
                 # Preserve old facts and repair existing out-of-order terminal reports.
                 for row in db.execute('SELECT run_id,seq,payload FROM events ORDER BY seq'):
@@ -73,6 +74,10 @@ class ActivityStore:
                         db.execute('UPDATE runs SET terminal_seq=? WHERE id=? '
                                    'AND (terminal_seq IS NULL OR terminal_seq>?)',
                                    (row['seq'], row['run_id'], row['seq']))
+            # Nullable lineage. Runs registered before it keep NULL (unknown); nothing is inferred.
+            for column in ('parent_run_id', 'step_id', 'retry_of', 'lineage'):
+                if column not in columns:
+                    db.execute('ALTER TABLE runs ADD COLUMN ' + column + ' TEXT')
 
     @contextmanager
     def connection(self, *, write=True):
@@ -118,10 +123,15 @@ class ActivityStore:
             raise ActivityError('Invalid activity identifier.')
         return value
 
-    def register(self, owner, task_id, pid=None):
+    def register(self, owner, task_id, pid=None, *, parent_run_id=None, step_id=None, retry_of=None):
         """Trusted local launcher only. Never expose registration as a public HTTP route."""
         self.guard.check_running()
         self._id(task_id)
+        for link in (parent_run_id, retry_of):
+            if link is not None and (type(link) is not str or not re.fullmatch('[a-f0-9]{32}', link)):
+                raise ActivityError('Invalid activity lineage.')
+        if step_id is not None and (type(step_id) is not str or not re.fullmatch('[A-Za-z0-9_-]{1,48}', step_id)):
+            raise ActivityError('Invalid activity step.')
         if (not isinstance(owner, str) or not re.fullmatch('[a-z][a-z0-9-]{1,31}:[A-Za-z0-9._-]{1,48}', owner)
                 or owner.split(':', 1)[0] not in self.prefixes or owner.startswith('user:')):
             raise ActivityError('Invalid activity owner.')
@@ -144,12 +154,23 @@ class ActivityStore:
         with self.connection() as db:
             if db.execute('SELECT COUNT(*) FROM runs').fetchone()[0] >= self.MAX_RUNS:
                 raise ActivityError('Run capacity reached; nothing was removed.')
+            # Links only point back to existing runs of this task, so cycles cannot form.
+            if parent_run_id is not None and db.execute('SELECT 1 FROM runs WHERE id=? AND task_id=?',
+                                                        (parent_run_id, task_id)).fetchone() is None:
+                raise ActivityError('Parent run not found in this task.')
+            if retry_of is not None:
+                prior = db.execute('SELECT * FROM runs WHERE id=? AND task_id=?', (retry_of, task_id)).fetchone()
+                if (prior is None or prior['lineage'] != 'registered' or prior['owner'] != owner
+                        or prior['step_id'] != step_id or prior['parent_run_id'] != parent_run_id):
+                    raise ActivityError('Retry must match an existing run of the same task, owner, step and parent.')
             previous = db.execute('SELECT epoch FROM slots WHERE owner=? AND task_id=?', (owner, task_id)).fetchone()
             epoch = previous['epoch'] + 1 if previous else 1
             db.execute('INSERT INTO slots VALUES(?,?,?) ON CONFLICT(owner,task_id) DO UPDATE SET epoch=excluded.epoch',
                        (owner, task_id, epoch))
-            db.execute('INSERT INTO runs(id,owner,task_id,epoch,token_hash,pid,process_created,registered_at) '
-                       'VALUES(?,?,?,?,?,?,?,?)', (identity, owner, task_id, epoch, digest, pid, created, now))
+            db.execute('INSERT INTO runs(id,owner,task_id,epoch,token_hash,pid,process_created,registered_at,'
+                       'parent_run_id,step_id,retry_of,lineage) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',
+                       (identity, owner, task_id, epoch, digest, pid, created, now,
+                        parent_run_id, step_id, retry_of, 'registered'))
         return {'run_id': identity, 'epoch': epoch, 'token': token}
 
     def ingest(self, token, event):
@@ -214,6 +235,31 @@ class ActivityStore:
         except (psutil.Error, OSError):
             return 'unknown'
 
+    def _project(self, db, row, mono):
+        self.guard.check_running()
+        report_seq = row['terminal_seq'] if row['terminal_seq'] is not None else row['last_seq']
+        latest = db.execute('SELECT payload FROM events WHERE run_id=? AND seq=?', (row['id'], report_seq)).fetchone()
+        count = db.execute('SELECT COUNT(*) FROM events WHERE run_id=?', (row['id'],)).fetchone()[0]
+        heartbeat, reason = 'unknown', 'no_report'
+        if row['generation'] is not None and row['generation'] != self.generation:
+            reason = 'collector_restarted'
+        elif row['received_mono'] is not None:
+            elapsed = mono - row['received_mono']
+            if elapsed < 0:
+                reason = 'clock_regressed'
+            else:
+                heartbeat, reason = ('recent' if elapsed <= self.HEARTBEAT_DELAY else 'delayed'), 'received_event'
+        return {'run_id': row['id'], 'owner': row['owner'], 'task_id': row['task_id'],
+            'epoch': row['epoch'], 'fenced': row['epoch'] != row['current_epoch'],
+            'last_seq': row['last_seq'], 'sequence_gap': count != row['last_seq'],
+            'terminal_seq': row['terminal_seq'],
+            'report': {'source': 'self_reported', 'event': json.loads(latest['payload']) if latest else None},
+            'heartbeat': {'source': 'observed', 'status': heartbeat, 'reason': reason, 'received_at': row['received_at']},
+            'process': {'source': 'observed', 'status': self._probe(row), 'pid': row['pid']},
+            'lineage': {'source': 'registered' if row['lineage'] == 'registered' else 'unknown',
+                        'parent_run_id': row['parent_run_id'], 'step_id': row['step_id'], 'retry_of': row['retry_of']},
+            'verified': []}
+
     def inspect(self, *, limit=100):
         if type(limit) is not int or not 1 <= limit <= self.MAX_RUNS:
             raise ActivityError('Invalid activity limit.')
@@ -221,31 +267,57 @@ class ActivityStore:
         with self.connection(write=False) as db:
             rows = db.execute('SELECT r.*,s.epoch AS current_epoch FROM runs r JOIN slots s '
                               'ON r.owner=s.owner AND r.task_id=s.task_id ORDER BY registered_at DESC,id LIMIT ?', (limit + 1,)).fetchall()
-            runs = []
-            for row in rows[:limit]:
-                self.guard.check_running()
-                report_seq = row['terminal_seq'] if row['terminal_seq'] is not None else row['last_seq']
-                latest = db.execute('SELECT payload FROM events WHERE run_id=? AND seq=?', (row['id'], report_seq)).fetchone()
-                count = db.execute('SELECT COUNT(*) FROM events WHERE run_id=?', (row['id'],)).fetchone()[0]
-                heartbeat, reason = 'unknown', 'no_report'
-                if row['generation'] is not None and row['generation'] != self.generation:
-                    reason = 'collector_restarted'
-                elif row['received_mono'] is not None:
-                    elapsed = mono - row['received_mono']
-                    if elapsed < 0:
-                        reason = 'clock_regressed'
-                    else:
-                        heartbeat, reason = ('recent' if elapsed <= self.HEARTBEAT_DELAY else 'delayed'), 'received_event'
-                runs.append({'run_id': row['id'], 'owner': row['owner'], 'task_id': row['task_id'],
-                    'epoch': row['epoch'], 'fenced': row['epoch'] != row['current_epoch'],
-                    'last_seq': row['last_seq'], 'sequence_gap': count != row['last_seq'],
-                    'terminal_seq': row['terminal_seq'],
-                    'report': {'source': 'self_reported', 'event': json.loads(latest['payload']) if latest else None},
-                    'heartbeat': {'source': 'observed', 'status': heartbeat, 'reason': reason, 'received_at': row['received_at']},
-                    'process': {'source': 'observed', 'status': self._probe(row), 'pid': row['pid']},
-                    'verified': []})
+            runs = [self._project(db, row, mono) for row in rows[:limit]]
         return {'observed_at': now, 'runs': runs, 'has_more': len(rows) > limit,
                 'control_supported': False, 'generation': self.generation}
+
+    def trace(self, task_id):
+        """Read-only lineage of one task from stored self-reports. Not verification or Board completion."""
+        self._id(task_id)
+        now, mono = self._times()
+        runs, links, budget, truncated = [], [], self.MAX_EVENTS, False
+        with self.connection(write=False) as db:
+            rows = db.execute('SELECT r.*,s.epoch AS current_epoch FROM runs r JOIN slots s '
+                              'ON r.owner=s.owner AND r.task_id=s.task_id WHERE r.task_id=? '
+                              'ORDER BY r.registered_at,r.id LIMIT ?', (task_id, self.MAX_RUNS + 1)).fetchall()
+            for row in rows[:self.MAX_RUNS]:
+                run = self._project(db, row, mono)
+                stored = db.execute('SELECT event_id,payload,received_at FROM events WHERE run_id=? ORDER BY seq,event_id LIMIT ?',
+                                    (row['id'], self.MAX_EVENTS + 1)).fetchall()
+                events = []
+                for item in stored[:self.MAX_EVENTS]:
+                    payload = json.loads(item['payload'])
+                    events.append({'cursor': item['event_id'], 'source': 'self_reported', 'received_at': item['received_at'],
+                                   **{key: payload[key] for key in ('seq', 'kind', 'phase', 'reason_code', 'result_ref')}})
+                events = events[:budget]
+                start = next((e['seq'] for e in events if e['kind'] == 'start'), None)
+                end = run['report']['event'] if row['terminal_seq'] is not None else None
+                refs = {}
+                for item in events:
+                    if item['result_ref'] is not None:
+                        refs.setdefault(item['result_ref'], item['seq'])
+                run.update({
+                    'start': {'source': 'self_reported', 'seq': start} if start else {'source': 'unknown', 'seq': None},
+                    'end': ({'source': 'self_reported', 'kind': end['kind'], 'seq': row['terminal_seq']} if end
+                            else {'source': 'unknown', 'kind': None, 'seq': None}),
+                    'result_refs': [{'source': 'self_reported', 'ref': ref, 'seq': seq} for ref, seq in refs.items()],
+                    'events': events[:budget], 'events_has_more': len(stored) > budget,
+                    # Record completeness only; a completed self-report with gaps stays incomplete, never proof.
+                    'trace_complete': bool(start and end and not run['sequence_gap'] and len(stored) <= budget)})
+                budget -= len(run['events'])
+                truncated = truncated or run['events_has_more']
+                for kind, target in (('parent', row['parent_run_id']), ('retry_of', row['retry_of'])):
+                    if target is not None:
+                        links.append({'run_id': row['id'], 'type': kind, 'target': target, 'step_id': row['step_id']})
+                runs.append(run)
+        listed = {run['run_id'] for run in runs}
+        for link in links:
+            link['in_trace'] = link['target'] in listed
+        has_more = len(rows) > self.MAX_RUNS or truncated
+        return {'task_id': task_id, 'observed_at': now, 'status': 'observed' if runs else 'unknown',
+                'runs': runs, 'links': links, 'has_more': has_more,
+                'trace_complete': bool(runs) and not has_more and all(run['trace_complete'] for run in runs),
+                'verified': [], 'control_supported': False, 'generation': self.generation}
 
     def history(self, run_id, *, after=0, limit=100):
         self._id(run_id)
