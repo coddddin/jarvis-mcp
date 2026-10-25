@@ -1,5 +1,6 @@
 """Dispatcher CLI glue: lead planner wiring and the daily digest, against a real board store."""
 import json
+import os
 import time
 from pathlib import Path
 
@@ -56,10 +57,11 @@ def test_employee_spawn_does_not_inherit_inbox_token_or_ambient_config(tmp_path,
     monkeypatch.setenv('JARVIS_WORKSPACE', '/wrong-workspace')
     monkeypatch.setattr(dispatch, 'LOGS', tmp_path / 'logs')
     monkeypatch.setattr(dispatch, 'ensure_worktree', lambda employee: tmp_path)
+    monkeypatch.setattr(dispatch, 'worktree_path', lambda employee: tmp_path)
     monkeypatch.setattr(dispatch, 'executable', lambda employee: ['synthetic-worker.exe'])
     monkeypatch.setattr(dispatch, 'build_command', lambda *a, **kw: ['synthetic-worker.exe'])
     monkeypatch.setattr(dispatch, 'observe_spawned', lambda *a, **kw: None)
-    monkeypatch.setattr(dispatch, 'job', lambda: SimpleNamespace(assign=lambda process: True))
+    monkeypatch.setattr(dispatch, 'new_job', lambda: SimpleNamespace(assign=lambda process: True, terminate=lambda: True))
     monkeypatch.setattr(dispatch, 'git', lambda *a, **kw: SimpleNamespace(stdout='0'))
     seen = []
     class Process:
@@ -92,9 +94,10 @@ def _fake_worker(tmp_path, monkeypatch, outputs, seen):
     from types import SimpleNamespace
     monkeypatch.setattr(dispatch, 'LOGS', tmp_path / 'logs')
     monkeypatch.setattr(dispatch, 'ensure_worktree', lambda employee: tmp_path)
+    monkeypatch.setattr(dispatch, 'worktree_path', lambda employee: tmp_path)
     monkeypatch.setattr(dispatch, 'executable', lambda employee: ['synthetic-opencode.exe'])
     monkeypatch.setattr(dispatch, 'observe_spawned', lambda *a, **kw: None)
-    monkeypatch.setattr(dispatch, 'job', lambda: SimpleNamespace(assign=lambda process: True))
+    monkeypatch.setattr(dispatch, 'new_job', lambda: SimpleNamespace(assign=lambda process: True, terminate=lambda: True))
     monkeypatch.setattr(dispatch, 'git', lambda *a, **kw: SimpleNamespace(stdout='0'))
 
     class Process:
@@ -227,9 +230,10 @@ def _reading_worker(tmp_path, monkeypatch, board, prompts):
     from types import SimpleNamespace
     monkeypatch.setattr(dispatch, 'LOGS', tmp_path / 'logs')
     monkeypatch.setattr(dispatch, 'ensure_worktree', lambda employee: tmp_path)
+    monkeypatch.setattr(dispatch, 'worktree_path', lambda employee: tmp_path)
     monkeypatch.setattr(dispatch, 'executable', lambda employee: ['synthetic-opencode.exe'])
     monkeypatch.setattr(dispatch, 'observe_spawned', lambda *a, **kw: None)
-    monkeypatch.setattr(dispatch, 'job', lambda: SimpleNamespace(assign=lambda process: True))
+    monkeypatch.setattr(dispatch, 'new_job', lambda: SimpleNamespace(assign=lambda process: True, terminate=lambda: True))
     monkeypatch.setattr(dispatch, 'git', lambda *a, **kw: SimpleNamespace(stdout='0'))
 
     class Process:
@@ -313,13 +317,15 @@ def _git_layout(tmp_path):
     return common, admin, worktree
 
 
-def _tamper_worker(tmp_path, monkeypatch, worktree, change, git_calls):
+def _tamper_worker(tmp_path, monkeypatch, worktree, change, git_calls, contained=True):
     from types import SimpleNamespace
     monkeypatch.setattr(dispatch, 'LOGS', tmp_path / 'logs')
-    monkeypatch.setattr(dispatch, 'ensure_worktree', lambda employee: worktree)
+    monkeypatch.setattr(dispatch, 'worktree_path', lambda employee: worktree)
+    monkeypatch.setattr(dispatch, 'ensure_worktree', lambda employee: git_calls.append(('ensure_worktree',)) or worktree)
     monkeypatch.setattr(dispatch, 'executable', lambda employee: ['synthetic-opencode.exe'])
     monkeypatch.setattr(dispatch, 'observe_spawned', lambda *a, **kw: None)
-    monkeypatch.setattr(dispatch, 'job', lambda: SimpleNamespace(assign=lambda process: True))
+    monkeypatch.setattr(dispatch, 'new_job', lambda: SimpleNamespace(assign=lambda process: True,
+                                                                     terminate=lambda: contained))
     monkeypatch.setattr(dispatch, 'git', lambda *a, **kw: git_calls.append(a) or SimpleNamespace(stdout='1'))
 
     class Process:
@@ -357,7 +363,7 @@ def test_a_run_that_changes_git_config_or_hooks_is_not_pushed_and_pauses_the_dis
     board, ledger = BoardStore(guard), DispatchLedger(guard)
     run_id = ledger.try_start('opencode', daily_runs=10)
     assert dispatch.run_employee('opencode', run_id, config(), guard, ledger, board) == 'ok'
-    assert git_calls == []  # neither rev-list nor push
+    assert git_calls == [('ensure_worktree',)]  # neither rev-list nor push
     assert read_pause(guard)['paused'] is True
     [message] = board.inbox('user:heejun')['messages']
     assert '[경고]' in message['body'] and 'push를 건너뛰고' in message['body']
@@ -374,7 +380,7 @@ def test_an_unchanged_git_layout_still_pushes(tmp_path, monkeypatch):
     board, ledger = BoardStore(guard), DispatchLedger(guard)
     run_id = ledger.try_start('opencode', daily_runs=10)
     assert dispatch.run_employee('opencode', run_id, config(), guard, ledger, board) == 'ok'
-    assert [call[0] for call in git_calls] == ['rev-list', 'push']
+    assert [call[0] for call in git_calls] == ['ensure_worktree', 'rev-list', 'push']
     assert read_pause(guard)['paused'] is False and board.inbox('user:heejun')['messages'] == []
 
 
@@ -387,3 +393,104 @@ def test_git_targets_follow_the_worktree_link_read_before_the_run(tmp_path, monk
     (common / 'hooks' / 'sub').mkdir()
     (common / 'hooks' / 'sub' / 'x').write_text('y', encoding='utf-8')
     assert dispatch.git_state(targets) != before
+
+
+# --- claude/employee-safety-2: changes between runs, and processes a run leaves behind -------------------
+
+def _two_runs(tmp_path, monkeypatch, between, contained=True):
+    """Run opencode twice on one layout; `between` changes it after the first run. Returns what the second
+    run did: its result, the git steps it took, whether it spawned, the pause and the user's messages."""
+    from jarvis.agents.dispatch_service import read_pause
+    common, admin, worktree = _git_layout(tmp_path)
+    monkeypatch.setattr(dispatch, 'GIT_DIR', common)
+    git_calls, spawned = [], []
+    _tamper_worker(tmp_path, monkeypatch, worktree, lambda: spawned.append(1), git_calls, contained=contained)
+    guard = Guardrails(tmp_path)
+    board, ledger = BoardStore(guard), DispatchLedger(guard)
+    assert dispatch.run_employee('opencode', ledger.try_start('opencode', daily_runs=10), config(), guard, ledger,
+                                 board) == 'ok'
+    between(common, admin, worktree)
+    git_calls.clear()
+    spawned.clear()
+    result = dispatch.run_employee('opencode', ledger.try_start('opencode', daily_runs=10), config(), guard, ledger,
+                                   board)
+    messages = [m['body'] for m in board.inbox('user:heejun')['messages']]
+    return result, [call[0] for call in git_calls], bool(spawned), read_pause(guard)['paused'], messages, guard
+
+
+@pytest.mark.parametrize('kind', ['hook planted', 'config edited', 'commondir moved', 'worktree link moved'])
+def test_a_change_made_between_runs_stops_the_next_run_before_any_git(tmp_path, monkeypatch, kind):
+    result, steps, spawned, paused, messages, _ = _two_runs(
+        tmp_path, monkeypatch, lambda common, admin, worktree: _changes(common, admin, worktree)[kind]())
+    assert result == 'error' and steps == [] and not spawned  # not even ensure_worktree's merge
+    assert paused is True
+    [message] = messages
+    assert '[경고]' in message and '지난 실행 뒤' in message
+
+
+def test_resuming_after_a_between_runs_alarm_accepts_the_new_state(tmp_path, monkeypatch):
+    def edit(common, admin, worktree):
+        (common / 'config').write_text('[core]\n\tsshCommand = evil\n', encoding='utf-8')
+    result, *_, guard = _two_runs(tmp_path, monkeypatch, edit)
+    assert result == 'error'
+    board, ledger = BoardStore(guard), DispatchLedger(guard)
+    assert dispatch.run_employee('opencode', ledger.try_start('opencode', daily_runs=10), config(), guard, ledger,
+                                 board) == 'ok'
+
+
+def test_upstream_tracking_set_by_other_sessions_is_not_a_change(tmp_path, monkeypatch):
+    def track(common, admin, worktree):
+        with (common / 'config').open('a', encoding='utf-8') as stream:
+            stream.write('[branch "claude/x"]\n\tremote = origin\n\tmerge = refs/heads/claude/x\n')
+    result, steps, spawned, paused, messages, _ = _two_runs(tmp_path, monkeypatch, track)
+    assert result == 'ok' and steps == ['ensure_worktree', 'rev-list', 'push'] and spawned
+    assert paused is False and messages == []
+
+
+def test_branch_merge_options_still_count_as_a_change(tmp_path, monkeypatch):
+    def options(common, admin, worktree):
+        with (common / 'config').open('a', encoding='utf-8') as stream:
+            stream.write('[branch "auto/opencode"]\n\tmergeOptions = -s evil\n')
+    result, steps, *_ = _two_runs(tmp_path, monkeypatch, options)
+    assert result == 'error' and steps == []
+
+
+def test_an_unreadable_baseline_counts_as_a_change(tmp_path, monkeypatch):
+    def corrupt(common, admin, worktree):
+        (tmp_path / '.jarvis-dispatch' / 'git-baseline.json').write_text('{not json', encoding='utf-8')
+    result, steps, spawned, paused, *_ = _two_runs(tmp_path, monkeypatch, corrupt)
+    assert result == 'error' and steps == [] and not spawned and paused is True
+
+
+def test_a_run_whose_processes_cannot_all_be_ended_is_not_pushed(tmp_path, monkeypatch):
+    from jarvis.agents.dispatch_service import read_pause
+    common, _, worktree = _git_layout(tmp_path)
+    monkeypatch.setattr(dispatch, 'GIT_DIR', common)
+    git_calls = []
+    _tamper_worker(tmp_path, monkeypatch, worktree, lambda: None, git_calls, contained=False)
+    guard = Guardrails(tmp_path)
+    board, ledger = BoardStore(guard), DispatchLedger(guard)
+    run_id = ledger.try_start('opencode', daily_runs=10)
+    assert dispatch.run_employee('opencode', run_id, config(), guard, ledger, board) == 'ok'
+    assert git_calls == [('ensure_worktree',)]
+    assert read_pause(guard)['paused'] is True
+    [message] = board.inbox('user:heejun')['messages']
+    assert '모두 끝내지 못했어요' in message['body']
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Windows Job Objects require Windows')
+def test_terminating_the_run_job_ends_children_that_outlive_the_worker(tmp_path):
+    import subprocess, sys, time as clock
+    from jarvis.agents.dispatch_service import KillOnCloseJob
+    marker = tmp_path / 'late-write'
+    # The worker starts a child that writes after a delay, then exits at once (after the job binds it).
+    child = f'import time, pathlib; time.sleep(3); pathlib.Path({str(marker)!r}).write_text("x")'
+    worker = subprocess.Popen([sys.executable, '-c', 'import subprocess, sys, time; time.sleep(0.5); '
+                               f'subprocess.Popen([sys.executable, "-c", {child!r}])'])
+    job = KillOnCloseJob()
+    assert job.assign(worker)
+    worker.wait()
+    assert job.active_processes() >= 1  # the child still runs (a venv python is a launcher plus python)
+    assert job.terminate() is True and job.handle is None
+    clock.sleep(4)
+    assert not marker.exists()

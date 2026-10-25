@@ -30,6 +30,7 @@ from jarvis.agents.worker_adapters import ADAPTERS, employed, roster_problem_cod
 from jarvis.agents.dispatch_policy import Decision
 from jarvis.app.runtime import load_guardrails
 from jarvis.cli.alerts import send_alerts
+from jarvis.core.guardrails import GuardrailError
 from jarvis.core.paths import CONFIG_ROOT, PROJECT_ROOT
 from jarvis.core.process_env import worker_environment
 from jarvis.core.roster import load_roster
@@ -42,15 +43,15 @@ NO_HOOKS = Path(os.environ.get('LOCALAPPDATA', Path.home())) / 'JarvisDispatch' 
 GIT_DIR = PROJECT_ROOT / '.git'
 DISPATCHER_ID = 'local:dispatcher'
 NO_WINDOW = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
-_JOB = None
+_POPEN = subprocess.Popen  # bound at import: tests fake the worker spawn through subprocess.Popen
+BASELINE = '.jarvis-dispatch/git-baseline.json'
+_BASELINE_LOCK = threading.Lock()  # employees run in parallel threads
 
 
-def job():
-    """One kill-on-close job per dispatcher process: employees die if the dispatcher dies."""
-    global _JOB
-    if _JOB is None:
-        _JOB = KillOnCloseJob()
-    return _JOB
+def new_job():
+    """A kill-on-close job for one run: everything the run started dies when the run ends (terminate),
+    or with the dispatcher."""
+    return KillOnCloseJob()
 
 
 def git(*args, cwd=PROJECT_ROOT, check=True):
@@ -68,8 +69,8 @@ def git(*args, cwd=PROJECT_ROOT, check=True):
 
 def git_targets(worktree):
     """Files through which git would run code, read before a run (the worktree link is trusted only then):
-    the shared config and hooks, and this worktree's link and admin pointers. Changing commondir or the link
-    could point git at another config without touching .git/config."""
+    the shared config and hooks first, then this worktree's link and admin pointers. Changing commondir or
+    the link could point git at another config without touching .git/config."""
     worktree = Path(worktree)
     try:
         link = (worktree / '.git').read_text(encoding='utf-8').strip()
@@ -81,8 +82,26 @@ def git_targets(worktree):
             *(admin / name for name in ('commondir', 'gitdir', 'config.worktree'))]
 
 
+def config_entries(path):
+    """A git config file as git itself reads it (include entries listed, not followed), without the
+    branch.<name>.* keys other than mergeOptions: other sessions set upstream tracking all the time, and the
+    dispatcher's git names its remote and branches explicitly. Unparseable: the raw bytes."""
+    with _POPEN(['git', 'config', '--file', str(path), '--no-includes', '--list', '-z'], stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, creationflags=NO_WINDOW) as process:
+        listed, _ = process.communicate()
+    if process.returncode:
+        return b'invalid:' + path.read_bytes()
+    kept = []
+    for entry in listed.split(b'\0'):
+        key = entry.partition(b'\n')[0].lower()
+        if entry and not (key.startswith(b'branch.') and not key.endswith(b'.mergeoptions')):
+            kept.append(entry)
+    return b'\0'.join(kept)
+
+
 def git_state(targets):
-    """Digest of the targets; a folder counts with every file under it. Missing and unreadable count too."""
+    """Digest of the targets; a folder counts with every file under it. Missing and unreadable count too.
+    The shared config counts by its entries (config_entries)."""
     digest = hashlib.sha256()
     for target in targets:
         paths = [target, *sorted(target.rglob('*'))] if target.is_dir() and not target.is_symlink() else [target]
@@ -91,6 +110,8 @@ def git_state(targets):
             try:
                 if path.is_symlink():
                     digest.update(b'link:' + os.readlink(path).encode('utf-8', 'surrogatepass'))
+                elif path == GIT_DIR / 'config' and path.is_file():
+                    digest.update(b'config:' + hashlib.sha256(config_entries(path)).digest())
                 elif path.is_file():
                     digest.update(b'file:' + hashlib.sha256(path.read_bytes()).digest())
                 else:
@@ -100,9 +121,72 @@ def git_state(targets):
     return digest.hexdigest()
 
 
+def git_snapshot(targets):
+    """The shared part (config, hooks) apart from this worktree's link files, so accepting one shared
+    change (resume) does not take a resume per employee."""
+    return {'shared': git_state(targets[:2]), 'worktree': git_state(targets[2:])}
+
+
+def _baseline_path(guard):
+    path = guard.validate_path(BASELINE, must_exist=False)
+    if path.is_symlink():
+        raise GuardrailError('Linked dispatcher git baseline is forbidden.')
+    return path
+
+
+def _read_baseline(path):
+    """{} when missing; None when unreadable or malformed."""
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return None
+    if not (isinstance(data, dict) and isinstance(data.get('worktrees', {}), dict)):
+        return None
+    return data
+
+
+def git_changes(guard, employee, snapshot):
+    """Parts of the snapshot that differ from the last recorded state. A part never recorded is trusted
+    on first use; an unreadable record counts as changed."""
+    with _BASELINE_LOCK:
+        data = _read_baseline(_baseline_path(guard))
+    if data is None:
+        return ['shared', 'worktree']
+    known = {'shared': data.get('shared'), 'worktree': data.get('worktrees', {}).get(employee)}
+    return [part for part in ('shared', 'worktree') if known[part] is not None and known[part] != snapshot[part]]
+
+
+def record_git_state(guard, employee, snapshot):
+    """The state the next run must start from. Also written after an alarm: resuming accepts it."""
+    with _BASELINE_LOCK:
+        path = _baseline_path(guard)
+        data = _read_baseline(path) or {}
+        data = {'shared': snapshot['shared'], 'worktrees': {**data.get('worktrees', {}), employee: snapshot['worktree']}}
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temp = path.with_name(path.name + '.tmp')
+        temp.write_text(json.dumps(data, indent=2), encoding='utf-8')
+        os.replace(temp, path)
+
+
+def git_alarm(guard, board, reason, body):
+    """Stop the dispatcher until the user has looked, and tell them. The warning goes out even if the
+    pause fails."""
+    try:
+        dispatch_control.pause(guard, reason)
+    except Exception as exc:
+        log_service_error(exc)
+    board.send(DISPATCHER_ID, 'user:heejun', body)
+
+
+def worktree_path(employee):
+    return WORKTREES / employee
+
+
 def ensure_worktree(employee):
     """Per-employee worktree on auto/<employee>. Existing branches are never reset."""
-    branch, path = f'auto/{employee}', WORKTREES / employee
+    branch, path = f'auto/{employee}', worktree_path(employee)
     if not (path / '.git').exists():
         WORKTREES.mkdir(parents=True, exist_ok=True)
         exists = git('rev-parse', '--verify', '--quiet', branch, check=False).returncode == 0
@@ -150,6 +234,20 @@ def run_employee(employee, run_id, config, guard, ledger, board):
         return 'error'
     if model:
         ledger.set_model(run_id, model)
+    # Checked before ensure_worktree, whose merge already runs git: a change made since the last run (by a
+    # process that outlived it, or anything else) must not become the new 'before' unnoticed.
+    seen = git_snapshot(git_targets(worktree_path(employee)))
+    changed = git_changes(guard, employee, seen)
+    if changed:
+        record_git_state(guard, employee, seen)
+        where = '.git/config 또는 .git/hooks가' if 'shared' in changed else f'{employee} worktree 연결 파일이'
+        git_alarm(guard, board, f'git config/hooks changed before {employee} run {run_id}',
+                  f'[경고] 디스패처: 지난 실행 뒤 {where} 바뀌었어요. {employee}를 실행하지 않고 디스패처를 '
+                  '일시정지했어요. 무엇이 바꿨는지 확인하고, 괜찮으면(예: 사람이 원격을 추가함) HUD에서 다시 '
+                  '시작하세요. 그러면 지금 상태를 기준으로 삼아요.')
+        ledger.finish(run_id, status='error', exit_code=None, input_tokens=None, output_tokens=None,
+                      note='git changed since last run')
+        return 'error'
     worktree = ensure_worktree(employee)
     # Tests run with the project's interpreter by absolute path; a .venv junction would trip link guards.
     python = (PROJECT_ROOT / '.venv' / 'Scripts' / 'python.exe').as_posix()
@@ -161,30 +259,36 @@ def run_employee(employee, run_id, config, guard, ledger, board):
     log_path = LOGS / f'{employee}-{run_id}.log'
     timeout = config.run_timeout_minutes * 60
     targets = git_targets(worktree)
-    before = git_state(targets)  # compared after the run: see git_tampered below
-    with log_path.open('w', encoding='utf-8', errors='replace') as log:
-        env = worker_environment(overrides={
-            **build_env(employee, project_root=PROJECT_ROOT, workspace=guard.workspace),
-            'JARVIS_WORKSPACE': str(guard.workspace), 'JARVIS_DOWNLOADS_READONLY': '1',
-        })
-        process = subprocess.Popen(argv, cwd=worktree, env=env, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
-                                   creationflags=NO_WINDOW)
-        if not job().assign(process) and os.name == 'nt':  # bind before anything else can spawn
-            log_service_error(RuntimeError(f'{employee} run {run_id} not bound to kill-on-close job'))
-        ledger.set_pid(run_id, process.pid)
-        observe_spawned(guard, process, kind='worker', label=f'dispatch {employee}', timeout_seconds=timeout)
-        deadline, status = time.monotonic() + timeout, None
-        while process.poll() is None:
-            if (guard.workspace / '.jarvis-stop').exists():
-                kill_tree(process.pid)
-                status = 'stopped'
-                break
-            if time.monotonic() > deadline:
-                kill_tree(process.pid)
-                status = 'timeout'
-                break
-            time.sleep(2)
-        process.wait()
+    before = git_snapshot(targets)  # compared after the run, once nothing the run started is left
+    run_job, bound = new_job(), False
+    try:
+        with log_path.open('w', encoding='utf-8', errors='replace') as log:
+            env = worker_environment(overrides={
+                **build_env(employee, project_root=PROJECT_ROOT, workspace=guard.workspace),
+                'JARVIS_WORKSPACE': str(guard.workspace), 'JARVIS_DOWNLOADS_READONLY': '1',
+            })
+            process = subprocess.Popen(argv, cwd=worktree, env=env, stdin=subprocess.DEVNULL, stdout=log,
+                                       stderr=subprocess.STDOUT, creationflags=NO_WINDOW)
+            bound = run_job.assign(process) or os.name != 'nt'  # bind before anything else can spawn
+            if not bound:
+                log_service_error(RuntimeError(f'{employee} run {run_id} not bound to kill-on-close job'))
+            ledger.set_pid(run_id, process.pid)
+            observe_spawned(guard, process, kind='worker', label=f'dispatch {employee}', timeout_seconds=timeout)
+            deadline, status = time.monotonic() + timeout, None
+            while process.poll() is None:
+                if (guard.workspace / '.jarvis-stop').exists():
+                    kill_tree(process.pid)
+                    status = 'stopped'
+                    break
+                if time.monotonic() > deadline:
+                    kill_tree(process.pid)
+                    status = 'timeout'
+                    break
+                time.sleep(2)
+            process.wait()
+    finally:
+        # Background children outlive the worker and could write .git after the check, so they die first.
+        contained = run_job.terminate() and bound
     output = log_path.read_text(encoding='utf-8', errors='replace')
     # No usage event at all is 'missing', kept apart from 'unknown' (usage printed but unreadable).
     usage = parse_usage_detail(output) or {'input': None, 'output': None, 'cache': None, 'quality': 'missing'}
@@ -194,17 +298,21 @@ def run_employee(employee, run_id, config, guard, ledger, board):
     ledger.finish(run_id, status=status, exit_code=process.returncode, input_tokens=usage['input'],
                   output_tokens=usage['output'], cache_tokens=usage['cache'], usage_quality=usage['quality'],
                   note=log_path.name)
-    if git_state(targets) != before:
+    after = git_snapshot(targets)
+    record_git_state(guard, employee, after)
+    if not contained:
+        # Something the run started may still be alive and could change .git after any check here.
+        git_alarm(guard, board, f'{employee} run {run_id} left processes behind',
+                  f'[경고] 디스패처: {employee} 실행(run {run_id})이 띄운 프로그램을 모두 끝내지 못했어요. push를 '
+                  '건너뛰고 디스패처를 일시정지했어요. 작업 관리자에서 남은 프로그램을 확인하고 .git/config와 '
+                  f'.git/hooks를 본 뒤, 괜찮으면 HUD에서 다시 시작하세요. 로그 {log_path.name}')
+    elif after != before:
         # The run changed git config, hooks or this worktree's link. Any git here (push, the next run's merge)
         # could then run its code outside the sandbox, so nothing more runs until the user has looked.
-        try:
-            dispatch_control.pause(guard, f'git config/hooks changed by {employee} run {run_id}')
-        except Exception as exc:
-            log_service_error(exc)
-        board.send(DISPATCHER_ID, 'user:heejun',
-                   f'[경고] 디스패처: {employee} 실행(run {run_id}) 뒤 .git/config, .git/hooks 또는 worktree 연결 파일이 '
-                   '바뀌었어요. push를 건너뛰고 디스패처를 일시정지했어요. 이 저장소에서 git을 쓰기 전에 그 파일들을 '
-                   f'확인하고, 괜찮으면 HUD에서 다시 시작하세요. 로그 {log_path.name}')
+        git_alarm(guard, board, f'git config/hooks changed by {employee} run {run_id}',
+                  f'[경고] 디스패처: {employee} 실행(run {run_id}) 뒤 .git/config, .git/hooks 또는 worktree 연결 파일이 '
+                  '바뀌었어요. push를 건너뛰고 디스패처를 일시정지했어요. 이 저장소에서 git을 쓰기 전에 그 파일들을 '
+                  f'확인하고, 괜찮으면 HUD에서 다시 시작하세요. 로그 {log_path.name}')
     else:
         branch = f'auto/{employee}'
         ahead = git('rev-list', '--count', f'main..{branch}', check=False).stdout.strip()
