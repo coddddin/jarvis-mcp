@@ -327,7 +327,7 @@ def create_event_app(tasks, *, token, task_ids, origins, chat=None, processes=No
             active -= 1
 
     # W5 integration-4: dispatcher status, pause and resume (token, Origin and Host checks live in the routes).
-    extra = (dispatcher_routes(*dispatcher, valid=valid, origins=origins, headers=response_headers)
+    extra = (dispatcher_routes(*dispatcher, valid=valid, origins=origins, headers=response_headers, board=board)
              if dispatcher is not None else [])
     # Today's Google briefing card (read only; same gate, in-memory cache only).
     if briefing is not None:

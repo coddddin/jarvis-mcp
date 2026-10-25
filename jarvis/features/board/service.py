@@ -342,6 +342,28 @@ class BoardStore:
                 'AND NOT EXISTS (SELECT 1 FROM reads r WHERE r.message_id=m.id AND r.reader LIKE ?) ORDER BY m.id',
                 (employee, employee + ':auto', employee + ':%', employee + ':%'))]
 
+    def message_headers(self, ids):
+        """Read-only one-line headers for up to 20 message ids, in the given order; nothing is marked read.
+
+        title is the linked task's title, else the first non-empty body line, redacted and cut to 60 characters.
+        The full body never leaves. A pruned or unknown id comes back as {'id', 'missing': True}."""
+        ids = [i for i in ids if type(i) is int and i > 0][:20]
+        if not ids:
+            return []
+        with self.connection() as db:
+            rows = {row['id']: row for row in db.execute(
+                f'SELECT m.id, m.sender, m.body, t.title FROM messages m LEFT JOIN tasks t ON t.id = m.task_id '
+                f'WHERE m.id IN ({",".join("?" * len(ids))})', ids)}
+        headers = []
+        for message_id in ids:
+            row = rows.get(message_id)
+            if row is None:
+                headers.append({'id': message_id, 'missing': True})
+                continue
+            line = row['title'] or next((part.strip() for part in row['body'].splitlines() if part.strip()), '')
+            headers.append({'id': message_id, 'sender': row['sender'], 'title': redact(line)[:60]})
+        return headers
+
     def activity_snapshot(self):
         """Read-only HUD projection. Board declarations never imply a live process."""
         self.guard.check_running()

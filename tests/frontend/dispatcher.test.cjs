@@ -405,3 +405,56 @@ test('service status is told apart: not registered, stopped, identity and unknow
   assert.match(await show({running:false, pid:null, started:null}), /서비스 멈춤/);          // old server: boolean only
   assert.match(await show({running:false, pid:null, started:null, status:'<b>odd</b>'}), /서비스 상태 알 수 없음/);
 });
+
+test('waking messages: older rows say not recorded, empty says none, older servers say nothing', async () => {
+  const h = harness();
+  const run = (id, changes) => ({id, employee:'cursor', status:'ok', started:NOW - 60, ended:NOW, ...changes});
+  h.setHandler(() => ({status:200, body:snapshot({recent:[run(1, {input_ids:null}), run(2, {input_ids:[]}), run(3, {})]})}));
+  await h.connect('t');
+  const rows = find(h.panel, n => n.attributes['aria-label'] === '최근 실행').children.map(flatten);
+  assert.match(rows[0], /깨운 메시지: 기록 없음/);
+  assert.match(rows[1], /깨운 메시지 없음/);
+  assert.doesNotMatch(rows[2], /깨운 메시지/);
+  assert.equal(h.requests.length, 1);  // nothing is fetched until a row is opened
+});
+
+test('opening a run fetches its waking messages once, keeps them across refresh and closes again', async () => {
+  const h = harness();
+  const body = snapshot({recent:[{id:7, employee:'cursor', status:'ok', started:NOW - 60, ended:NOW, input_ids:[11, 12, 13]}]});
+  h.setHandler(path => path === '/api/dispatcher' ? {status:200, body}
+    : {status:200, body:{run_id:7, recorded:true, messages:[
+      {id:11, sender:'user:heejun', title:'리뷰 부탁해요'}, {id:12, sender:'<b>x</b>', title:'y'.repeat(80)},
+      {id:13, missing:true}]}});
+  await h.connect('t');
+  const list = () => find(h.panel, n => n.attributes['aria-label'] === '최근 실행');
+  const open = find(list(), n => n.tag === 'button');
+  assert.equal(open.textContent, '깨운 메시지 3개 보기');
+  open.events.click(); await h.settle(); await h.settle();
+  assert.equal(h.requests[1].path, '/api/dispatcher/runs/7/messages');
+  assert.equal(h.requests[1].options.method, 'GET');
+  assert.equal(h.requests[1].options.headers.Authorization, 'Bearer t');
+  let text = flatten(list());
+  assert.match(text, /#11 · user:heejun · 리뷰 부탁해요/);
+  assert.match(text, /#12 · <b>x<\/b> · y{60}(?!y)/);   // plain text, cut to 60
+  assert.match(text, /#13 · 지금은 게시판에 없는 메시지예요/);
+  await h.intervals[0](); await h.settle();             // a periodic refresh keeps the opened row
+  assert.match(flatten(list()), /#11 · user:heejun/);
+  assert.equal(h.requests.filter(r => r.path.includes('/runs/')).length, 1);
+  const close = find(list(), n => n.tag === 'button');
+  assert.equal(close.textContent, '깨운 메시지 접기');
+  close.events.click(); await h.settle();
+  assert.doesNotMatch(flatten(list()), /#11/);
+});
+
+test('a failed or malformed waking-message reply shows a plain error, never raw data', async () => {
+  for (const reply of [{status:404, body:{error:'not_found'}}, {status:200, body:{messages:'x'}}]) {
+    const h = harness();
+    const body = snapshot({recent:[{id:7, employee:'cursor', status:'ok', started:NOW, ended:NOW, input_ids:[1]}]});
+    h.setHandler(path => path === '/api/dispatcher' ? {status:200, body} : reply);
+    await h.connect('t');
+    const list = () => find(h.panel, n => n.attributes['aria-label'] === '최근 실행');
+    find(list(), n => n.tag === 'button').events.click(); await h.settle(); await h.settle();
+    assert.match(flatten(list()), /실패했어요|확인할 수 없어요/);
+    assert.doesNotMatch(flatten(list()), /not_found|#1 /);
+  }
+});
