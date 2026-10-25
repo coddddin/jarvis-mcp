@@ -199,12 +199,22 @@ test('working list keeps observed, starting, ended and unknown apart', async () 
     {id:5, employee:'gemini', model:null, started:NOW, state:'constructor'}]})}));
   await h.connect('t');
   const rows = find(h.panel, n => n.attributes['aria-label'] === '지금 일하는 직원').children.map(flatten);
-  assert.match(rows[0], /일하는 중 +cursor · gpt-free · 10분째/);
-  assert.match(rows[1], /시작하는 중 +codex · 1분 미만째/);
+  assert.match(rows[0], /일하는 중 +cursor · gpt-free · 시작한 지 10분/);
+  assert.match(rows[1], /시작하는 중 +codex · 방금 시작/);
   assert.match(rows[2], /프로그램 끝남 +opencode/);assert.match(rows[2], /결과는 아직 기록되지 않았어요/);
   assert.doesNotMatch(rows[2], /실패|오류|일하는 중/);  // ended says nothing about success
   assert.match(rows[3], /알 수 없음 +claude-code/);assert.doesNotMatch(rows[3], /일하는 중|끝남/);
   assert.match(rows[4], /알 수 없음 +gemini/);assert.doesNotMatch(rows[4], /constructor|function/);
+});
+
+test('working list shows at most 10 rows and says how many more', async () => {
+  const h = harness();
+  h.setHandler(() => ({status:200, body:snapshot({working:Array.from({length:13}, (_, i) =>
+    ({id:i, employee:'codex', model:null, started:NOW, state:'working'}))})}));
+  await h.connect('t');
+  const list = find(h.panel, n => n.attributes['aria-label'] === '지금 일하는 직원');
+  assert.equal(list.children.length, 11);
+  assert.match(flatten(list.children[10]), /3개 더 있어요/);
 });
 
 test('working list: empty is nobody, missing key is unknown', async () => {

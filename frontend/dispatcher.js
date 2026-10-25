@@ -275,7 +275,10 @@
       const [label, kind, note] = known(WORKING, run.state) || WORKING.unknown;
       const parts = [String(run.employee || '?')];
       if (typeof run.model === 'string' && run.model) parts.push(run.model);
-      if (isTime(run.started) && isTime(data.read_at)) parts.push(minutes(Math.max(0, data.read_at - run.started)) + '째');
+      if (isTime(run.started) && isTime(data.read_at)) {
+        const age = Math.max(0, data.read_at - run.started);
+        parts.push(age < 60 ? '방금 시작' : '시작한 지 ' + minutes(age));
+      }
       if (note) parts.push(note);
       const row = element('li'), left = element('span');
       left.append(element('span', 'status ' + kind, label), element('span', '', ' ' + parts.join(' · ')));
@@ -284,6 +287,7 @@
       row.append(left, time);
       working.append(row);
     }
+    if (data.working.length > 10) working.append(element('li', 'empty-feed', (data.working.length - 10) + '개 더 있어요.'));
   }
 
   async function load(force = false) {
