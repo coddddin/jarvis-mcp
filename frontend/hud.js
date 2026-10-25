@@ -174,7 +174,12 @@ const serviceOverview = (() => {
 function connection(text, mode=''){ $('connectionLabel').textContent=text; $('connectionDot').className='dot '+mode; serviceOverview.hud(text, mode); }
 function stopStream(){state.generation++;stream.stop();}
 function resetTimings(){state.timings=new JarvisDisplayTimings();$('latencyMetric').textContent='새 기록이 도착하면 갱신 속도를 측정합니다. 과거 기록은 제외해요.';}
-function disconnect(){stopStream(); state.token=null; state.demo=false; state.jobs=[]; state.cursors.clear(); state.feeds.clear(); state.recovery.clear();state.selected=null;resetTimings(); $('connectionFile').value=''; $('workspace').hidden=true; $('welcome').hidden=false; $('refresh').hidden=true; $('disconnect').hidden=true; connection('연결 전'); notice(); window.dispatchEvent(new CustomEvent('jarvis-connection',{detail:{token:null}}));}
+// The token survives a reload of this tab only (sessionStorage); closing the tab or disconnecting forgets it.
+const SAVED_CONNECTION='jarvis-hud-connection';
+function remember(token){try{sessionStorage.setItem(SAVED_CONNECTION,token);}catch(error){}}
+function forget(){try{sessionStorage.removeItem(SAVED_CONNECTION);}catch(error){}}
+function saved(){try{return sessionStorage.getItem(SAVED_CONNECTION);}catch(error){return null;}}
+function disconnect(){forget(); stopStream(); state.token=null; state.demo=false; state.jobs=[]; state.cursors.clear(); state.feeds.clear(); state.recovery.clear();state.selected=null;resetTimings(); $('connectionFile').value=''; $('workspace').hidden=true; $('welcome').hidden=false; $('refresh').hidden=true; $('disconnect').hidden=true; connection('연결 전'); notice(); window.dispatchEvent(new CustomEvent('jarvis-connection',{detail:{token:null}}));}
 function render(){
   $('welcome').hidden=true; $('workspace').hidden=false; $('refresh').hidden=state.demo; $('disconnect').hidden=false; $('demoNote').hidden=!state.demo;
   $('totalCount').textContent=state.jobs.length; $('taskCount').textContent=state.jobs.length+'개';
@@ -248,10 +253,38 @@ $('connectionFile').addEventListener('change',async event=>{
   const file=event.target.files[0]; if(!file)return;
   if(file.size>128){notice('자비스 연결 파일을 선택해주세요. 다른 문서는 읽지 않습니다.'); event.target.value=''; return;}
   const token=await file.text(); event.target.value='';
-  if(!/^[A-Za-z0-9_-]{43}$/.test(token)){notice('올바른 자비스 연결 파일이 아닙니다.');return;}
-  stopStream(); state.demo=false; state.token=token; state.cursors.clear(); state.feeds.clear();state.recovery.clear();resetTimings();notice(); connection('연결 중');
-  try{await loadJobs(); watch();}catch(error){state.token=null; connection('연결 확인 필요');notice(error.message);}
+  await connect(token);
 });
+async function connect(token, fromSaved=false){
+  if(typeof token!=='string'||!/^[A-Za-z0-9_-]{43}$/.test(token)){if(fromSaved)forget();notice('올바른 자비스 연결 파일이 아닙니다.');return false;}
+  stopStream(); state.demo=false; state.token=token; state.cursors.clear(); state.feeds.clear();state.recovery.clear();resetTimings();notice(); connection('연결 중');
+  try{await loadJobs(); if(state.token!==token)return false; remember(token); watch(); return true;}
+  catch(error){if(fromSaved)forget(); if(state.token===token){state.token=null; connection('연결 확인 필요');notice(error.message);} return false;}
+}
+// `hud --open` puts a one-time code in the URL fragment. Remove it from the address bar at once and trade it for
+// the connection first (it is fresh); if that fails, a reload of the same tab reconnects from sessionStorage.
+// The file picker stays the fallback.
+async function exchange(code){
+  connection('연결 중');
+  try{
+    const response=await fetch('/api/connect',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({code}),cache:'no-store',credentials:'omit',signal:AbortSignal.timeout(10000)});
+    const data=response.ok?await response.json():null;
+    if(state.token||state.demo)return true;
+    if(typeof data?.token==='string')return await connect(data.token);
+    connection('연결 전');notice('자동 연결 시간이 지났어요. 연결 파일을 선택해주세요.');
+  }catch(error){if(!state.token&&!state.demo){connection('연결 전');notice('자동으로 연결하지 못했어요. 연결 파일을 선택해주세요.');}}
+  return false;
+}
+async function autoConnect(){
+  const match=/^#connect=([A-Za-z0-9_-]{43})$/.exec(location.hash);
+  if(location.hash.startsWith('#connect='))history.replaceState(null,'',location.pathname);
+  if(match&&await exchange(match[1]))return;
+  if(state.token||state.demo)return;
+  const stored=saved();
+  if(stored)await connect(stored,true);
+}
+document.addEventListener('DOMContentLoaded',autoConnect);
 $('refresh').addEventListener('click',async()=>{notice();try{await loadJobs();
   for(const id of state.recovery){const job=state.jobs.find(j=>j.task_id===id);if(job){state.cursors.set(id,job.latest_sequence);state.feeds.delete(id);}}
   if(state.recovery.size)notice('현재 상태를 다시 불러왔습니다. 이전 기록은 건너뛰고 이후 변경부터 표시합니다.');
@@ -259,7 +292,7 @@ $('refresh').addEventListener('click',async()=>{notice();try{await loadJobs();
 $('disconnect').addEventListener('click',disconnect);
 $('demo').addEventListener('click',()=>{
   window.dispatchEvent(new CustomEvent('jarvis-connection',{detail:{token:null}}));
-  stopStream(); state.token=null; state.demo=true; state.cursors.clear(); state.feeds.clear();state.recovery.clear();resetTimings();$('latencyMetric').textContent='샘플 모드에서는 갱신 속도를 측정하지 않습니다.';notice();
+  forget(); stopStream(); state.token=null; state.demo=true; state.cursors.clear(); state.feeds.clear();state.recovery.clear();resetTimings();$('latencyMetric').textContent='샘플 모드에서는 갱신 속도를 측정하지 않습니다.';notice();
   const now=Date.now()/1000; state.jobs=[
     {task_id:'sample-complete',title:'정수 합계 함수를 작성하고 검증하기',status:'completed',role:'qa',steps_started:3,corrections:0,resumes:0,updated_at:now-90,model_reserved:18432,model_limit:65536,qa:{checker:'python_container_cases_v1',passed:true,cases_passed:4,cases_total:4},latest_sequence:7,events_available:true},
     {task_id:'sample-active',title:'파일 정리 도우미의 개선안 살펴보기',status:'running',role:'coder',steps_started:2,corrections:0,resumes:0,updated_at:now-30,model_reserved:18432,model_limit:65536,qa:null,latest_sequence:4,events_available:true},
