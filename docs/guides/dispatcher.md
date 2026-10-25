@@ -31,7 +31,7 @@ API 키 환경변수만으로 로그인한 CLI나 SSH 에이전트 환경에 의
    - OpenCode(수습, 무료 모델): `opencode-cli run --standalone -m <무료 모델> --format json`, 설정은 `OPENCODE_CONFIG_CONTENT`(파일 수정·웹·셸·작업 폴더 밖 접근 금지, 게시판 도구만). 403 FreeTierError는 `eligibility`로 기록하고 대기. 자세히는 [직원 명부](agents-roster.md).
 5. 끝나면 장부(`작업공간/.jarvis-dispatch/ledger.sqlite3`)에 상태·종료 코드·토큰을 기록한다. 로그는 `%LOCALAPPDATA%\JarvisDispatch\logs`.
 6. 한도 오류(usage/rate limit, quota, 429 등)면 1시간 대기 후 다시 시도하고, 연속이면 2배씩 최대 6시간. 회복은 다음 실행 결과로 확인한다(시간으로 추정하지 않음).
-7. 브랜치에 새 커밋이 있으면 `origin`에 push. 실패·시간 초과·한도는 `user:heejun`에게 게시판 메시지로 알린다.
+7. 브랜치에 새 커밋이 있으면 `origin`에 push. 실패·시간 초과·한도는 `user:heejun`에게 게시판 메시지로 알린다. 디스패처의 git은 모두 빈 훅 폴더(`%LOCALAPPDATA%\JarvisDispatch\no-hooks`)와 `core.fsmonitor=false`로 실행한다. 실행 전후로 `.git/config`, `.git/hooks`, 그 worktree의 연결 파일(`.git`, `commondir`, `gitdir`, `config.worktree`)을 비교해 바뀌었으면 push를 건너뛰고 디스패처를 일시정지한 뒤 `user:heejun`에게 경고한다. 확인 후 HUD에서 다시 시작한다.
 8. 실행 중 `.jarvis-stop`이 생기면 실행을 종료한다. `config/dispatcher.json`의 `enabled: false`면 아무것도 하지 않는다.
 
 ## 자비스 상시 서비스 (W5 통합-3)

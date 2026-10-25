@@ -12,6 +12,7 @@ from dataclasses import dataclass
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 from typing import Callable
 
@@ -118,7 +119,8 @@ class WorkRequest:
 
 
 def _work_command_claude(r):
-    # The interpreter is allowed for the test run only; a bare Bash(python:*) would run any code (python -c).
+    # The interpreter is allowed for `-m pytest` only, which narrows direct use (no `python -c`). pytest still runs
+    # repo code such as conftest.py, so this is not a sandbox; dispatch.run_employee checks .git after the run.
     return [r.executable, '-p', r.prompt, '--output-format', 'json', '--setting-sources', '',
             '--strict-mcp-config', '--mcp-config', r.mcp_json, '--no-session-persistence',
             '--permission-mode', 'acceptEdits', '--max-turns', str(r.max_turns()),
@@ -142,7 +144,7 @@ def _codex_jarvis(mcp_json):
         return []
     argv = ['-c', 'mcp_servers.jarvis.command=' + _toml(command), '-c', 'mcp_servers.jarvis.args=' + _toml(args)]
     for key, value in env.items():
-        if isinstance(key, str) and key.isidentifier() and isinstance(value, str):
+        if isinstance(key, str) and re.fullmatch(r'[A-Za-z0-9_]+', key) and isinstance(value, str):  # TOML bare key
             argv += ['-c', f'mcp_servers.jarvis.env.{key}=' + _toml(value)]
     argv += ['-c', 'mcp_servers.jarvis.enabled_tools=' + _toml([f'board_{name}' for name in BOARD_TOOLS])]
     for name in BOARD_TOOLS:

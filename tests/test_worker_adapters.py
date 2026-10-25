@@ -1,7 +1,10 @@
 """worker_adapters: one roster-based home for employee CLI discovery and headless commands.
 
-The LEGACY_* functions below are verbatim copies of the code at 99f8369 before it moved here. The tests pin
-the new code to them byte for byte, so the move cannot change any launched command line.
+The LEGACY_* functions below started as verbatim copies of the code at 99f8369 before it moved here; they are
+now the pinned spec of every launched command line, and the tests hold the code to them byte for byte. A change
+to a command must change the spec too. claude/employee-safety did so for claude (pytest-only interpreter) and
+codex (no user config, feature disables). The codex jarvis -c part depends on the MCP spec and is pinned
+separately by test_codex_work_run_gets_jarvis_with_board_tools_only.
 """
 import json
 import os
@@ -337,6 +340,12 @@ def test_codex_work_run_gets_jarvis_with_board_tools_only():
 @pytest.mark.parametrize('mcp_json', ['{"mcpServers":{}}', 'not json', '{"mcpServers":{"jarvis":{"command":5}}}'])
 def test_codex_work_run_without_a_valid_jarvis_spec_gets_no_mcp_server(mcp_json):
     assert not any(part.startswith('mcp_servers.') for part in work_argv('codex', mcp_json))
+
+
+def test_codex_jarvis_env_keys_must_be_toml_bare_keys():
+    spec = {'mcpServers': {'jarvis': {'command': 'py', 'args': [], 'env': {'GOOD_1': 'a', 'é': 'b', 'a.b': 'c'}}}}
+    env = [part for part in work_argv('codex', json.dumps(spec)) if part.startswith('mcp_servers.jarvis.env.')]
+    assert env == ['mcp_servers.jarvis.env.GOOD_1="a"']
 
 
 def test_claude_work_run_may_run_the_interpreter_for_pytest_only():

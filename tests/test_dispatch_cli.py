@@ -3,6 +3,8 @@ import json
 import time
 from pathlib import Path
 
+import pytest
+
 from jarvis.agents.dispatch_policy import DispatchLedger, DispatcherConfig
 from jarvis.cli import dispatch
 from jarvis.core.guardrails import Guardrails
@@ -277,3 +279,111 @@ def test_an_old_broadcast_backlog_does_not_hide_the_waking_message(tmp_path, mon
     assert f'ids=[{request}]' in prompts[0]
     assert board.pending_ids('opencode') == []                  # read, so the next tick has nothing to wake for
     assert board.inbox('opencode:auto', mark_read=False)['unread'] == 30   # broadcasts untouched, not deleted
+
+
+# --- claude/employee-safety: a run cannot get code run by the dispatcher's own git ------------------------
+
+def test_dispatcher_git_runs_without_hooks_or_fsmonitor(tmp_path, monkeypatch):
+    import subprocess as sp
+    calls = []
+    monkeypatch.setattr(dispatch, 'NO_HOOKS', tmp_path / 'no-hooks')
+    monkeypatch.setattr(dispatch.subprocess, 'run', lambda argv, **kw: calls.append(argv) or sp.CompletedProcess(argv, 0, '', ''))
+    dispatch.git('push', '-q', 'origin', 'auto/codex', check=False)
+    assert calls[0][:5] == ['git', '-c', f'core.hooksPath={tmp_path / "no-hooks"}', '-c', 'core.fsmonitor=false']
+    assert calls[0][5:] == ['push', '-q', 'origin', 'auto/codex']
+    (tmp_path / 'no-hooks' / 'pre-push').write_text('evil', encoding='utf-8')
+    with pytest.raises(RuntimeError, match='must stay empty'):
+        dispatch.git('status')
+    assert len(calls) == 1
+
+
+def _git_layout(tmp_path):
+    """A shared .git and one worktree linked to it, like JarvisWorktrees/<employee>."""
+    common = tmp_path / 'repo.git'
+    (common / 'hooks').mkdir(parents=True)
+    (common / 'hooks' / 'pre-push.sample').write_text('sample', encoding='utf-8')
+    (common / 'config').write_text('[core]\n\tbare = false\n', encoding='utf-8')
+    admin = common / 'worktrees' / 'wt'
+    admin.mkdir(parents=True)
+    (admin / 'commondir').write_text('../..\n', encoding='utf-8')
+    (admin / 'gitdir').write_text(str(tmp_path / 'wt' / '.git') + '\n', encoding='utf-8')
+    worktree = tmp_path / 'wt'
+    worktree.mkdir()
+    (worktree / '.git').write_text(f'gitdir: {admin}\n', encoding='utf-8')
+    return common, admin, worktree
+
+
+def _tamper_worker(tmp_path, monkeypatch, worktree, change, git_calls):
+    from types import SimpleNamespace
+    monkeypatch.setattr(dispatch, 'LOGS', tmp_path / 'logs')
+    monkeypatch.setattr(dispatch, 'ensure_worktree', lambda employee: worktree)
+    monkeypatch.setattr(dispatch, 'executable', lambda employee: ['synthetic-opencode.exe'])
+    monkeypatch.setattr(dispatch, 'observe_spawned', lambda *a, **kw: None)
+    monkeypatch.setattr(dispatch, 'job', lambda: SimpleNamespace(assign=lambda process: True))
+    monkeypatch.setattr(dispatch, 'git', lambda *a, **kw: git_calls.append(a) or SimpleNamespace(stdout='1'))
+
+    class Process:
+        pid, returncode = 999999, 0
+        def poll(self):
+            return 0
+        def wait(self):
+            return 0
+
+    def spawn(argv, **kwargs):
+        change()
+        kwargs['stdout'].write('{"type":"result","usage":{"input_tokens":1,"output_tokens":1}}')
+        kwargs['stdout'].flush()
+        return Process()
+    monkeypatch.setattr(dispatch.subprocess, 'Popen', spawn)
+
+
+def _changes(common, admin, worktree):
+    return {
+        'hook planted': lambda: (common / 'hooks' / 'pre-push').write_text('#!/bin/sh\nevil', encoding='utf-8'),
+        'config edited': lambda: (common / 'config').write_text('[core]\n\tsshCommand = evil\n', encoding='utf-8'),
+        'commondir moved': lambda: (admin / 'commondir').write_text(str(worktree / 'fake') + '\n', encoding='utf-8'),
+        'worktree link moved': lambda: (worktree / '.git').write_text(f'gitdir: {worktree / "fake"}\n', encoding='utf-8'),
+    }
+
+
+@pytest.mark.parametrize('kind', ['hook planted', 'config edited', 'commondir moved', 'worktree link moved'])
+def test_a_run_that_changes_git_config_or_hooks_is_not_pushed_and_pauses_the_dispatcher(tmp_path, monkeypatch, kind):
+    from jarvis.agents.dispatch_service import read_pause
+    common, admin, worktree = _git_layout(tmp_path)
+    monkeypatch.setattr(dispatch, 'GIT_DIR', common)
+    git_calls = []
+    _tamper_worker(tmp_path, monkeypatch, worktree, _changes(common, admin, worktree)[kind], git_calls)
+    guard = Guardrails(tmp_path)
+    board, ledger = BoardStore(guard), DispatchLedger(guard)
+    run_id = ledger.try_start('opencode', daily_runs=10)
+    assert dispatch.run_employee('opencode', run_id, config(), guard, ledger, board) == 'ok'
+    assert git_calls == []  # neither rev-list nor push
+    assert read_pause(guard)['paused'] is True
+    [message] = board.inbox('user:heejun')['messages']
+    assert '[경고]' in message['body'] and 'push를 건너뛰고' in message['body']
+
+
+def test_an_unchanged_git_layout_still_pushes(tmp_path, monkeypatch):
+    from jarvis.agents.dispatch_service import read_pause
+    common, _, worktree = _git_layout(tmp_path)
+    monkeypatch.setattr(dispatch, 'GIT_DIR', common)
+    git_calls = []
+    _tamper_worker(tmp_path, monkeypatch, worktree, lambda: (worktree / 'work.py').write_text('x', encoding='utf-8'),
+                   git_calls)
+    guard = Guardrails(tmp_path)
+    board, ledger = BoardStore(guard), DispatchLedger(guard)
+    run_id = ledger.try_start('opencode', daily_runs=10)
+    assert dispatch.run_employee('opencode', run_id, config(), guard, ledger, board) == 'ok'
+    assert [call[0] for call in git_calls] == ['rev-list', 'push']
+    assert read_pause(guard)['paused'] is False and board.inbox('user:heejun')['messages'] == []
+
+
+def test_git_targets_follow_the_worktree_link_read_before_the_run(tmp_path, monkeypatch):
+    common, admin, worktree = _git_layout(tmp_path)
+    monkeypatch.setattr(dispatch, 'GIT_DIR', common)
+    targets = dispatch.git_targets(worktree)
+    assert admin / 'commondir' in targets and common / 'hooks' in targets and worktree / '.git' in targets
+    before = dispatch.git_state(targets)
+    (common / 'hooks' / 'sub').mkdir()
+    (common / 'hooks' / 'sub' / 'x').write_text('y', encoding='utf-8')
+    assert dispatch.git_state(targets) != before

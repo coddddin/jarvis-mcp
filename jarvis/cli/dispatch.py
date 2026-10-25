@@ -5,6 +5,7 @@ One `tick` checks every employee, launches lean headless runs in per-employee gi
 It never merges to main; merges need user approval. `.jarvis-stop` or enabled=false stops it.
 """
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -20,7 +21,7 @@ from jarvis.agents.dispatch_policy import (DispatchLedger, DispatcherConfig, Emp
                                            parse_usage_detail, run_status, should_run_lead, wake_prompt, WAKE_INBOX_IDS,
                                            MODEL_BACKOFF_STATUSES)
 from jarvis.agents.lead_planner import LeadLedger, plan_next
-from jarvis.agents import process_watch
+from jarvis.agents import dispatch_control, process_watch
 from jarvis.agents import promotion as promotion_review
 from jarvis.agents.dispatch_service import DispatchService, KillOnCloseJob, codex_workload_gate, read_pause, read_usage_sample
 from jarvis.agents.process_registry import ProcessRegistry, observe_spawned
@@ -37,6 +38,8 @@ from jarvis.features.evaluation.service import evaluate
 
 WORKTREES = Path(os.environ.get('LOCALAPPDATA', Path.home())) / 'JarvisWorktrees'
 LOGS = Path(os.environ.get('LOCALAPPDATA', Path.home())) / 'JarvisDispatch' / 'logs'
+NO_HOOKS = Path(os.environ.get('LOCALAPPDATA', Path.home())) / 'JarvisDispatch' / 'no-hooks'
+GIT_DIR = PROJECT_ROOT / '.git'
 DISPATCHER_ID = 'local:dispatcher'
 NO_WINDOW = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
 _JOB = None
@@ -51,11 +54,50 @@ def job():
 
 
 def git(*args, cwd=PROJECT_ROOT, check=True):
-    result = subprocess.run(['git', *args], cwd=cwd, capture_output=True, text=True, encoding='utf-8',
-                            errors='replace', creationflags=NO_WINDOW)
+    """The dispatcher's own git runs outside any sandbox, so hooks an employee could plant in the shared
+    .git never run here (empty hooks folder), and fsmonitor is off."""
+    NO_HOOKS.mkdir(parents=True, exist_ok=True)
+    if any(NO_HOOKS.iterdir()):
+        raise RuntimeError(f'{NO_HOOKS} must stay empty; dispatcher git refused.')
+    result = subprocess.run(['git', '-c', f'core.hooksPath={NO_HOOKS}', '-c', 'core.fsmonitor=false', *args], cwd=cwd,
+                            capture_output=True, text=True, encoding='utf-8', errors='replace', creationflags=NO_WINDOW)
     if check and result.returncode:
         raise RuntimeError(f'git {args[0]} failed: {result.stderr.strip()[:300]}')
     return result
+
+
+def git_targets(worktree):
+    """Files through which git would run code, read before a run (the worktree link is trusted only then):
+    the shared config and hooks, and this worktree's link and admin pointers. Changing commondir or the link
+    could point git at another config without touching .git/config."""
+    worktree = Path(worktree)
+    try:
+        link = (worktree / '.git').read_text(encoding='utf-8').strip()
+        admin = Path(link.partition('gitdir:')[2].strip()) if link.startswith('gitdir:') else None
+    except OSError:
+        admin = None
+    admin = admin if admin is not None and admin.is_absolute() else GIT_DIR / 'worktrees' / worktree.name
+    return [GIT_DIR / 'config', GIT_DIR / 'hooks', worktree / '.git',
+            *(admin / name for name in ('commondir', 'gitdir', 'config.worktree'))]
+
+
+def git_state(targets):
+    """Digest of the targets; a folder counts with every file under it. Missing and unreadable count too."""
+    digest = hashlib.sha256()
+    for target in targets:
+        paths = [target, *sorted(target.rglob('*'))] if target.is_dir() and not target.is_symlink() else [target]
+        for path in paths:
+            digest.update(str(path).encode('utf-8', 'surrogatepass') + b'\0')
+            try:
+                if path.is_symlink():
+                    digest.update(b'link:' + os.readlink(path).encode('utf-8', 'surrogatepass'))
+                elif path.is_file():
+                    digest.update(b'file:' + hashlib.sha256(path.read_bytes()).digest())
+                else:
+                    digest.update(b'dir' if path.is_dir() else b'absent')
+            except OSError:
+                digest.update(b'unreadable')
+    return digest.hexdigest()
 
 
 def ensure_worktree(employee):
@@ -118,6 +160,8 @@ def run_employee(employee, run_id, config, guard, ledger, board):
     LOGS.mkdir(parents=True, exist_ok=True)
     log_path = LOGS / f'{employee}-{run_id}.log'
     timeout = config.run_timeout_minutes * 60
+    targets = git_targets(worktree)
+    before = git_state(targets)  # compared after the run: see git_tampered below
     with log_path.open('w', encoding='utf-8', errors='replace') as log:
         env = worker_environment(overrides={
             **build_env(employee, project_root=PROJECT_ROOT, workspace=guard.workspace),
@@ -150,10 +194,22 @@ def run_employee(employee, run_id, config, guard, ledger, board):
     ledger.finish(run_id, status=status, exit_code=process.returncode, input_tokens=usage['input'],
                   output_tokens=usage['output'], cache_tokens=usage['cache'], usage_quality=usage['quality'],
                   note=log_path.name)
-    branch = f'auto/{employee}'
-    ahead = git('rev-list', '--count', f'main..{branch}', check=False).stdout.strip()
-    if ahead not in ('', '0'):
-        git('push', '-q', 'origin', branch, cwd=worktree, check=False)
+    if git_state(targets) != before:
+        # The run changed git config, hooks or this worktree's link. Any git here (push, the next run's merge)
+        # could then run its code outside the sandbox, so nothing more runs until the user has looked.
+        try:
+            dispatch_control.pause(guard, f'git config/hooks changed by {employee} run {run_id}')
+        except Exception as exc:
+            log_service_error(exc)
+        board.send(DISPATCHER_ID, 'user:heejun',
+                   f'[경고] 디스패처: {employee} 실행(run {run_id}) 뒤 .git/config, .git/hooks 또는 worktree 연결 파일이 '
+                   '바뀌었어요. push를 건너뛰고 디스패처를 일시정지했어요. 이 저장소에서 git을 쓰기 전에 그 파일들을 '
+                   f'확인하고, 괜찮으면 HUD에서 다시 시작하세요. 로그 {log_path.name}')
+    else:
+        branch = f'auto/{employee}'
+        ahead = git('rev-list', '--count', f'main..{branch}', check=False).stdout.strip()
+        if ahead not in ('', '0'):
+            git('push', '-q', 'origin', branch, cwd=worktree, check=False)
     # A rotating employee's per-model backoff is routine (the digest shows it); alert once every model is out.
     quiet = model and status in MODEL_BACKOFF_STATUSES and ledger.pick_model(employee, models) is not None
     if status != 'ok' and not quiet:
