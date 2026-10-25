@@ -85,7 +85,8 @@ def git_targets(worktree):
 def config_entries(path):
     """A git config file as git itself reads it (include entries listed, not followed), without the
     branch.<name>.* keys other than mergeOptions: other sessions set upstream tracking all the time, and the
-    dispatcher's git names its remote and branches explicitly. Unparseable: the raw bytes."""
+    dispatcher's git names its remote and branches explicitly. Unparseable: the raw bytes.
+    Plain git is fine here: `git config` runs no hooks and no fsmonitor."""
     with _POPEN(['git', 'config', '--file', str(path), '--no-includes', '--list', '-z'], stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, creationflags=NO_WINDOW) as process:
         listed, _ = process.communicate()
@@ -147,36 +148,60 @@ def _read_baseline(path):
     return data
 
 
-def git_changes(guard, employee, snapshot):
-    """Parts of the snapshot that differ from the last recorded state. A part never recorded is trusted
-    on first use; an unreadable record counts as changed."""
-    with _BASELINE_LOCK:
-        data = _read_baseline(_baseline_path(guard))
+def _changed_parts(data, employee, snapshot, history):
+    """Parts that differ from the record. A part never recorded is trusted on first use, but a missing
+    record after runs have finished counts ('missing': deleted, or this check is new). Unreadable: changed."""
     if data is None:
         return ['shared', 'worktree']
+    if 'shared' not in data:
+        return ['missing'] if history else []
     known = {'shared': data.get('shared'), 'worktree': data.get('worktrees', {}).get(employee)}
     return [part for part in ('shared', 'worktree') if known[part] is not None and known[part] != snapshot[part]]
 
 
-def record_git_state(guard, employee, snapshot):
-    """The state the next run must start from. Also written after an alarm: resuming accepts it."""
-    with _BASELINE_LOCK:
-        path = _baseline_path(guard)
-        data = _read_baseline(path) or {}
-        data = {'shared': snapshot['shared'], 'worktrees': {**data.get('worktrees', {}), employee: snapshot['worktree']}}
-        path.parent.mkdir(parents=True, exist_ok=True)
-        temp = path.with_name(path.name + '.tmp')
-        temp.write_text(json.dumps(data, indent=2), encoding='utf-8')
-        os.replace(temp, path)
+def _write_baseline(path, employee, snapshot, data):
+    data = {'shared': snapshot['shared'],
+            'worktrees': {**(data or {}).get('worktrees', {}), employee: snapshot['worktree']}}
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_name(path.name + '.tmp')
+    temp.write_text(json.dumps(data, indent=2), encoding='utf-8')
+    os.replace(temp, path)
 
 
-def git_alarm(guard, board, reason, body):
-    """Stop the dispatcher until the user has looked, and tell them. The warning goes out even if the
-    pause fails."""
+def _pause(guard, reason):
     try:
         dispatch_control.pause(guard, reason)
+        return True
     except Exception as exc:
         log_service_error(exc)
+        return False
+
+
+# Parallel runs share the record. When there is an alarm, the pause is written before the new state, both under
+# the lock, so a run that reads the new record also sees the pause. If the pause fails, the old record stays and
+# the next check refuses too.
+
+def check_git_before_run(guard, employee, snapshot, *, history, reason):
+    """Changed parts since the record ([] when unchanged). On a change: pause, then record (resume accepts)."""
+    with _BASELINE_LOCK:
+        path = _baseline_path(guard)
+        data = _read_baseline(path)
+        changed = _changed_parts(data, employee, snapshot, history)
+        first_use = data is not None and ('shared' not in data or employee not in data.get('worktrees', {}))
+        if (changed and _pause(guard, reason)) or (not changed and first_use):
+            _write_baseline(path, employee, snapshot, data)
+    return changed
+
+
+def record_git_after_run(guard, employee, snapshot, *, alarm=None):
+    """The state the next run must start from. With an alarm reason the dispatcher is paused first."""
+    with _BASELINE_LOCK:
+        path = _baseline_path(guard)
+        if alarm is None or _pause(guard, alarm):
+            _write_baseline(path, employee, snapshot, _read_baseline(path))
+
+
+def warn_user(board, body):
     board.send(DISPATCHER_ID, 'user:heejun', body)
 
 
@@ -237,16 +262,24 @@ def run_employee(employee, run_id, config, guard, ledger, board):
     # Checked before ensure_worktree, whose merge already runs git: a change made since the last run (by a
     # process that outlived it, or anything else) must not become the new 'before' unnoticed.
     seen = git_snapshot(git_targets(worktree_path(employee)))
-    changed = git_changes(guard, employee, seen)
+    changed = check_git_before_run(guard, employee, seen, history=ledger.finished_runs() > 0,
+                                   reason=f'git config/hooks changed before {employee} run {run_id}')
     if changed:
-        record_git_state(guard, employee, seen)
-        where = '.git/config 또는 .git/hooks가' if 'shared' in changed else f'{employee} worktree 연결 파일이'
-        git_alarm(guard, board, f'git config/hooks changed before {employee} run {run_id}',
-                  f'[경고] 디스패처: 지난 실행 뒤 {where} 바뀌었어요. {employee}를 실행하지 않고 디스패처를 '
-                  '일시정지했어요. 무엇이 바꿨는지 확인하고, 괜찮으면(예: 사람이 원격을 추가함) HUD에서 다시 '
-                  '시작하세요. 그러면 지금 상태를 기준으로 삼아요.')
+        if 'missing' in changed:
+            what = (f'git 기준 기록({BASELINE})이 없는데 이전 실행 기록은 있어요(이 검사를 처음 적용했거나 '
+                    '누가 지웠어요)')
+        else:
+            what = '지난 실행 뒤 ' + ('.git/config 또는 .git/hooks가' if 'shared' in changed
+                                      else f'{employee} worktree 연결 파일이') + ' 바뀌었어요'
+        warn_user(board, f'[경고] 디스패처: {what}. {employee}를 실행하지 않고 디스패처를 일시정지했어요. '
+                         '무엇이 바꿨는지 확인하고, 괜찮으면(예: 사람이 원격을 추가함) HUD에서 다시 시작하세요. '
+                         '그러면 지금 상태를 기준으로 삼아요.')
         ledger.finish(run_id, status='error', exit_code=None, input_tokens=None, output_tokens=None,
                       note='git changed since last run')
+        return 'error'
+    if read_pause(guard)['paused']:  # a parallel run's alarm in this tick; its pause came before its record
+        ledger.finish(run_id, status='error', exit_code=None, input_tokens=None, output_tokens=None,
+                      note='dispatcher paused')
         return 'error'
     worktree = ensure_worktree(employee)
     # Tests run with the project's interpreter by absolute path; a .venv junction would trip link guards.
@@ -299,21 +332,21 @@ def run_employee(employee, run_id, config, guard, ledger, board):
                   output_tokens=usage['output'], cache_tokens=usage['cache'], usage_quality=usage['quality'],
                   note=log_path.name)
     after = git_snapshot(targets)
-    record_git_state(guard, employee, after)
     if not contained:
         # Something the run started may still be alive and could change .git after any check here.
-        git_alarm(guard, board, f'{employee} run {run_id} left processes behind',
-                  f'[경고] 디스패처: {employee} 실행(run {run_id})이 띄운 프로그램을 모두 끝내지 못했어요. push를 '
-                  '건너뛰고 디스패처를 일시정지했어요. 작업 관리자에서 남은 프로그램을 확인하고 .git/config와 '
-                  f'.git/hooks를 본 뒤, 괜찮으면 HUD에서 다시 시작하세요. 로그 {log_path.name}')
+        record_git_after_run(guard, employee, after, alarm=f'{employee} run {run_id} left processes behind')
+        warn_user(board, f'[경고] 디스패처: {employee} 실행(run {run_id})이 띄운 프로그램을 모두 끝내지 못했어요. '
+                         'push를 건너뛰고 디스패처를 일시정지했어요. 작업 관리자에서 남은 프로그램을 확인하고 '
+                         f'.git/config와 .git/hooks를 본 뒤, 괜찮으면 HUD에서 다시 시작하세요. 로그 {log_path.name}')
     elif after != before:
         # The run changed git config, hooks or this worktree's link. Any git here (push, the next run's merge)
         # could then run its code outside the sandbox, so nothing more runs until the user has looked.
-        git_alarm(guard, board, f'git config/hooks changed by {employee} run {run_id}',
-                  f'[경고] 디스패처: {employee} 실행(run {run_id}) 뒤 .git/config, .git/hooks 또는 worktree 연결 파일이 '
-                  '바뀌었어요. push를 건너뛰고 디스패처를 일시정지했어요. 이 저장소에서 git을 쓰기 전에 그 파일들을 '
-                  f'확인하고, 괜찮으면 HUD에서 다시 시작하세요. 로그 {log_path.name}')
+        record_git_after_run(guard, employee, after, alarm=f'git config/hooks changed by {employee} run {run_id}')
+        warn_user(board, f'[경고] 디스패처: {employee} 실행(run {run_id}) 뒤 .git/config, .git/hooks 또는 worktree '
+                         '연결 파일이 바뀌었어요. push를 건너뛰고 디스패처를 일시정지했어요. 이 저장소에서 git을 쓰기 '
+                         f'전에 그 파일들을 확인하고, 괜찮으면 HUD에서 다시 시작하세요. 로그 {log_path.name}')
     else:
+        record_git_after_run(guard, employee, after)
         branch = f'auto/{employee}'
         ahead = git('rev-list', '--count', f'main..{branch}', check=False).stdout.strip()
         if ahead not in ('', '0'):

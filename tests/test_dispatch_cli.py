@@ -76,7 +76,7 @@ def test_employee_spawn_does_not_inherit_inbox_token_or_ambient_config(tmp_path,
         return Process()
     monkeypatch.setattr(dispatch.subprocess, 'Popen', spawn)
     guard = Guardrails(tmp_path)
-    ledger = SimpleNamespace(set_pid=lambda *a: None, finish=lambda *a, **kw: None,
+    ledger = SimpleNamespace(set_pid=lambda *a: None, finish=lambda *a, **kw: None, finished_runs=lambda: 0,
                              pick_model=lambda employee, models: models[0], set_model=lambda *a: None)
     assert dispatch.run_employee('opencode', 1, config(), guard, ledger, BoardStore(guard)) == 'ok'
     env = seen[0]
@@ -185,6 +185,8 @@ def test_one_alert_when_the_last_usable_model_backs_off(tmp_path, monkeypatch):
     _fake_worker(tmp_path, monkeypatch, [('Error: rate limit exceeded', 1)], seen)
     guard = Guardrails(tmp_path)
     board, ledger = BoardStore(guard), DispatchLedger(guard)
+    # The earlier runs below would have left a git record; without one the run is refused as 'record deleted'.
+    dispatch.record_git_after_run(guard, 'opencode', dispatch.git_snapshot(dispatch.git_targets(tmp_path)))
     for model in models[:-1]:
         run_id = ledger.try_start('opencode', daily_runs=100)
         ledger.set_model(run_id, model)
@@ -433,6 +435,7 @@ def test_resuming_after_a_between_runs_alarm_accepts_the_new_state(tmp_path, mon
         (common / 'config').write_text('[core]\n\tsshCommand = evil\n', encoding='utf-8')
     result, *_, guard = _two_runs(tmp_path, monkeypatch, edit)
     assert result == 'error'
+    dispatch.dispatch_control.resume(guard, 'checked')
     board, ledger = BoardStore(guard), DispatchLedger(guard)
     assert dispatch.run_employee('opencode', ledger.try_start('opencode', daily_runs=10), config(), guard, ledger,
                                  board) == 'ok'
@@ -494,3 +497,67 @@ def test_terminating_the_run_job_ends_children_that_outlive_the_worker(tmp_path)
     assert job.terminate() is True and job.handle is None
     clock.sleep(4)
     assert not marker.exists()
+
+
+# --- review of #43: parallel runs in one tick, a deleted record ------------------------------------------
+
+def test_a_run_that_passes_the_check_after_another_runs_alarm_does_not_start(tmp_path, monkeypatch):
+    """Employee A (codex) already saw a shared change: it paused and recorded. Employee B then reads a record
+    that matches, but must still not reach ensure_worktree's merge."""
+    common, _, worktree = _git_layout(tmp_path)
+    monkeypatch.setattr(dispatch, 'GIT_DIR', common)
+    git_calls = []
+    _tamper_worker(tmp_path, monkeypatch, worktree, lambda: None, git_calls)
+    guard = Guardrails(tmp_path)
+    board, ledger = BoardStore(guard), DispatchLedger(guard)
+    targets = dispatch.git_targets(worktree)
+    dispatch.record_git_after_run(guard, 'opencode', dispatch.git_snapshot(targets))
+    (common / 'config').write_text('[core]\n\tsshCommand = evil\n', encoding='utf-8')
+    assert dispatch.check_git_before_run(guard, 'codex', dispatch.git_snapshot(targets), history=True,
+                                         reason='codex saw it') == ['shared']
+    run_id = ledger.try_start('opencode', daily_runs=10)
+    assert dispatch.run_employee('opencode', run_id, config(), guard, ledger, board) == 'error'
+    assert git_calls == []
+    assert ledger.summary()['recent'][0]['note'] == 'dispatcher paused'
+
+
+def test_an_alarm_pauses_before_it_records_and_keeps_the_old_record_if_the_pause_fails(tmp_path, monkeypatch):
+    common, _, worktree = _git_layout(tmp_path)
+    monkeypatch.setattr(dispatch, 'GIT_DIR', common)
+    guard = Guardrails(tmp_path)
+    targets = dispatch.git_targets(worktree)
+    dispatch.record_git_after_run(guard, 'opencode', dispatch.git_snapshot(targets))
+    baseline = tmp_path / '.jarvis-dispatch' / 'git-baseline.json'
+    old = baseline.read_text(encoding='utf-8')
+    (common / 'config').write_text('[core]\n\tsshCommand = evil\n', encoding='utf-8')
+    seen_at_pause = []
+    monkeypatch.setattr(dispatch.dispatch_control, 'pause',
+                        lambda guard, reason: seen_at_pause.append(baseline.read_text(encoding='utf-8')))
+    dispatch.check_git_before_run(guard, 'opencode', dispatch.git_snapshot(targets), history=True, reason='x')
+    assert seen_at_pause == [old] and baseline.read_text(encoding='utf-8') != old   # paused, then recorded
+    newer = baseline.read_text(encoding='utf-8')
+    (common / 'config').write_text('[core]\n\tsshCommand = worse\n', encoding='utf-8')
+    monkeypatch.setattr(dispatch, 'log_service_error', lambda exc: None)
+    monkeypatch.setattr(dispatch.dispatch_control, 'pause', lambda guard, reason: (_ for _ in ()).throw(OSError('locked')))
+    for check in (lambda s: dispatch.check_git_before_run(guard, 'opencode', s, history=True, reason='x'),
+                  lambda s: dispatch.record_git_after_run(guard, 'opencode', s, alarm='x')):
+        check(dispatch.git_snapshot(targets))
+        assert baseline.read_text(encoding='utf-8') == newer   # not paused: the next check still refuses
+
+
+def test_a_deleted_record_after_finished_runs_counts_as_a_change(tmp_path, monkeypatch):
+    def delete(common, admin, worktree):
+        (tmp_path / '.jarvis-dispatch' / 'git-baseline.json').unlink()
+    result, steps, spawned, paused, messages, _ = _two_runs(tmp_path, monkeypatch, delete)
+    assert result == 'error' and steps == [] and not spawned and paused is True
+    assert '기준 기록' in messages[0]
+
+
+def test_the_first_run_ever_trusts_and_records_the_state(tmp_path, monkeypatch):
+    common, _, worktree = _git_layout(tmp_path)
+    monkeypatch.setattr(dispatch, 'GIT_DIR', common)
+    guard = Guardrails(tmp_path)
+    snapshot = dispatch.git_snapshot(dispatch.git_targets(worktree))
+    assert dispatch.check_git_before_run(guard, 'opencode', snapshot, history=False, reason='x') == []
+    assert json.loads((tmp_path / '.jarvis-dispatch' / 'git-baseline.json').read_text(encoding='utf-8')) == {
+        'shared': snapshot['shared'], 'worktrees': {'opencode': snapshot['worktree']}}
