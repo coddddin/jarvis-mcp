@@ -506,3 +506,30 @@ def test_inbox_tool_defaults_to_five_with_ids_and_covers_given_ids(board):
     picked = t['board_inbox'](CLAUDE, ids=sent[1:8])
     assert [m['id'] for m in picked['messages']] == sent[1:8]
     assert [m['id'] for m in t['board_inbox'](CLAUDE, limit=50)['messages']] == [sent[0]]
+
+
+# HUD employee runs v2: one-line headers of the messages that woke a run.
+
+def test_message_headers_are_one_line_redacted_and_never_mark_read(board):
+    task = make(board)
+    linked = board.send('user:heejun', 'codex', 'long body\nsecond line', task_id=task)['id']
+    plain = board.send('claude-code:main', 'codex', '\n\n  first line here  \nmore text that must not leave')['id']
+    with board.connection() as db:  # send refuses credentials; a row written before that rule still gets redacted
+        secret = db.execute('INSERT INTO messages(sender,recipient,task_id,body,created) VALUES(?,?,?,?,?)',
+                            ('user:heejun', 'codex', None, 'api_key = sk-abcdef1234567890', 1.0)).lastrowid
+    long = board.send('user:heejun', 'codex', 'x' * 300)['id']
+    headers = board.message_headers([plain, linked, secret, long, 999999, 0, -1, True, '3'])
+    assert headers[0] == {'id': plain, 'sender': 'claude-code:main', 'title': 'first line here'}
+    assert headers[1] == {'id': linked, 'sender': 'user:heejun', 'title': 'Fix chat routing'}  # the task title
+    assert 'sk-' not in headers[2]['title'] and 'REDACTED' in headers[2]['title']
+    assert headers[3]['title'] == 'x' * 60
+    assert headers[4] == {'id': 999999, 'missing': True}
+    assert len(headers) == 5  # non-positive, bool and text ids are dropped
+    assert 'more text' not in json.dumps(headers) and 'second line' not in json.dumps(headers)
+    assert board.pending_ids('codex') == sorted([linked, plain, secret, long])  # nothing was marked read
+
+
+def test_message_headers_take_at_most_twenty_ids(board):
+    ids = [board.send('user:heejun', 'codex', f'm{i}')['id'] for i in range(25)]
+    assert [h['id'] for h in board.message_headers(ids)] == ids[:20]
+    assert board.message_headers([]) == []

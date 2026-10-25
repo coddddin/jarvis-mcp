@@ -440,7 +440,9 @@ class DispatchLedger:
             # Rotation: the model a run used. NULL: the employee has a single model (or an older row).
             # J2 H-02: input_key, the unread input a run was woken for. NULL: an older row, never holds.
             # usage_quality: see USAGE_QUALITIES. NULL: not recorded.
-            for column in ('model', 'input_key', 'usage_quality'):
+            # input_ids: comma-separated board message ids passed to wake_prompt (at most WAKE_INBOX_IDS). NULL: an
+            # older row or one that never reached the wake step; '' : woken with no ids.
+            for column in ('model', 'input_key', 'usage_quality', 'input_ids'):
                 if column not in {row['name'] for row in db.execute('PRAGMA table_info(runs)')}:
                     try:
                         db.execute(f'ALTER TABLE runs ADD COLUMN {column} TEXT')
@@ -541,6 +543,12 @@ class DispatchLedger:
     def set_pid(self, run_id, pid):
         with self.connection() as db:
             db.execute('UPDATE runs SET pid=?, pid_at=? WHERE id=?', (pid, self.clock(), run_id))
+
+    def set_inputs(self, run_id, ids):
+        """Record the message ids this run was woken for. input_key stays as computed by the tick."""
+        ids = [int(i) for i in ids][:WAKE_INBOX_IDS]
+        with self.connection() as db:
+            db.execute('UPDATE runs SET input_ids=? WHERE id=?', (','.join(map(str, ids)), run_id))
 
     def set_model(self, run_id, model):
         with self.connection() as db:

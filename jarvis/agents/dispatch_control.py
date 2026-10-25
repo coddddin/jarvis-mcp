@@ -21,7 +21,7 @@ OPERATOR = 'user:heejun'  # the HUD is operator-started and token-gated
 RECENT = 10
 _WRITE_LOCK = threading.Lock()  # HUD POSTs run in worker threads; a double click must not race
 RUN_FIELDS = ('id', 'employee', 'status', 'started', 'ended', 'exit_code', 'input_tokens', 'output_tokens',
-              'usage_quality', 'model', 'result')
+              'usage_quality', 'model', 'result', 'input_ids')
 QUALITY_KEYS = USAGE_QUALITIES + ('unrecorded',)
 # Known ledger notes mapped to fixed codes. Any other note (log names, exception text) never leaves the server.
 RESULTS = {'executable not found': 'executable_missing', 'all models backed off': 'models_backed_off',
@@ -52,12 +52,33 @@ def _usage_quality(totals):
 
 def _run_row(row):
     """A recent run with whitelisted fields; usage_quality is a known value or None, never free text."""
-    item = {key: row.get(key) for key in RUN_FIELDS if key != 'result'}
+    item = {key: row.get(key) for key in RUN_FIELDS if key not in ('result', 'input_ids')}
     if item['usage_quality'] not in USAGE_QUALITIES:
         item['usage_quality'] = None
     item['model'] = _model(item['model'])
     item['result'] = RESULTS.get(row.get('note'))
+    item['input_ids'] = input_ids(row.get('input_ids'))
     return item
+
+
+def input_ids(value):
+    """The waking message ids of a run: None for an older row (not recorded), [] when woken with none."""
+    if not isinstance(value, str):
+        return None
+    # isascii: '²'.isdigit() is True but int('²') raises, which would fail the whole snapshot.
+    return [int(part) for part in value.split(',') if part.isascii() and part.isdigit()][:20]
+
+
+def run_messages(guard, board, run_id):
+    """One-line headers of the messages that woke a run. None: no such run. recorded False: an older row."""
+    with DispatchLedger(guard).connection() as db:
+        row = db.execute('SELECT input_ids FROM runs WHERE id=?', (run_id,)).fetchone()
+    if row is None:
+        return None
+    ids = input_ids(row['input_ids'])
+    if ids is None:
+        return {'run_id': run_id, 'recorded': False, 'messages': []}
+    return {'run_id': run_id, 'recorded': True, 'messages': board.message_headers(ids)}
 
 
 def _model(value):

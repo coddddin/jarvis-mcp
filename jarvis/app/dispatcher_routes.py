@@ -13,7 +13,7 @@ from starlette.routing import Route
 from jarvis.agents import dispatch_control
 
 
-def dispatcher_routes(guard, config_path, *, valid, origins, headers):
+def dispatcher_routes(guard, config_path, *, valid, origins, headers, board=None):
     hosts = {urlsplit(item).netloc for item in origins}
 
     def refuse(request):
@@ -41,6 +41,25 @@ def dispatcher_routes(guard, config_path, *, valid, origins, headers):
         except Exception:
             return JSONResponse({'error': 'dispatcher_unavailable'}, status_code=503, headers=headers)
 
+    async def messages(request):
+        """GET only: one-line headers of the messages that woke a run. Nothing is marked read."""
+        denied = refuse(request)
+        if denied:
+            return denied
+        run_id = request.path_params['run_id']  # the int convertor admits digits only
+        if not 0 < run_id < 2 ** 63:
+            return JSONResponse({'error': 'not_found'}, status_code=404, headers=headers)
+        if board is None:
+            return JSONResponse({'error': 'board_unavailable'}, status_code=503, headers=headers)
+        try:
+            result = await asyncio.to_thread(dispatch_control.run_messages, guard, board, run_id)
+        except Exception:
+            return JSONResponse({'error': 'dispatcher_unavailable'}, status_code=503, headers=headers)
+        if result is None:
+            return JSONResponse({'error': 'not_found'}, status_code=404, headers=headers)
+        return JSONResponse(result, headers=headers)
+
     return [Route('/api/dispatcher', status, methods=['GET']),
+            Route('/api/dispatcher/runs/{run_id:int}/messages', messages, methods=['GET']),
             Route('/api/dispatcher/pause', status, methods=['POST']),
             Route('/api/dispatcher/resume', status, methods=['POST'])]

@@ -291,6 +291,7 @@ def prepare_run(employee, run_id, config, guard, ledger, board):
     # Tests run with the project's interpreter by absolute path; a .venv junction would trip link guards.
     python = (PROJECT_ROOT / '.venv' / 'Scripts' / 'python.exe').as_posix()
     ids = board.pending_ids(employee)[:WAKE_INBOX_IDS]  # the oldest waking messages; the rest wake the next tick
+    ledger.set_inputs(run_id, ids)  # shown in the HUD; input_key (set at try_start) is unchanged
     argv = build_command(employee, config, worktree, wake_prompt(employee, python, ids), mcp_config(), executable=exe[0],
                          git_dir=PROJECT_ROOT / '.git', python=python, model=model)
     argv = exe + argv[1:]
