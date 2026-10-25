@@ -389,7 +389,7 @@ def test_tick_skips_and_logs_an_unsafe_employee(tmp_path, monkeypatch):
     monkeypatch.setattr(cli_dispatch, 'load_guardrails', lambda: Guardrails(workspace))
     monkeypatch.setattr(cli_dispatch, 'load_roster', lambda **kw: roster)
     monkeypatch.setattr(cli_dispatch, 'BoardStore', lambda guard: BoardStore(guard, roster=roster))
-    monkeypatch.setattr(cli_dispatch, 'run_employee', lambda employee, *a: launched.append(employee) or 'ok')
+    monkeypatch.setattr(cli_dispatch, 'prepare_run', lambda employee, *a: launched.append(employee) or 'ok')
     monkeypatch.setattr(cli_dispatch, 'send_digest_if_due', lambda *a: None)
     monkeypatch.setattr(cli_dispatch, 'log_service_error', logged.append)
     original = wa.ADAPTERS['cursor'].work_command
@@ -457,7 +457,7 @@ def test_tick_wakes_an_employee_whose_pid_less_row_outlived_the_run_limit(tmp_pa
     monkeypatch.setattr(cli_dispatch, 'load_guardrails', lambda: Guardrails(workspace))
     monkeypatch.setattr(cli_dispatch, 'load_roster', lambda **kw: roster)
     monkeypatch.setattr(cli_dispatch, 'BoardStore', lambda guard: BoardStore(guard, roster=roster))
-    monkeypatch.setattr(cli_dispatch, 'run_employee', lambda employee, *a: launched.append(employee) or 'ok')
+    monkeypatch.setattr(cli_dispatch, 'prepare_run', lambda employee, *a: launched.append(employee) or 'ok')
     monkeypatch.setattr(cli_dispatch, 'send_digest_if_due', lambda *a: None)
     monkeypatch.setattr(cli_dispatch, 'log_service_error', lambda exc: None)
     cli_dispatch.tick()

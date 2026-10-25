@@ -103,7 +103,7 @@ def test_snapshot_exposes_whitelisted_fields_only(guard, config):
 
 def test_recent_runs_show_model_and_only_known_result_codes(guard, config):
     ledger = DispatchLedger(guard)
-    notes = ['executable not found', 'all models backed off', 'cursor-20261026.log',
+    notes = ['executable not found', 'all models backed off', 'git changed since last run', 'cursor-20261026.log',
              'OSError: C:\\Users\\someone\\secret path']
     for note in notes:
         run_id = ledger.start('cursor', pid=None)
@@ -111,7 +111,7 @@ def test_recent_runs_show_model_and_only_known_result_codes(guard, config):
         ledger.finish(run_id, status='error', exit_code=None, input_tokens=None, output_tokens=None, note=note)
     state = dispatch_control.snapshot(guard, config)
     results = [row['result'] for row in reversed(state['recent'])]
-    assert results == ['executable_missing', 'models_backed_off', None, None]
+    assert results == ['executable_missing', 'models_backed_off', 'git_changed', None, None]
     assert {row['model'] for row in state['recent']} == {'gpt-free'}
     assert 'secret' not in json.dumps(state) and '.log' not in json.dumps(state)
 

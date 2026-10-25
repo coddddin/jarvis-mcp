@@ -208,7 +208,7 @@ def _tick_harness(tmp_path, monkeypatch):
     monkeypatch.setattr(cli_dispatch, 'load_guardrails', lambda: Guardrails(workspace))
     monkeypatch.setattr(cli_dispatch, 'load_roster', lambda **kw: roster)
     monkeypatch.setattr(cli_dispatch, 'BoardStore', lambda guard: BoardStore(guard, roster=roster))
-    monkeypatch.setattr(cli_dispatch, 'run_employee', lambda *a: 'ok')
+    monkeypatch.setattr(cli_dispatch, 'prepare_run', lambda *a: 'ok')
     monkeypatch.setattr(cli_dispatch, 'send_digest_if_due', lambda *a: None)
     monkeypatch.setattr(cli_dispatch, 'log_service_error', logged.append)
     return cli_dispatch, workspace, logged

@@ -26,7 +26,8 @@
     ended:['프로그램 끝남', '', '결과는 아직 기록되지 않았어요.'],
     unknown:['알 수 없음', '', '프로그램 상태를 확인하지 못했어요.']};
   const RESULTS = {executable_missing:'실행 파일을 찾지 못했어요.', models_backed_off:'모든 모델이 한도 대기 중이었어요.',
-    no_pid:'프로그램이 뜨지 않아 기록을 닫았어요.', owner_unverifiable:'확인할 수 없어 기록을 닫았어요.'};
+    no_pid:'프로그램이 뜨지 않아 기록을 닫았어요.', owner_unverifiable:'확인할 수 없어 기록을 닫았어요.',
+    git_changed:'지난 실행 뒤 git 설정이 바뀌어 실행하지 않았어요.', paused:'디스패처가 일시정지돼 실행하지 않았어요.'};
   const minutes = seconds => seconds < 60 ? '1분 미만' : Math.round(seconds / 60) + '분';
 
   function element(tag, className, text) {
