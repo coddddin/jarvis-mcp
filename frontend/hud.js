@@ -44,9 +44,9 @@ const serviceOverview = (() => {
     box.append(element('h3','',title),element('p','muted small',role),status,detail,next); cards.append(box);
     return {status,detail,next};
   }
-  card('Ollama · 모델 서버','로컬 AI가 답변을 만드는 데 필요해요.',
-    '이 화면에는 모델 서버를 직접 확인하는 정보가 없어요. 모델 이름이나 설치 기록으로 실행 여부를 판단하지 않아요.',
-    '다음: Ollama 실행 상태와 사용할 모델 준비 여부를 확인하세요.');
+  const modelCard=card('Ollama · 모델 서버','로컬 AI가 답변을 만드는 데 필요해요.',
+    '연결 전에는 모델 서버를 확인하지 않아요. 모델 이름이나 화면 연결만으로 실행 여부를 판단하지 않아요.',
+    '다음: 연결 파일을 선택하면 모델 서버의 마지막 관찰 결과를 보여 드려요.');
   const hudCard=card('자비스 · 대화와 작업 화면','대화하고 작업 기록을 확인하는 창이에요.',
     '아직 작업 기록에 연결하지 않았어요. 채팅 응답 가능 여부는 별도로 확인해야 해요.',
     '다음: 자비스 화면을 실행한 뒤 연결 파일을 선택하세요.');
@@ -108,13 +108,59 @@ const serviceOverview = (() => {
       if(selected===token&&revision===version)unknown('조회하지 못했어요. 이전 상태는 현재 실행 근거로 사용할 수 없어요. 서비스가 꺼졌다고 단정할 수는 없어요.');
     } finally {clearTimeout(timeout);if(pending===request)pending=null;}
   }
+  // Ollama card: last /api/tags observation only. Installed is not loaded, inference-ready or chat success.
+  let modelPending=null;
+  function modelUnknown(reason) {
+    modelCard.status.textContent='미확인'; modelCard.status.className='status';
+    modelCard.detail.textContent=reason;
+    modelCard.next.textContent='다음: Ollama 실행 상태를 확인하고 잠시 후 다시 확인하세요.';
+  }
+  async function refreshModel() {
+    if(!token||document.hidden||modelPending)return;
+    const selected=token, revision=version, request=new AbortController(); modelPending=request;
+    const timeout=setTimeout(()=>request.abort(),8000);
+    try {
+      const response=await fetch('/api/model-status',{headers:{Authorization:'Bearer '+selected},
+        cache:'no-store',credentials:'omit',signal:request.signal});
+      if(selected!==token||revision!==version)return;
+      if(!response.ok)throw new Error(response.status===404?'old_server':'unavailable');
+      const data=await response.json();
+      if(selected!==token||revision!==version)return;
+      // Fixed contract: reason decides model_installed; anything else is unknown, never a guess.
+      const allowed={responding:{model_listed:true,model_not_listed:false},connection_refused:{connection_refused:null},
+        unknown:{timeout:null,http_error:null,unsupported_encoding:null,response_too_large:null,malformed_response:null,connection_error:null}};
+      const own=(object,key)=>typeof key==='string'&&Object.prototype.hasOwnProperty.call(object,key);
+      if(data?.source!=='observed'||!Number.isFinite(data.observed_at)||typeof data.model!=='string'||!data.model
+        ||!own(allowed,data.status)||!own(allowed[data.status],data.reason)
+        ||allowed[data.status][data.reason]!==data.model_installed)throw new Error('invalid_status');
+      const reasons={model_listed:'설치 목록에 설정된 모델이 있어요.',model_not_listed:'설치 목록에 설정된 모델이 없어요.',
+        connection_refused:'모델 서버가 연결을 거부했어요. 실행 중이 아닐 수 있어요.',timeout:'응답을 기다리다 확인하지 못했어요.',
+        http_error:'모델 서버가 정상 응답을 주지 않았어요.',unsupported_encoding:'응답 형식을 확인할 수 없어요.',
+        response_too_large:'응답이 너무 커서 확인하지 않았어요.',malformed_response:'응답 형식을 확인할 수 없어요.',
+        connection_error:'모델 서버 연결을 확인하지 못했어요.'};
+      const installed=data.status==='responding'&&data.model_installed;
+      modelCard.status.textContent=data.status==='responding'?(installed?'서버 응답 · 모델 설치 확인':'서버 응답 · 모델 없음')
+        :data.status==='connection_refused'?'연결 안 됨':'미확인';
+      modelCard.status.className='status'+(installed?' completed':data.status==='unknown'?'':' needs_user_input');
+      modelCard.detail.textContent='마지막 확인 '+stamp(data.observed_at)+' · 모델 '+data.model+' · '+reasons[data.reason]
+        +' 마지막 관찰일 뿐 모델 로딩이나 답변 가능 여부를 확인한 것은 아니에요.';
+      modelCard.next.textContent=installed?'다음: 실제 답변 가능 여부는 대화 탭에서 확인하세요.'
+        :data.status==='responding'?'다음: 설정된 모델을 직접 설치했는지 확인하세요. 자동으로 내려받지 않아요.'
+        :'다음: Ollama 실행 상태를 확인하고 잠시 후 다시 확인하세요.';
+    } catch(error) {
+      if(selected===token&&revision===version)modelUnknown(error.message==='old_server'
+        ?'이 자비스 화면 서버는 모델 서버 확인을 지원하지 않아요. 화면 서버를 다시 시작하면 확인할 수 있어요.'
+        :'모델 서버 상태를 조회하지 못했어요. 이전 상태는 현재 근거로 사용할 수 없고, 꺼졌다고 단정할 수도 없어요.');
+    } finally {clearTimeout(timeout);if(modelPending===request)modelPending=null;}
+  }
   window.addEventListener('jarvis-connection',event=>{
     const next=event.detail.token||null;
-    if(next!==token){version++;pending?.abort();pending=null;token=next;}
-    if(token)refresh();else unknown('실제 서비스에 연결하지 않았어요. 샘플 기록으로 실행 여부를 알 수 없어요.');
+    if(next!==token){version++;pending?.abort();pending=null;modelPending?.abort();modelPending=null;token=next;
+      modelUnknown(token?'모델 서버 상태를 확인하고 있어요.':'실제 서비스에 연결하지 않았어요. 모델 서버 상태는 미확인이에요.');}
+    if(token){refresh();refreshModel();}else unknown('실제 서비스에 연결하지 않았어요. 샘플 기록으로 실행 여부를 알 수 없어요.');
   });
-  document.addEventListener('visibilitychange',()=>{if(!document.hidden)refresh();});
-  setInterval(refresh,30000);
+  document.addEventListener('visibilitychange',()=>{if(!document.hidden){refresh();refreshModel();}});
+  setInterval(()=>Promise.all([refresh(),refreshModel()]),30000);
   return {hud(text,mode){
     hudCard.status.textContent=mode==='connected'?'작업 기록 연결 확인':mode==='demo'?'샘플 · 실제 상태 미확인':'미확인';
     hudCard.status.className='status';
