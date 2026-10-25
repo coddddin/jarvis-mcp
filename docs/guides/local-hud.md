@@ -46,7 +46,7 @@ Phase 3 첫 구현인 읽기 전용 화면입니다. 저장된 작업의 계획 
 
 `GET /api/activity/tasks/<task_id>/trace`는 실행 관찰 저장소의 기존 `ActivityStore.trace`를 그대로 읽어 돌려줍니다. 아직 화면에서 호출하는 곳이 없습니다.
 
-- **식별자 범위**: `task_id`는 실행 관찰(Activity)에 등록할 때 쓴 32자리 소문자 16진수입니다. Board 작업 ID, 서버에 등록한 작업 목록(TaskStore)의 ID, 팀 실행의 요청 ID와 같은 값이 아닙니다. 형식이 다르면 저장소를 읽지 않고 400 `invalid_activity_task`입니다.
+- **식별자 범위**: `task_id`는 실행 관찰(Activity)에 등록할 때 쓴 32자리 소문자 16진수입니다. 팀 실행 기록에서는 요청 ID(request ID)를 사용하며, Board 작업 ID나 서버에 등록한 작업 목록(TaskStore)의 ID와 자동 대응하지 않습니다. 형식이 다르면 저장소를 읽지 않고 400 `invalid_activity_task`입니다.
 - **인증**: `GET /api/activity`와 같은 검사입니다. 정확한 Host, 허용 Origin(없으면 허용), 쿼리 거부, 화면 연결값 Bearer를 먼저 통과해야 저장소에 접근합니다. 실행 보고용 토큰과 한 번 쓰는 연결 코드로는 조회할 수 없습니다. 화면 연결값은 이미 `/api/activity`로 모든 실행을 읽을 수 있으므로 이 경로가 조회 범위를 넓히지 않으며, 등록된 작업 목록으로 제한하지도 않습니다.
 - **읽기 전용**: GET만 등록했고 저장소를 바꾸지 않습니다. 실행 보고 접수(`POST /api/activity/runs/<run_id>/events`)는 그대로입니다. 저장소가 없거나 읽기에 실패하면 세부 내용 없이 503 `activity_unavailable`이며, 빈 성공으로 돌려주지 않습니다.
 - **작업 증명 아님**: 기록이 없는 ID는 `status: unknown`과 빈 `runs`로 답합니다(404 아님). 시작·종료·결과 참조는 직원의 자체 보고이고 `verified`는 항상 빈 목록입니다. 순번 누락, 이전 실행 차단(fenced), 수집기 재시작은 표시만 하며 성공이나 Board 완료로 해석하지 않습니다.
