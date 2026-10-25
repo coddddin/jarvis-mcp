@@ -157,6 +157,47 @@ test('one card in the common host is visible on both tabs with one load and no r
   assert.equal(h.intervals.length, 0);
 });
 
+const summaryLine = panel => find(panel, n => n.tag === 'summary');
+const fold = panel => find(panel, n => n.tag === 'details');
+
+test('the card starts folded to one summary line with counts and the first event', async () => {
+  const h = harness({common:true});
+  assert.equal(fold(h.panel).open, undefined);          // closed by default: the chat stays in view
+  assert.equal(summaryLine(h.panel).textContent, '오늘 브리핑 · 확인 중');
+  await h.connect('tok');
+  assert.equal(summaryLine(h.panel).textContent, '오늘 브리핑 · 일정 2개 · 첫 일정 10:00–11:00 <b>팀 회의</b> · 안 읽은 메일 약 42통');
+  assert.equal(summaryLine(h.panel).children.length, 0); // plain text only
+  assert.match(flatten(find(h.panel, n => n.className === 'briefing-body')), /휴가/);  // full card inside the fold
+});
+
+test('the summary line shortens long titles and reports each failure briefly', async () => {
+  const h = harness();
+  h.setHandler(() => ({status:200, body:briefing({calendar:{status:'ok', has_more:true, events:[
+    {summary:'가'.repeat(60), start:'2026-10-25', end:'2026-10-26'}]}, gmail:{status:'error', error:'x'}})}));
+  await h.connect('t');
+  const text = summaryLine(h.panel).textContent;
+  assert.match(text, /일정 1개 이상 · 첫 일정 종일 가{23}… · 메일 확인 실패$/);
+  for (const [body, expected] of [[{connected:false}, 'Google 연결 안 됨'], [{connected:true, error:'bad'}, 'Google 연결 확인 필요']]) {
+    h.setHandler(() => ({status:200, body}));
+    await h.button('새로고침').events.click();
+    assert.equal(summaryLine(h.panel).textContent, '오늘 브리핑 · ' + expected);
+  }
+  h.setHandler(() => ({status:503, body:{}}));
+  await h.button('새로고침').events.click();
+  assert.equal(summaryLine(h.panel).textContent, '오늘 브리핑 · 불러오지 못함');
+  h.setHandler(() => ({status:200, body:briefing({calendar:{status:'ok', has_more:false, events:[]},
+    gmail:{status:'ok', has_more:false, unread_estimate:0, messages:[]}})}));
+  await h.button('새로고침').events.click();
+  assert.equal(summaryLine(h.panel).textContent, '오늘 브리핑 · 일정 없음 · 안 읽은 메일 없음');
+});
+
+test('disconnect resets the summary line so no event title stays visible', async () => {
+  const h = harness({common:true});
+  await h.connect('tok');
+  await h.connect(null);
+  assert.equal(summaryLine(h.panel).textContent, '오늘 브리핑 · 확인 중');
+});
+
 test('disconnect clears private contents on either tab and a late response cannot restore them', async () => {
   const h = harness({common:true});
   await h.connect('tok');
