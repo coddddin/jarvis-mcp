@@ -80,7 +80,7 @@
       && data.service && typeof data.service === 'object';
   }
 
-  async function request(method, path) {
+  async function request(method, path, check = valid) {
     const selected = token, version = generation;
     const options = {method, headers:{Authorization:'Bearer ' + selected}, cache:'no-store', credentials:'omit'};
     if (typeof AbortSignal !== 'undefined' && AbortSignal.timeout) options.signal = AbortSignal.timeout(10000);
@@ -89,7 +89,7 @@
     if (!response.ok) throw new Error(errors[response.status] || '디스패처 요청이 실패했어요.');
     const data = await response.json();
     if (token !== selected || generation !== version) return null;
-    if (!valid(data)) throw new Error('디스패처 응답 형식을 확인할 수 없어요.');
+    if (!check(data)) throw new Error('디스패처 응답 형식을 확인할 수 없어요.');
     return data;
   }
 
@@ -258,9 +258,62 @@
         element('span', '', ' ' + String(run.employee || '?') + (details.length ? ' · ' + details.join(' · ') : '')));
       const time = element('time', '', isTime(run.started) ? stamp(run.started) : '—');
       if (isTime(run.started)) time.dateTime = new Date(run.started * 1000).toISOString();
+      const wake = wakeBlock(run);
+      if (wake) left.append(wake);
       row.append(left, time);
       recent.append(row);
     }
+  }
+
+  // v2: the messages that woke a run, fetched only when the row is opened and kept until the connection changes.
+  const opened = new Map();  // run id -> {state:'loading'|'ready'|'failed', data, error}
+  const validMessages = data => data && typeof data === 'object' && typeof data.recorded === 'boolean'
+    && Array.isArray(data.messages);
+
+  function wakeBlock(run) {
+    if (!Object.prototype.hasOwnProperty.call(run, 'input_ids')) return null;  // older server: nothing to say
+    const ids = run.input_ids, box = element('div', 'small');
+    if (ids === null) { box.append(element('span', 'muted small', '깨운 메시지: 기록 없음')); return box; }
+    if (!Array.isArray(ids) || !Number.isInteger(run.id) || run.id <= 0) return null;
+    if (!ids.length) { box.append(element('span', 'muted small', '깨운 메시지 없음')); return box; }
+    const entry = opened.get(run.id);
+    const button = element('button', 'button text-button',
+      entry ? '깨운 메시지 접기' : '깨운 메시지 ' + count(Math.min(ids.length, 20)) + '개 보기');
+    button.type = 'button';
+    button.addEventListener('click', () => toggleWake(run.id));
+    box.append(button);
+    if (entry) box.append(wakeList(entry));
+    return box;
+  }
+
+  function wakeList(entry) {
+    const list = element('ul', 'activity'); list.setAttribute('aria-label', '깨운 메시지');
+    if (entry.state === 'loading') list.append(element('li', 'empty-feed', '가져오는 중'));
+    else if (entry.state === 'failed') list.append(element('li', 'empty-feed', entry.error || '깨운 메시지를 가져오지 못했어요.'));
+    else if (!entry.data.recorded) list.append(element('li', 'empty-feed', '깨운 메시지: 기록 없음'));
+    else for (const message of entry.data.messages.slice(0, 20)) {
+      if (!message || typeof message !== 'object') continue;
+      const id = Number.isInteger(message.id) ? '#' + message.id : '#?';
+      list.append(element('li', '', message.missing ? id + ' · 지금은 게시판에 없는 메시지예요.'
+        : id + ' · ' + String(message.sender || '?') + ' · ' + String(message.title || '(내용 없음)').slice(0, 60)));
+    }
+    return list;
+  }
+
+  async function toggleWake(id) {
+    if (opened.has(id)) { opened.delete(id); if (snapshot) render(snapshot); return; }
+    const version = generation;
+    opened.set(id, {state:'loading'}); if (snapshot) render(snapshot);
+    let entry;
+    try {
+      const data = await request('GET', '/api/dispatcher/runs/' + id + '/messages', validMessages);
+      if (!data) return;  // the connection changed meanwhile
+      entry = {state:'ready', data};
+    } catch (error) {
+      entry = {state:'failed', error:error.message};
+    }
+    if (version !== generation || !opened.has(id)) return;
+    opened.set(id, entry); if (snapshot) render(snapshot);
   }
 
   function renderWorking(data) {
@@ -329,7 +382,7 @@
     token = next; generation++; snapshot = null; acting = false; loading = false;
     panel.hidden = !token; toggle.disabled = true; showNotice();
     state.textContent = '확인 중'; state.className = 'status'; summary.textContent = '';
-    employees.replaceChildren(); recent.replaceChildren(); working.replaceChildren();
+    employees.replaceChildren(); recent.replaceChildren(); working.replaceChildren(); opened.clear();
     if (token) load(true);
   });
   document.addEventListener('visibilitychange', () => { if (!document.hidden) load(); });

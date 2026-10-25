@@ -347,3 +347,51 @@ def test_snapshot_adds_quality_counts_and_known_sums_beside_the_old_totals(guard
     with ledger.connection() as db:
         db.execute("UPDATE runs SET usage_quality='secret-text' WHERE employee='codex'")
     assert dispatch_control.snapshot(guard, config)['recent'][0]['usage_quality'] is None
+
+
+def test_recent_runs_carry_waking_ids_and_older_rows_say_not_recorded(guard, config):
+    ledger = DispatchLedger(guard)
+    old = ledger.start('codex', pid=None)                   # an older row: never recorded
+    empty = ledger.start('codex', pid=None)
+    ledger.set_inputs(empty, [])
+    woken = ledger.start('codex', pid=None)
+    ledger.set_inputs(woken, list(range(1, 30)))          # capped at the wake limit
+    rows = {row['id']: row for row in dispatch_control.snapshot(guard, config)['recent']}
+    assert rows[old]['input_ids'] is None
+    assert rows[empty]['input_ids'] == []
+    assert rows[woken]['input_ids'] == list(range(1, 21))
+    with ledger.connection() as db:
+        assert db.execute('SELECT input_key FROM runs WHERE id=?', (woken,)).fetchone()[0] is None  # untouched
+
+
+def _board(guard):
+    from jarvis.features.board.service import BoardStore
+    return BoardStore(guard)
+
+
+def test_run_messages_api_is_gated_read_only_and_bounded(guard, config):
+    board = _board(guard)
+    sent = [board.send('user:heejun', 'codex', f'please do {i}\nfull body')['id'] for i in range(2)]
+    ledger = DispatchLedger(guard)
+    run_id = ledger.start('codex', pid=None)
+    ledger.set_inputs(run_id, sent + [987654])
+    old = ledger.start('codex', pid=None)
+    routes = dispatcher_routes(guard, config, valid=lambda value: value == TOKEN, origins=frozenset({ORIGIN}),
+                               headers={'Cache-Control': 'no-store'}, board=board)
+    client = TestClient(Starlette(routes=routes), base_url=ORIGIN)
+    path = f'/api/dispatcher/runs/{run_id}/messages'
+    assert client.get(path).status_code == 401
+    assert client.get(path, headers={**AUTH, 'Origin': 'http://evil.example'}).status_code == 403
+    assert client.get(path + '?x=1', headers=AUTH).status_code == 403
+    assert client.post(path, headers={**AUTH, 'Origin': ORIGIN}).status_code == 405
+    body = client.get(path, headers=AUTH).json()
+    assert body == {'run_id': run_id, 'recorded': True, 'messages': [
+        {'id': sent[0], 'sender': 'user:heejun', 'title': 'please do 0'},
+        {'id': sent[1], 'sender': 'user:heejun', 'title': 'please do 1'},
+        {'id': 987654, 'missing': True}]}
+    assert 'full body' not in json.dumps(body)
+    assert board.pending_ids('codex') == sent  # reading headers never marks anything read
+    assert client.get(f'/api/dispatcher/runs/{old}/messages', headers=AUTH).json() == {
+        'run_id': old, 'recorded': False, 'messages': []}
+    for bad in ('0', '-1', 'abc', '1.5', str(2 ** 63), '99999'):
+        assert client.get(f'/api/dispatcher/runs/{bad}/messages', headers=AUTH).status_code == 404, bad

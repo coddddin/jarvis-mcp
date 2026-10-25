@@ -72,9 +72,14 @@ def test_employee_spawn_does_not_inherit_inbox_token_or_ambient_config(tmp_path,
         return Process()
     monkeypatch.setattr(dispatch.subprocess, 'Popen', spawn)
     guard = Guardrails(tmp_path)
+    inputs = []
     ledger = SimpleNamespace(set_pid=lambda *a: None, finish=lambda *a, **kw: None,
-                             pick_model=lambda employee, models: models[0], set_model=lambda *a: None)
-    assert dispatch.run_employee('opencode', 1, config(), guard, ledger, BoardStore(guard)) == 'ok'
+                             pick_model=lambda employee, models: models[0], set_model=lambda *a: None,
+                             set_inputs=lambda run_id, ids: inputs.append((run_id, list(ids))))
+    board = BoardStore(guard)
+    waking = board.send('user:heejun', 'opencode', 'please review')['id']
+    assert dispatch.run_employee('opencode', 1, config(), guard, ledger, board) == 'ok'
+    assert inputs == [(1, [waking])]  # the ids handed to wake_prompt are recorded for the HUD
     env = seen[0]
     assert 'GITHUB_TOKEN' not in env and 'CUSTOM_SECRET' not in env
     assert env['JARVIS_WORKSPACE'] == str(tmp_path)
