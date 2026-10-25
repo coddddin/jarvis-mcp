@@ -16,13 +16,17 @@ import shutil
 from typing import Callable
 
 OPENCODE_DEFAULT_MODEL = 'opencode/glm-5.3-flash-free'
+BOARD_TOOLS = ('list', 'get', 'create', 'claim', 'heartbeat', 'note', 'release', 'send', 'inbox')
 CLAUDE_TOOLS = ['Read', 'Edit', 'Write', 'Glob', 'Grep',
                 'Bash(git status:*)', 'Bash(git diff:*)', 'Bash(git log:*)', 'Bash(git add:*)', 'Bash(git commit:*)',
-                *(f'mcp__jarvis__board_{name}' for name in
-                  ('list', 'get', 'create', 'claim', 'heartbeat', 'note', 'release', 'send', 'inbox'))]
+                *(f'mcp__jarvis__board_{name}' for name in BOARD_TOOLS)]
 CODEX_DISABLED_FEATURES = ('shell_tool', 'unified_exec', 'code_mode_host', 'code_mode', 'browser_use',
                            'browser_use_external', 'computer_use', 'in_app_browser', 'apps', 'plugins', 'hooks',
                            'image_generation', 'view_image', 'multi_agent', 'workspace_dependencies', 'skill_search')
+# Work mode keeps the shell (tests and git commit run in the sandbox) and also drops remote plugins.
+# Every name was checked against `codex features list` of codex-cli 0.164.0-alpha.11.1 (2026-10-26).
+CODEX_WORK_DISABLED_FEATURES = tuple(feature for feature in CODEX_DISABLED_FEATURES
+                                     if feature not in ('shell_tool', 'unified_exec')) + ('remote_plugin',)
 
 
 def _local_app_data():
@@ -114,17 +118,47 @@ class WorkRequest:
 
 
 def _work_command_claude(r):
+    # The interpreter is allowed for the test run only; a bare Bash(python:*) would run any code (python -c).
     return [r.executable, '-p', r.prompt, '--output-format', 'json', '--setting-sources', '',
             '--strict-mcp-config', '--mcp-config', r.mcp_json, '--no-session-persistence',
             '--permission-mode', 'acceptEdits', '--max-turns', str(r.max_turns()),
-            '--allowedTools', *CLAUDE_TOOLS, *([f'Bash({r.python}:*)'] if r.python else [])]
+            '--allowedTools', *CLAUDE_TOOLS, *([f'Bash({r.python} -m pytest:*)'] if r.python else [])]
+
+
+def _toml(value):
+    """A JSON string or array of strings is also a valid TOML value for codex -c."""
+    return json.dumps(value, ensure_ascii=False)
+
+
+def _codex_jarvis(mcp_json):
+    """-c overrides giving a work run the jarvis board tools only, from the same server spec Claude gets.
+    The user config is ignored, so these per-tool approvals replace the ones in ~/.codex/config.toml."""
+    try:
+        server = json.loads(mcp_json)['mcpServers']['jarvis']
+        command, args, env = server['command'], server.get('args', []), server.get('env', {})
+    except (ValueError, KeyError, TypeError):
+        return []
+    if not isinstance(command, str) or not all(isinstance(item, str) for item in args) or not isinstance(env, dict):
+        return []
+    argv = ['-c', 'mcp_servers.jarvis.command=' + _toml(command), '-c', 'mcp_servers.jarvis.args=' + _toml(args)]
+    for key, value in env.items():
+        if isinstance(key, str) and key.isidentifier() and isinstance(value, str):
+            argv += ['-c', f'mcp_servers.jarvis.env.{key}=' + _toml(value)]
+    argv += ['-c', 'mcp_servers.jarvis.enabled_tools=' + _toml([f'board_{name}' for name in BOARD_TOOLS])]
+    for name in BOARD_TOOLS:
+        argv += ['-c', f'mcp_servers.jarvis.tools.board_{name}.approval_mode="approve"']
+    return argv
 
 
 def _work_command_codex(r):
+    # Unattended (-a never), so nothing beyond the worktree tools may load: no user config (its plugins, other
+    # MCP servers and notify hook), the proposal mode's feature list minus the shell it needs for tests and
+    # commits, and jarvis with board tools only. The Windows sandbox level the user config set is kept.
     # Sandbox writes stay inside the worktree plus its git metadata; pushes are done by the dispatcher.
-    return [r.executable, '-a', 'never', 'exec', '-C', r.worktree, '--sandbox', 'workspace-write',
-            '--skip-git-repo-check', '--json', '--color', 'never',
-            *(['--add-dir', str(r.git_dir)] if r.git_dir else []), r.prompt]
+    disabled = [part for feature in CODEX_WORK_DISABLED_FEATURES for part in ('--disable', feature)]
+    return [r.executable, '-a', 'never', 'exec', '--ignore-user-config', '-C', r.worktree, '--sandbox', 'workspace-write',
+            '-c', 'windows.sandbox="elevated"', '--skip-git-repo-check', '--json', '--color', 'never',
+            *disabled, *_codex_jarvis(r.mcp_json), *(['--add-dir', str(r.git_dir)] if r.git_dir else []), r.prompt]
 
 
 def _work_command_cursor(r):

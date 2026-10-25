@@ -33,10 +33,15 @@ def legacy_build_command(employee, config, worktree, prompt, mcp_json, *, execut
         return [executable, '-p', prompt, '--output-format', 'json', '--setting-sources', '',
                 '--strict-mcp-config', '--mcp-config', mcp_json, '--no-session-persistence',
                 '--permission-mode', 'acceptEdits', '--max-turns', str(config.employees[employee].max_turns),
-                '--allowedTools', *LEGACY_CLAUDE_TOOLS, *([f'Bash({python}:*)'] if python else [])]
+                '--allowedTools', *LEGACY_CLAUDE_TOOLS, *([f'Bash({python} -m pytest:*)'] if python else [])]
     if employee == 'codex':
-        return [executable, '-a', 'never', 'exec', '-C', worktree, '--sandbox', 'workspace-write',
-                '--skip-git-repo-check', '--json', '--color', 'never',
+        # claude/employee-safety: no user config, feature list without the shell, jarvis from mcp_json only.
+        disabled = ['code_mode_host', 'code_mode', 'browser_use', 'browser_use_external', 'computer_use',
+                    'in_app_browser', 'apps', 'plugins', 'hooks', 'image_generation', 'view_image', 'multi_agent',
+                    'workspace_dependencies', 'skill_search', 'remote_plugin']
+        return [executable, '-a', 'never', 'exec', '--ignore-user-config', '-C', worktree, '--sandbox', 'workspace-write',
+                '-c', 'windows.sandbox="elevated"', '--skip-git-repo-check', '--json', '--color', 'never',
+                *[part for feature in disabled for part in ('--disable', feature)],
                 *(['--add-dir', str(git_dir)] if git_dir else []), prompt]
     if employee == 'cursor':
         return [executable, '-p', '--approve-mcps', '--trust', '--output-format', 'json',
@@ -293,6 +298,52 @@ def test_claude_read_only_tools_are_not_flagged(monkeypatch):
     roster = roster.model_copy(update={'agents': agents})
     tampered(monkeypatch, 'claude-code', applies_edits=False, work_command=read_only)
     assert problems_for(roster, 'claude-code') == []
+
+
+# --- claude/employee-safety: unattended work runs load nothing beyond their tools -------------------------
+
+def work_argv(employee, mcp_json='{"mcpServers":{}}', python='C:/p y/python.exe'):
+    return build_command(employee, config(), Path('C:/wt'), 'PROMPT', mcp_json, executable='C:/bin/tool.exe',
+                         git_dir=Path('C:/repo/.git'), python=python)
+
+
+def test_codex_work_run_ignores_user_config_and_keeps_only_the_sandboxed_shell():
+    argv = work_argv('codex')
+    assert '--ignore-user-config' in argv and 'windows.sandbox="elevated"' in argv
+    disabled = [argv[index + 1] for index, part in enumerate(argv) if part == '--disable']
+    assert set(disabled) == set(wa.CODEX_DISABLED_FEATURES) - {'shell_tool', 'unified_exec'} | {'remote_plugin'}
+    for feature in ('computer_use', 'browser_use', 'apps', 'plugins', 'hooks'):
+        assert feature in disabled
+    assert 'shell_tool' not in disabled and 'unified_exec' not in disabled
+    assert argv[argv.index('--sandbox') + 1] == 'workspace-write' and argv[-1] == 'PROMPT'
+
+
+def test_codex_work_run_gets_jarvis_with_board_tools_only():
+    from jarvis.cli.dispatch import mcp_config
+    argv = work_argv('codex', mcp_config())
+    overrides = [argv[index + 1] for index, part in enumerate(argv) if part == '-c']
+    values = dict(item.split('=', 1) for item in overrides)
+    server = json.loads(mcp_config())['mcpServers']['jarvis']
+    # Each value is TOML that codex parses; JSON strings and arrays of strings are valid TOML values.
+    assert json.loads(values['mcp_servers.jarvis.command']) == server['command']
+    assert json.loads(values['mcp_servers.jarvis.args']) == server['args']
+    assert json.loads(values['mcp_servers.jarvis.env.JARVIS_DOWNLOADS_READONLY']) == '1'
+    tools = json.loads(values['mcp_servers.jarvis.enabled_tools'])
+    assert tools == [f'board_{name}' for name in wa.BOARD_TOOLS] and all(name.startswith('board_') for name in tools)
+    assert all(values[f'mcp_servers.jarvis.tools.{name}.approval_mode'] == '"approve"' for name in tools)
+    assert not any(key.startswith('mcp_servers.') and not key.startswith('mcp_servers.jarvis.') for key in values)
+
+
+@pytest.mark.parametrize('mcp_json', ['{"mcpServers":{}}', 'not json', '{"mcpServers":{"jarvis":{"command":5}}}'])
+def test_codex_work_run_without_a_valid_jarvis_spec_gets_no_mcp_server(mcp_json):
+    assert not any(part.startswith('mcp_servers.') for part in work_argv('codex', mcp_json))
+
+
+def test_claude_work_run_may_run_the_interpreter_for_pytest_only():
+    argv = work_argv('claude-code')
+    bash = [part for part in argv if part.startswith('Bash(C:/p y/python.exe')]
+    assert bash == ['Bash(C:/p y/python.exe -m pytest:*)']
+    assert not [part for part in work_argv('claude-code', python=None) if 'python' in part]
 
 
 def test_current_adapters_report_their_real_edit_markers():

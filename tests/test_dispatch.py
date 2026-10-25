@@ -75,7 +75,7 @@ def test_commands_are_lean_and_tier_appropriate(tmp_path):
     claude = build_command('claude-code', config, worktree, 'P', mcp, executable='claude.exe', python='C:/p/python.exe')
     assert claude[:2] == ['claude.exe', '-p'] and '--strict-mcp-config' in claude and '--setting-sources' in claude
     assert '--dangerously-skip-permissions' not in claude and 'bypassPermissions' not in claude
-    assert 'Bash(C:/p/python.exe:*)' in claude
+    assert 'Bash(C:/p/python.exe -m pytest:*)' in claude and 'Bash(C:/p/python.exe:*)' not in claude
     codex = build_command('codex', config, worktree, 'P', mcp, executable='codex.exe')
     assert codex[codex.index('--sandbox') + 1] == 'workspace-write' and '--dangerously-bypass-approvals-and-sandbox' not in codex
     cursor = build_command('cursor', config, worktree, 'P', mcp, executable='agent.cmd')
