@@ -34,10 +34,11 @@ const observed=(status,model_installed,reason)=>({source:'observed',observed_at:
 const running={service:{running:true},config_enabled:true,paused:false,read_at:1000};
 test('before connection roles are visible without network calls or invented model status',()=>{
   const h=harness(); assert.equal(h.requests.length,0);
-  assert.match(text(h.panel),/Ollama만 켜면 자동 업무가 시작되는 것은 아니/);
-  assert.match(h.ollama(),/연결 전에는 모델 서버를 확인하지 않/);assert.match(h.ollama(),/미확인/);
+  assert.match(text(h.panel),/Ollama만 켠다고 자동 업무가 시작되지는 않/);
+  assert.match(text(h.panel),/확인하지 못하면 "알 수 없음"으로 보여요. 꺼졌다는 뜻은 아니/); // one footnote for the panel
+  assert.match(h.ollama(),/연결하면 확인해요/);assert.match(h.ollama(),/알 수 없음/);
   h.context.overview.hud('연결됨','connected');
-  assert.doesNotMatch(h.ollama(),/서버 응답|연결 안 됨/); // HUD connection alone never implies model state.
+  assert.doesNotMatch(h.ollama(),/실행 중|연결 안 됨/); // HUD connection alone never implies model state.
 });
 test('running service is read with bearer token and distinguished from work success',async()=>{
   const h=harness();await h.connect('synthetic');
@@ -45,49 +46,50 @@ test('running service is read with bearer token and distinguished from work succ
   assert.equal(h.requests[0].options.headers.Authorization,'Bearer synthetic');
   assert.equal(h.requests[0].options.credentials,'omit');
   assert.equal(h.requests[0].options.method,undefined); // GET only, never launch/resume.
-  assert.match(text(h.panel),/서비스 실행 관찰/);assert.match(text(h.panel),/실제 업무 진행은 작업 기록/);
+  assert.match(h.dispatch(),/실행 중/);assert.match(h.dispatch(),/작업 현황에서 배정 결과/);
 });
 test('enabled config without service observation does not report running',async()=>{
   const h=harness();h.setReply(async()=>({ok:true,json:async()=>({service:{running:false},config_enabled:true,paused:false,read_at:1000})}));
-  await h.connect('synthetic');const body=text(h.panel);
-  assert.match(body,/실행 확인 안 됨/);assert.match(body,/자동 배정 설정 켜짐/);
-  assert.doesNotMatch(body,/서비스 실행 관찰/);assert.match(body,/미등록 또는 중지/);
+  await h.connect('synthetic');const body=h.dispatch();
+  assert.match(body,/실행 안 보임/);assert.match(body,/설정 켜짐/);
+  assert.doesNotMatch(body,/실행 중/);assert.match(body,/시작하지 않았거나 멈췄을 수/);
 });
 test('paused and disabled config remain distinct from service execution',async()=>{
   for(const [config_enabled,paused,label] of [[true,true,'일시정지'],[false,false,'설정 꺼짐']]){
     const h=harness();h.setReply(async()=>({ok:true,json:async()=>({service:{running:true},config_enabled,paused,read_at:1000})}));
-    await h.connect('synthetic');assert.match(text(h.panel),new RegExp(label));assert.match(text(h.panel),/서비스 실행 관찰/);
+    await h.connect('synthetic');assert.match(h.dispatch(),new RegExp(label));assert.match(h.dispatch(),/실행 중/);
   }
 });
 test('network failure and malformed data replace prior successful status with unknown',async()=>{
   for(const reply of [async()=>{throw Error('offline');},async()=>({ok:false}),async()=>({ok:true,json:async()=>({service:{running:'yes'}})})]){
     const h=harness();await h.connect('synthetic');h.setReply(reply);await h.intervals[0]();
-    assert.doesNotMatch(text(h.panel),/서비스 실행 관찰/);assert.match(text(h.panel),/꺼졌다고 단정할 수는 없/);
+    assert.doesNotMatch(h.dispatch(),/실행 중|멈춤/);assert.match(h.dispatch(),/알 수 없음/);assert.match(h.dispatch(),/가져오지 못했|이해하지 못했/);
   }
 });
 test('late response after disconnect cannot restore previous service state',async()=>{
   const h=harness();let resolve;
   h.setReply(()=>new Promise(r=>resolve=r));await h.connect('synthetic');await h.connect(null);
   resolve({ok:true,json:async()=>({service:{running:true},config_enabled:true,paused:false,read_at:1000})});await settle();
-  assert.doesNotMatch(text(h.panel),/서비스 실행 관찰/);assert.match(text(h.panel),/실제 서비스에 연결하지 않았/);
+  assert.doesNotMatch(h.dispatch(),/실행 중/);assert.match(h.dispatch(),/연결하면 확인해요/);
 });
 test('HUD connection and demo never assert chat or model readiness',()=>{
   const h=harness();h.context.overview.hud('연결됨','connected');
-  assert.match(text(h.panel),/작업 기록 연결 확인/);assert.match(text(h.panel),/채팅 응답 준비를 확인한 것은 아니/);
-  h.context.overview.hud('샘플 모드','demo');assert.match(text(h.panel),/샘플 · 실제 상태 미확인/);
-  assert.doesNotMatch(text(h.panel),/작업 기록 연결 확인/);
+  assert.match(text(h.panel),/연결됨/);assert.match(text(h.panel),/답변하려면 Ollama 카드도 준비돼야/);
+  h.context.overview.hud('샘플 모드','demo');assert.match(text(h.panel),/실제 상태가 아니에요/);
+  assert.doesNotMatch(text(h.panel),/답변하려면 Ollama 카드도/);
 });
 test('new observed status contract separates stopped, absent records, unknown and reused identity',async()=>{
-  const cases=[['running','matching_pid','서비스 실행 관찰'],['stopped','process_missing','등록 프로세스 종료 관찰'],
-    ['not_registered','missing_record','등록 기록 없음 · 실행 미확인'],['unknown','invalid_record','기록의 형식'],
-    ['unknown','unreadable_record','기록을 읽을 수 없'],['unknown','process_unreadable','프로세스를 확인할 수 없'],
-    ['identity_mismatch','pid_reused','실행 신원 미확인']];
+  const cases=[['running','matching_pid','실행 중'],['stopped','process_missing','멈춤'],
+    ['not_registered','missing_record','시작 안 함'],['unknown','invalid_record','기록의 형식'],
+    ['unknown','unreadable_record','기록을 읽을 수 없'],['unknown','process_unreadable','프로그램을 확인할 수 없'],
+    ['identity_mismatch','pid_reused','다른 프로그램일 수 있음']];
   for(const [status,reason,label] of cases){
     const h=harness();h.setReply(async()=>({ok:true,json:async()=>({
       service:{running:status==='running',status,reason,source:'observed'},config_enabled:true,paused:false,read_at:1000})}));
-    await h.connect('synthetic');const body=text(h.panel);assert.ok(body.includes(label),status+': '+body);
-    if(status!=='running')assert.doesNotMatch(body,/서비스 실행 관찰/);
-    if(status!=='stopped')assert.doesNotMatch(body,/등록 프로세스 종료 관찰/);
+    await h.connect('synthetic');const body=h.dispatch();assert.ok(body.includes(label),status+': '+body);
+    if(status!=='running')assert.doesNotMatch(body,/실행 중/);
+    if(status!=='stopped')assert.doesNotMatch(body,/멈춤/);
+    if(['unknown','identity_mismatch'].includes(status))assert.doesNotMatch(body,/시작 안 함/);
   }
 });
 test('explicit unknown, inconsistent or future status cannot fall back to a positive running flag',async()=>{
@@ -99,14 +101,14 @@ test('explicit unknown, inconsistent or future status cannot fall back to a posi
     {running:true,status:null},
   ]){
     const h=harness();h.setReply(async()=>({ok:true,json:async()=>({service,config_enabled:true,paused:false,read_at:1000})}));
-    await h.connect('synthetic');assert.match(text(h.panel),/응답을 해석할 수 없/);assert.doesNotMatch(text(h.panel),/서비스 실행 관찰/);
+    await h.connect('synthetic');assert.match(h.dispatch(),/응답을 이해하지 못했/);assert.doesNotMatch(h.dispatch(),/실행 중/);
   }
 });
 test('Ollama card reads the model-status endpoint with GET after connection and shows the observed result',async()=>{
-  const cases=[[observed('responding',true,'model_listed'),'서버 응답 · 모델 설치 확인'],
-    [observed('responding',false,'model_not_listed'),'서버 응답 · 모델 없음'],
+  const cases=[[observed('responding',true,'model_listed'),'실행 중 · 모델 있음'],
+    [observed('responding',false,'model_not_listed'),'실행 중 · 모델 없음'],
     [observed('connection_refused',null,'connection_refused'),'연결 안 됨'],
-    [observed('unknown',null,'timeout'),'미확인']];
+    [observed('unknown',null,'timeout'),'알 수 없음']];
   for(const [body,label] of cases){
     const h=harness();h.route('/api/dispatcher',ok(running));h.route('/api/model-status',ok(body));
     await h.connect('synthetic');
@@ -115,8 +117,9 @@ test('Ollama card reads the model-status endpoint with GET after connection and 
     assert.equal(request.options.credentials,'omit');assert.equal(request.options.cache,'no-store');
     assert.ok(h.requests.every(item=>item.options.method===undefined)); // no new POSTs
     const card=h.ollama();assert.ok(card.includes(label),label+': '+card);
-    assert.match(card,/마지막 확인 1000/);assert.match(card,/답변 가능 여부를 확인한 것은 아니/);
-    if(label!=='서버 응답 · 모델 설치 확인')assert.doesNotMatch(card,/모델 설치 확인/);
+    assert.match(card,/1000 확인/);
+    if(label!=='실행 중 · 모델 있음')assert.doesNotMatch(card,/모델 있음/);
+    if(label==='알 수 없음')assert.doesNotMatch(card,/연결 안 됨|실행 중/);   // unknown is never shown as off
   }
 });
 test('invalid model-status contracts and old servers are unknown, never a guess',async()=>{
@@ -127,28 +130,28 @@ test('invalid model-status contracts and old servers are unknown, never a guess'
     async()=>({ok:false,status:404}),async()=>({ok:false,status:503}),async()=>{throw Error('offline');}]){
     const h=harness();h.route('/api/dispatcher',ok(running));h.route('/api/model-status',reply);
     await h.connect('synthetic');const card=h.ollama();
-    assert.match(card,/미확인/);assert.doesNotMatch(card,/서버 응답|연결 안 됨/);
+    assert.match(card,/알 수 없음/);assert.doesNotMatch(card,/실행 중|연결 안 됨/);
   }
   const h=harness();h.route('/api/model-status',async()=>({ok:false,status:404}));await h.connect('synthetic');
-  assert.match(h.ollama(),/지원하지 않아요/);
+  assert.match(h.ollama(),/예전 버전이에요/);
 });
 test('model status and dispatcher status succeed or fail independently',async()=>{
   let h=harness();h.route('/api/dispatcher',async()=>{throw Error('offline');});
   h.route('/api/model-status',ok(observed('responding',true,'model_listed')));await h.connect('synthetic');
-  assert.match(h.ollama(),/서버 응답 · 모델 설치 확인/);assert.match(h.dispatch(),/꺼졌다고 단정할 수는 없/);
+  assert.match(h.ollama(),/실행 중 · 모델 있음/);assert.match(h.dispatch(),/알 수 없음/);assert.match(h.dispatch(),/가져오지 못했/);
   h=harness();h.route('/api/dispatcher',ok(running));h.route('/api/model-status',async()=>{throw Error('offline');});
   await h.connect('synthetic');
-  assert.match(h.dispatch(),/서비스 실행 관찰/);assert.match(h.ollama(),/미확인/);assert.doesNotMatch(h.ollama(),/서버 응답/);
+  assert.match(h.dispatch(),/실행 중/);assert.match(h.ollama(),/알 수 없음/);assert.doesNotMatch(h.ollama(),/실행 중/);
 });
 test('model status resets on disconnect and new token and ignores late responses',async()=>{
   const h=harness(), pending=[];h.route('/api/dispatcher',ok(running));
   h.route('/api/model-status',()=>new Promise(resolve=>pending.push(resolve)));
   await h.connect('first');await h.connect(null);
   pending[0]({ok:true,status:200,json:async()=>observed('responding',true,'model_listed')});await settle();
-  assert.doesNotMatch(h.ollama(),/서버 응답/);assert.match(h.ollama(),/연결하지 않았/);
-  await h.connect('second');await h.connect('third');assert.match(h.ollama(),/확인하고 있어요/);assert.doesNotMatch(h.ollama(),/서버 응답/); // reset at once
+  assert.doesNotMatch(h.ollama(),/실행 중/);assert.match(h.ollama(),/연결하면 확인해요/);
+  await h.connect('second');await h.connect('third');assert.match(h.ollama(),/확인하고 있어요/);assert.doesNotMatch(h.ollama(),/실행 중/); // reset at once
   pending[1]({ok:true,status:200,json:async()=>observed('responding',true,'model_listed')});await settle();
-  assert.doesNotMatch(h.ollama(),/서버 응답/); // second token's late reply is ignored
+  assert.doesNotMatch(h.ollama(),/실행 중/); // second token's late reply is ignored
   pending[2]({ok:true,status:200,json:async()=>observed('connection_refused',null,'connection_refused')});await settle();
   assert.match(h.ollama(),/연결 안 됨/);
 });
@@ -157,10 +160,10 @@ test('model status is not requested while hidden or disconnected and reuses the 
   h.route('/api/model-status',ok(observed('responding',true,'model_listed')));
   await h.intervals[0]();assert.equal(h.requests.length,0);
   h.context.document.hidden=true;await h.connect('synthetic');
-  assert.equal(h.requests.length,0);assert.doesNotMatch(h.ollama(),/서버 응답/);
+  assert.equal(h.requests.length,0);assert.doesNotMatch(h.ollama(),/실행 중/);
   h.context.document.hidden=false;await h.visible();
   assert.equal(h.requests.filter(item=>item.path==='/api/model-status').length,1);
-  assert.match(h.ollama(),/서버 응답 · 모델 설치 확인/);
+  assert.match(h.ollama(),/실행 중 · 모델 있음/);
   assert.equal(h.intervals.length,1);await h.intervals[0]();
   assert.equal(h.requests.filter(item=>item.path==='/api/model-status').length,2);
   assert.equal(h.requests.filter(item=>item.path==='/api/dispatcher').length,2);

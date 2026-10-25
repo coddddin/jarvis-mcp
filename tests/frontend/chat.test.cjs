@@ -81,7 +81,7 @@ test('free dispatch displays no eligible provider separately from delivered resp
   const text=flatten(h.elements.chatMessages);
   assert.match(text,/무료 자동 배정: 사용자 확인 필요/);
   assert.match(text,/응답 전달: 완료/);
-  assert.match(text,/실제 접근 미확인/);
+  assert.match(text,/접근 확인 안 됨/);
   assert.match(h.elements.chatNotice.textContent,/중단/);
 });
 

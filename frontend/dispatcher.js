@@ -97,13 +97,13 @@
   }
 
   // Older servers send only running; newer ones add status. A missing record is not a stopped service.
-  const SERVICE_TEXT = {stopped:'서비스 멈춤', identity_mismatch:'서비스 신원 미확인 (프로세스 번호 재사용)',
-    unknown:'서비스 상태 미확인'};
+  const SERVICE_TEXT = {stopped:'서비스 멈춤', identity_mismatch:'다른 프로그램일 수 있음',
+    unknown:'서비스 상태 알 수 없음'};
   function serviceText(data) {
     const status = data.service.status;
     if (status === undefined) return '서비스 멈춤';
     if (status === 'not_registered') return data.effective_enabled ? '설정은 켜졌지만 서비스 미등록' : '서비스 미등록';
-    return SERVICE_TEXT[status] || '서비스 상태 미확인';
+    return SERVICE_TEXT[status] || '서비스 상태 알 수 없음';
   }
 
   function warn(text) {
@@ -141,7 +141,7 @@
           + (item.fresh ? '' : ' · 오래됨')));
       usage.append(row);
     }
-    if (usage.children.length) usage.append(element('li', 'empty-feed', '마지막으로 관찰한 값입니다. 판단에는 쓰지 않음(오래된 값).'));
+    if (usage.children.length) usage.append(element('li', 'empty-feed', '오래된 값은 배정에 쓰지 않아요.'));
     const show = usage.children.length > 0;
     usage.hidden = !show; usageTitle.hidden = !show;
   }
@@ -161,16 +161,16 @@
     alertList.hidden = !show; alertTitle.hidden = !show;
   }
 
-  // J2/J4: known sums with per-side reporting coverage. A side no recorded run reported is '미보고', not 0.
+  // J2/J4: known sums with per-side reporting coverage. A side no recorded run reported is '모름' (unknown), not 0.
   // Older servers (no quality keys) and pre-quality rows only have totals, labeled unverified, never measured.
   function tokenText(item) {
     const runs = item.usage_quality_runs;
     if (!runs || typeof runs !== 'object' || !('known_input_tokens' in item) || !('known_output_tokens' in item))
-      return '입력 ' + count(item.total_input_tokens) + ' · 출력 ' + count(item.total_output_tokens) + ' 토큰 (사용량 품질 미확인)';
+      return '입력 ' + count(item.total_input_tokens) + ' · 출력 ' + count(item.total_output_tokens) + ' 토큰 (정확도 알 수 없음)';
     const recorded = Object.keys(QUALITY).reduce((sum, key) => sum + (amount(runs[key]) || 0), 0);
     const side = (label, tokens, reported) => {
       const value = amount(tokens);
-      return label + ' ' + (value === null ? '— 미보고' : count(value))
+      return label + ' ' + (value === null ? '— 모름' : count(value))
         + (recorded ? ' (보고 ' + count(amount(reported) || 0) + '/' + count(recorded) + '회)' : '');
     };
     const parts = [side('입력', item.known_input_tokens, item.known_input_runs) + ' · '
@@ -180,15 +180,15 @@
     if (counts.length) parts.push('품질 ' + counts.join(', '));
     const oldInput = amount(item.unrecorded_input_tokens), oldOutput = amount(item.unrecorded_output_tokens);
     if (oldInput !== null || oldOutput !== null)
-      parts.push('품질 기록 전 입력 ' + count(oldInput) + ' · 출력 ' + count(oldOutput) + ' (품질 미확인)');
+      parts.push('품질 기록 전 입력 ' + count(oldInput) + ' · 출력 ' + count(oldOutput) + ' (정확도 알 수 없음)');
     return parts.join(' / ');
   }
 
   function runQuality(run) {
-    if (!run || typeof run !== 'object' || !('usage_quality' in run)) return '사용량 품질 미확인';  // older server
+    if (!run || typeof run !== 'object' || !('usage_quality' in run)) return '사용량 정확도 알 수 없음';  // older server
     if (run.usage_quality === null) return '사용량 기록 안 됨';
     const label = qualityLabel(run.usage_quality);
-    return label ? '사용량 ' + label : '사용량 품질 미확인';
+    return label ? '사용량 ' + label : '사용량 정확도 알 수 없음';
   }
 
   function render(data) {
@@ -226,7 +226,7 @@
       employees.append(row);
     }
     if (names.length) employees.append(element('li', 'empty-feed',
-      '측정은 보고된 이벤트의 입력·출력 값을 읽었다는 뜻이며 실행 전체를 관측했다는 뜻은 아닙니다. 미보고는 0이 아닙니다.'));
+      '"모름"은 0이 아니라 값이 보고되지 않았다는 뜻이에요.'));
 
     recent.replaceChildren();
     const runs = data.recent.slice(0, 10);
