@@ -56,6 +56,59 @@ def test_persisted_history_and_duplicate_request_do_not_repeat_inference(service
         service.send(session, request, 'Different request')
 
 
+def add_turn(service, identity, user, assistant, status='completed'):
+    request = uuid4().hex
+    service.store.begin(identity, request, user, time.time() + 60)
+    service.store.finish(identity, request, reply=assistant, status=status)
+
+
+def test_prior_turns_reach_the_streaming_prompt_without_failed_turns(service, monkeypatch):
+    calls = []
+    def generate(messages, schema, deadline, on_delta=None):
+        calls.append((messages, on_delta))
+        return reply('좋아요.')
+    monkeypatch.setattr(service, '_worker', generate)
+    session = service.store.create()['id']
+    add_turn(service, session, '첫 질문', '첫 답변')
+    add_turn(service, session, '실패한 질문', '', status='failed')
+    service.send(session, uuid4().hex, '다음 질문')
+    messages, on_delta = calls[0]
+    assert on_delta is not None  # the streaming path gets the same history
+    assert [m['content'] for m in messages[1:]] == ['첫 질문', '첫 답변', '다음 질문']
+
+
+def test_history_keeps_the_newest_turns_within_both_limits(service, monkeypatch):
+    monkeypatch.setattr(ChatService, 'HISTORY_TURNS', 2)
+    turns = [{'id': str(index), 'status': 'completed', 'user': f'u{index}', 'assistant': f'a{index}'} for index in range(4)]
+    turns.append({'id': 'now', 'status': 'pending', 'user': 'current', 'assistant': ''})
+    assert [m['content'] for m in ChatService._history(turns, 'now')] == ['u2', 'a2', 'u3', 'a3']
+    monkeypatch.setattr(ChatService, 'HISTORY_CHARACTERS', 5)
+    assert [m['content'] for m in ChatService._history(turns, 'now')] == ['u3', 'a3']
+
+
+def test_repeat_what_i_said_is_answered_from_the_conversation(service, monkeypatch):
+    monkeypatch.setattr(service, '_infer', lambda *args, **kwargs: pytest.fail('no model call expected'))
+    session = service.store.create()['id']
+    assert '아직' in service.send(session, uuid4().hex, '내가 말한거 다시 말해바', mode='auto')['turns'][-1]['assistant']
+    add_turn(service, session, '너를 메인 리드로 써도 되니?', '네, 말씀해주세요.')
+    add_turn(service, session, '실패한 말', '', status='failed')
+    add_turn(service, session, '?', '네, 말씀해주세요.')
+    turn = service.send(session, uuid4().hex, '내가 말한거 다시 말해바', mode='auto')['turns'][-1]
+    assert turn['status'] == 'completed' and turn['mode'] == 'chat'
+    assert '1. 너를 메인 리드로 써도 되니?' in turn['assistant'] and '2. ?' in turn['assistant']
+    assert '실패한 말' not in turn['assistant'] and '네, 말씀해주세요' not in turn['assistant']
+
+
+@pytest.mark.parametrize('message', ['내 이름이 뭐야?', '내가 말한 함수 다시 만들어줘', '내 문서 검색해줘'])
+def test_other_memory_questions_still_go_to_the_model(service, monkeypatch, message):
+    calls = []
+    monkeypatch.setattr(service, '_worker', lambda messages, *args: calls.append(messages) or reply('모델 답변'))
+    session = service.store.create()['id']
+    add_turn(service, session, '내 이름은 해준이야.', '기억할게요.')
+    assert service.send(session, uuid4().hex, message)['turns'][-1]['assistant'] == '모델 답변'
+    assert calls and calls[0][1]['content'] == '내 이름은 해준이야.'
+
+
 def test_tool_result_is_visible_data_and_guarded(service, monkeypatch):
     calls = []
     def generate(messages, schema, deadline, on_delta=None):
