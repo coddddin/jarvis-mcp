@@ -21,8 +21,13 @@ OPERATOR = 'user:heejun'  # the HUD is operator-started and token-gated
 RECENT = 10
 _WRITE_LOCK = threading.Lock()  # HUD POSTs run in worker threads; a double click must not race
 RUN_FIELDS = ('id', 'employee', 'status', 'started', 'ended', 'exit_code', 'input_tokens', 'output_tokens',
-              'usage_quality')
+              'usage_quality', 'model', 'result')
 QUALITY_KEYS = USAGE_QUALITIES + ('unrecorded',)
+# Known ledger notes mapped to fixed codes. Any other note (log names, exception text) never leaves the server.
+RESULTS = {'executable not found': 'executable_missing', 'all models backed off': 'models_backed_off',
+           'no_pid': 'no_pid', 'owner_unverifiable': 'owner_unverifiable'}
+WORKING_LIMIT = 20
+PID_GRACE_SECONDS = 120  # same grace as process_watch: a run gets its pid right after spawn
 
 
 def _number(value):
@@ -46,10 +51,37 @@ def _usage_quality(totals):
 
 def _run_row(row):
     """A recent run with whitelisted fields; usage_quality is a known value or None, never free text."""
-    item = {key: row.get(key) for key in RUN_FIELDS}
+    item = {key: row.get(key) for key in RUN_FIELDS if key != 'result'}
     if item['usage_quality'] not in USAGE_QUALITIES:
         item['usage_quality'] = None
+    item['model'] = _model(item['model'])
+    item['result'] = RESULTS.get(row.get('note'))
     return item
+
+
+def _model(value):
+    return value if isinstance(value, str) and 0 < len(value) <= 100 else None
+
+
+def working(ledger, now):
+    """Runs the ledger still marks running, each with an observed state. Read only: nothing is settled here.
+
+    working: the owner process exists and was created by the run. starting: no pid yet, within the grace.
+    ended: the owner process is gone but the ledger has not closed the row yet; this says nothing about success.
+    unknown: no pid long after the start, or the process cannot be inspected."""
+    with ledger.connection() as db:
+        rows = [dict(row) for row in db.execute(
+            'SELECT id, employee, model, pid, pid_at, started FROM runs WHERE status="running" ORDER BY id DESC LIMIT ?',
+            (WORKING_LIMIT,))]
+    items = []
+    for row in rows:
+        if row['pid'] is None:
+            state = 'starting' if now - row['started'] <= PID_GRACE_SECONDS else 'unknown'
+        else:
+            state = {'alive': 'working', 'dead': 'ended'}.get(ledger.owner_state(row), 'unknown')
+        items.append({'id': row['id'], 'employee': row['employee'], 'model': _model(row['model']),
+                      'started': row['started'], 'state': state})
+    return items
 
 
 def _write_pause(guard, paused, reason, clock):
@@ -130,11 +162,11 @@ def service_state(guard, *, lookup=psutil.Process):
     return result('running', 'matching_pid', pid=pid, started=started)
 
 
-def snapshot(guard, config_path, *, clock=time.time):
-    """Whitelisted fields only: no log paths, notes, prompts or command lines."""
+def snapshot(guard, config_path, *, clock=time.time, alive=None, lookup=None):
+    """Whitelisted fields only: no log paths, notes, prompts or command lines. alive/lookup: test injection."""
     config = DispatcherConfig.model_validate_json(config_path.read_bytes())
     pause_info = read_pause(guard)
-    ledger = DispatchLedger(guard)
+    ledger = DispatchLedger(guard, alive=alive, lookup=lookup)
     summary = ledger.summary(recent=RECENT)
     recent = summary.pop('recent', [])
     employees = {name: {'runs': totals.get('runs') or 0,
@@ -159,6 +191,7 @@ def snapshot(guard, config_path, *, clock=time.time):
         'service': service_state(guard),
         'employees': employees,
         'recent': [_run_row(row) for row in recent[:RECENT]],
+        'working': working(ledger, clock()),
         'watch': _watch(guard, config_path),
         'usage': _usage(guard),
         'alerts': _alerts(guard, clock()),

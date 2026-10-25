@@ -120,7 +120,7 @@ test('recent runs show Korean quality labels; null and invalid values are never 
     input_tokens:10, output_tokens:2, ...changes});
   h.setHandler(() => ({status:200, body:snapshot({recent:[run(1, {usage_quality:'measured'}), run(2, {usage_quality:'missing',
     input_tokens:null, output_tokens:null}), run(3, {usage_quality:null}), run(4, {usage_quality:'<b>x</b>'}),
-    run(5, {usage_quality:'constructor'}), run(6, {})]})}));
+    run(6, {})]})}));
   await h.connect('t');
   const recent = find(h.panel, n => n.attributes['aria-label'] === '최근 실행');
   const rows = recent.children.map(flatten);
@@ -129,9 +129,15 @@ test('recent runs show Korean quality labels; null and invalid values are never 
   assert.doesNotMatch(rows[1], /입력/);
   assert.match(rows[2], /사용량 기록 안 됨/);
   assert.match(rows[3], /사용량 정확도 알 수 없음/);
-  assert.match(rows[4], /사용량 정확도 알 수 없음/);
-  assert.match(rows[5], /사용량 정확도 알 수 없음/);  // older server without the key
+  assert.match(rows[4], /사용량 정확도 알 수 없음/);  // older server without the key
   assert.doesNotMatch(flatten(recent), /<b>x<\/b>|constructor|function/);
+  const h2 = harness();
+  h2.setHandler(() => ({status:200, body:snapshot({recent:[run(5, {usage_quality:'constructor', status:'constructor',
+    result:'toString'})]})}));
+  await h2.connect('t');
+  const odd = flatten(find(h2.panel, n => n.attributes['aria-label'] === '최근 실행'));
+  assert.match(odd, /사용량 정확도 알 수 없음/);assert.match(odd, /알 수 없음/);
+  assert.doesNotMatch(odd, /constructor|function|toString/);
 });
 
 test('employee names and odd token values stay plain text', async () => {
@@ -160,14 +166,56 @@ test('cache is not added again to known input, totals or recent runs', async () 
   assert.doesNotMatch(recent, /600|500|cache/i);
 });
 
-test('recent runs are capped at 10 and names are plain text', async () => {
+test('recent runs are capped at 5 and names are plain text', async () => {
   const h = harness();
   await h.connect('t');
   const recent = find(h.panel, n => n.attributes['aria-label'] === '최근 실행');
-  assert.equal(recent.children.length, 10);
+  assert.equal(recent.children.length, 5);
   assert.match(flatten(recent), /<b>cursor<\/b>/);  // shown literally via textContent, never parsed
   assert.match(flatten(recent), /한도 도달/);
-  assert.match(flatten(recent), /실행 중/);
+  // A ledger row without an end is not shown as running; only the observed list says that.
+  assert.match(flatten(recent), /안 끝남/);assert.doesNotMatch(flatten(recent), /실행 중|일하는 중/);
+  assert.match(flatten(recent), /걸린 시간 2분/);
+});
+
+test('recent runs show the model and only known result lines', async () => {
+  const h = harness();
+  h.setHandler(() => ({status:200, body:snapshot({recent:[
+    {id:1, employee:'cursor', status:'error', started:NOW - 30, ended:NOW, model:'gpt-free', result:'executable_missing'},
+    {id:2, employee:'cursor', status:'error', started:NOW - 30, ended:NOW, result:'C:\secret.log'}]})}));
+  await h.connect('t');
+  const rows = find(h.panel, n => n.attributes['aria-label'] === '최근 실행').children.map(flatten);
+  assert.match(rows[0], /cursor · gpt-free · 걸린 시간 1분 미만 · 실행 파일을 찾지 못했어요/);
+  assert.doesNotMatch(rows[1], /secret/);
+});
+
+test('working list keeps observed, starting, ended and unknown apart', async () => {
+  const h = harness();
+  h.setHandler(() => ({status:200, body:snapshot({working:[
+    {id:1, employee:'cursor', model:'gpt-free', started:NOW - 600, state:'working'},
+    {id:2, employee:'codex', model:null, started:NOW - 30, state:'starting'},
+    {id:3, employee:'opencode', model:null, started:NOW - 900, state:'ended'},
+    {id:4, employee:'claude-code', model:null, started:NOW - 900, state:'unknown'},
+    {id:5, employee:'gemini', model:null, started:NOW, state:'constructor'}]})}));
+  await h.connect('t');
+  const rows = find(h.panel, n => n.attributes['aria-label'] === '지금 일하는 직원').children.map(flatten);
+  assert.match(rows[0], /일하는 중 +cursor · gpt-free · 10분째/);
+  assert.match(rows[1], /시작하는 중 +codex · 1분 미만째/);
+  assert.match(rows[2], /프로그램 끝남 +opencode/);assert.match(rows[2], /결과는 아직 기록되지 않았어요/);
+  assert.doesNotMatch(rows[2], /실패|오류|일하는 중/);  // ended says nothing about success
+  assert.match(rows[3], /알 수 없음 +claude-code/);assert.doesNotMatch(rows[3], /일하는 중|끝남/);
+  assert.match(rows[4], /알 수 없음 +gemini/);assert.doesNotMatch(rows[4], /constructor|function/);
+});
+
+test('working list: empty is nobody, missing key is unknown', async () => {
+  let h = harness();
+  h.setHandler(() => ({status:200, body:snapshot({working:[]})}));
+  await h.connect('t');
+  assert.match(flatten(find(h.panel, n => n.attributes['aria-label'] === '지금 일하는 직원')), /지금 일하는 직원은 없어요/);
+  h = harness();
+  await h.connect('t');  // the default snapshot has no working key, like an older server
+  const list = flatten(find(h.panel, n => n.attributes['aria-label'] === '지금 일하는 직원'));
+  assert.match(list, /알 수 없음/);assert.doesNotMatch(list, /없어요\./);
 });
 
 test('pause posts immediately; resume asks first and a cancel sends nothing', async () => {

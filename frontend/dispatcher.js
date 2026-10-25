@@ -5,7 +5,8 @@
 (() => {
   const byId = id => document.getElementById(id);
   const REFRESH_MS = 10000;
-  const runLabels = {running:'실행 중', ok:'완료', error:'오류', failed:'실패', limit:'한도 도달', eligibility:'사용 자격 없음',
+  // A ledger 'running' row is not proof the program runs; the observed state is in "지금 일하는 직원".
+  const runLabels = {running:'안 끝남', ok:'완료', error:'오류', failed:'실패', limit:'한도 도달', eligibility:'사용 자격 없음',
     timeout:'시간 초과', stopped:'중지됨', lost:'추적 끊김'};
   const runClass = {running:'running', ok:'completed', limit:'needs_user_input', eligibility:'needs_user_input',
     timeout:'timed_out', error:'needs_user_input', failed:'needs_user_input'};
@@ -19,6 +20,14 @@
   // J2 usage quality per run; anything else (old rows, running, unknown text) is never shown raw.
   const QUALITY = {measured:'측정', partial:'일부 보고', unknown:'읽지 못함', missing:'보고 없음'};
   const qualityLabel = value => Object.prototype.hasOwnProperty.call(QUALITY, value) ? QUALITY[value] : null;
+  const known = (table, key) => typeof key === 'string' && Object.prototype.hasOwnProperty.call(table, key) ? table[key] : null;
+  // Observed state of runs the ledger still marks running. 'ended' only says the program is gone, not how it went.
+  const WORKING = {working:['일하는 중', 'running', ''], starting:['시작하는 중', 'running', '프로그램을 띄우는 중이에요.'],
+    ended:['프로그램 끝남', '', '결과는 아직 기록되지 않았어요.'],
+    unknown:['알 수 없음', '', '프로그램 상태를 확인하지 못했어요.']};
+  const RESULTS = {executable_missing:'실행 파일을 찾지 못했어요.', models_backed_off:'모든 모델이 한도 대기 중이었어요.',
+    no_pid:'프로그램이 뜨지 않아 기록을 닫았어요.', owner_unverifiable:'확인할 수 없어 기록을 닫았어요.'};
+  const minutes = seconds => seconds < 60 ? '1분 미만' : Math.round(seconds / 60) + '분';
 
   function element(tag, className, text) {
     const node = document.createElement(tag);
@@ -45,6 +54,7 @@
   actions.append(toggle, reload);
   const employees = element('ul', 'activity'); employees.setAttribute('aria-label', '직원별 누적');
   const recent = element('ol', 'activity'); recent.setAttribute('aria-label', '최근 실행');
+  const working = element('ul', 'activity'); working.setAttribute('aria-label', '지금 일하는 직원');
   // W2 process watch: report-only findings about orphaned records and overdue runs.
   const watchTitle = element('h3', '', '확인이 필요한 기록'); watchTitle.hidden = true;
   const watch = element('ul', 'activity'); watch.setAttribute('aria-label', '감시 경고'); watch.hidden = true;
@@ -54,8 +64,8 @@
   // W3 alerts: what the dispatcher already told the user today (board message to user:heejun).
   const alertTitle = element('h3', '', '오늘 보낸 알림'); alertTitle.hidden = true;
   const alertList = element('ul', 'activity'); alertList.setAttribute('aria-label', '오늘 알림'); alertList.hidden = true;
-  panel.append(heading, summary, notice, actions, watchTitle, watch, usageTitle, usage, alertTitle, alertList, element('h3', '', '직원별 누적'), employees,
-    element('h3', '', '최근 실행 (최대 10개)'), recent);
+  panel.append(heading, summary, notice, actions, element('h3', '', '지금 일하는 직원'), working,
+    element('h3', '', '최근 실행 (최대 5개)'), recent, watchTitle, watch, usageTitle, usage, alertTitle, alertList, element('h3', '', '직원별 누적'), employees);
   workspace.append(panel);
 
   let token = null, generation = 0, loading = false, acting = false, snapshot = null;
@@ -228,23 +238,51 @@
     if (names.length) employees.append(element('li', 'empty-feed',
       '"모름"은 0이 아니라 값이 보고되지 않았다는 뜻이에요.'));
 
+    renderWorking(data);
     recent.replaceChildren();
-    const runs = data.recent.slice(0, 10);
-    if (!runs.length) recent.append(element('li', 'empty-feed', '최근 실행이 없습니다.'));
+    const runs = data.recent.slice(0, 5);
+    if (!runs.length) recent.append(element('li', 'empty-feed', '최근 실행이 없어요.'));
     for (const run of runs) {
       const row = element('li'), left = element('span');
       const details = [];
+      const model = typeof run.model === 'string' && run.model ? run.model : null;
+      if (model) details.push(model);
+      if (isTime(run.ended) && isTime(run.started)) details.push('걸린 시간 ' + minutes(Math.max(0, run.ended - run.started)));
+      const result = known(RESULTS, run.result);
+      if (result) details.push(result);
       if (run.input_tokens != null || run.output_tokens != null)
         details.push('입력 ' + count(run.input_tokens) + ' · 출력 ' + count(run.output_tokens));
       details.push(runQuality(run));
       if (run.exit_code != null) details.push('종료 코드 ' + run.exit_code);
-      if (isTime(run.ended) && isTime(run.started)) details.push(Math.max(0, Math.round((run.ended - run.started) / 60)) + '분');
-      left.append(element('span', 'status ' + (runClass[run.status] || 'cancelled'), runLabels[run.status] || '상태 확인'),
+      left.append(element('span', 'status ' + (known(runClass, run.status) || 'cancelled'), known(runLabels, run.status) || '알 수 없음'),
         element('span', '', ' ' + String(run.employee || '?') + (details.length ? ' · ' + details.join(' · ') : '')));
       const time = element('time', '', isTime(run.started) ? stamp(run.started) : '—');
       if (isTime(run.started)) time.dateTime = new Date(run.started * 1000).toISOString();
       row.append(left, time);
       recent.append(row);
+    }
+  }
+
+  function renderWorking(data) {
+    working.replaceChildren();
+    if (!Array.isArray(data.working)) {  // older server: nothing observed, which is not "nobody works"
+      working.append(element('li', 'empty-feed', '알 수 없음 · 이 자비스 서버는 아직 이 정보를 보내지 않아요.'));
+      return;
+    }
+    if (!data.working.length) working.append(element('li', 'empty-feed', '디스패처가 깨운 직원 중 지금 일하는 직원은 없어요.'));
+    for (const run of data.working.slice(0, 10)) {
+      if (!run || typeof run !== 'object') continue;
+      const [label, kind, note] = known(WORKING, run.state) || WORKING.unknown;
+      const parts = [String(run.employee || '?')];
+      if (typeof run.model === 'string' && run.model) parts.push(run.model);
+      if (isTime(run.started) && isTime(data.read_at)) parts.push(minutes(Math.max(0, data.read_at - run.started)) + '째');
+      if (note) parts.push(note);
+      const row = element('li'), left = element('span');
+      left.append(element('span', 'status ' + kind, label), element('span', '', ' ' + parts.join(' · ')));
+      const time = element('time', '', isTime(run.started) ? stamp(run.started) + ' 시작' : '—');
+      if (isTime(run.started)) time.dateTime = new Date(run.started * 1000).toISOString();
+      row.append(left, time);
+      working.append(row);
     }
   }
 
@@ -287,7 +325,7 @@
     token = next; generation++; snapshot = null; acting = false; loading = false;
     panel.hidden = !token; toggle.disabled = true; showNotice();
     state.textContent = '확인 중'; state.className = 'status'; summary.textContent = '';
-    employees.replaceChildren(); recent.replaceChildren();
+    employees.replaceChildren(); recent.replaceChildren(); working.replaceChildren();
     if (token) load(true);
   });
   document.addEventListener('visibilitychange', () => { if (!document.hidden) load(); });
