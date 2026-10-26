@@ -159,7 +159,8 @@ def test_missing_index_is_reported_without_model_call(tmp_path, vault, monkeypat
 
 @pytest.mark.parametrize('message', ['내 노트에서 회의 찾아줘', '메모해 둔 레시피 알려줘', '정리해 둔 자료 있어?',
                                      '옵시디언에 적어 둔 거', 'search my notes for the plan', '내 vault에서 찾아줘',
-                                     '그 노트에 다음 할 일은 뭐라고 적혀 있었어?', '내 회의 노트 보여줘', '제 메모에 뭐 있어?'])
+                                     '그 노트에 다음 할 일은 뭐라고 적혀 있었어?', '내 회의 노트 보여줘', '제 메모에 뭐 있어?',
+                                     '제 자료에서 견적 찾아줘', '내 노트들 중에 여행 계획', '이 메모 다시 보여줘'])
 def test_note_questions_are_detected(message):
     assert ChatService._is_note_request(message)
 
@@ -168,7 +169,8 @@ def test_note_questions_are_detected(message):
     '지금 메모리 사용량 알려줘', '노트북 추천해줘', '안녕?', '웹에서 날씨 검색해줘', '롤 패치노트 알려줘',
     '파이썬 3.14 릴리스 노트 요약해줘', '애플 키노트 언제야?', 'M8 볼트 규격', '220볼트 콘센트', '우사인 볼트 기록',
     '갤럭시 노트 20 가격', 'HashiCorp Vault 설정법', '메모장 단축키', '메모해줘: 내일 9시 회의', '내 노트북이 느려',
-    '안내 자료 만들어줘', '옵시디언 플러그인 추천해줘'])
+    '안내 자료 만들어줘', '옵시디언 플러그인 추천해줘', '그 자료 웹에서 찾아줘', '이 자료 출처가 어디야?',
+    '이 볼트 몇 mm야?', '제 자료구조 숙제 도와줘', '내 자료형 변환 코드 봐줘'])
 def test_other_questions_are_not_note_questions(message):
     assert not ChatService._is_note_request(message)
 
@@ -260,3 +262,13 @@ def test_conversation_without_note_answers_keeps_outside_tools(service, monkeypa
     send(service, conversation, '안녕?', 'a')
     send(service, conversation, '오늘 기분 어때?', 'b')
     assert EXTERNAL & set(calls[-1]['schema']['properties']['tool']['enum'])
+
+
+def test_offline_turn_prompt_lists_only_the_allowed_tools(service, monkeypatch):
+    calls = recorder(service, monkeypatch, answer('출시는 11월 첫째 주로 정했어요.', 'n1'), answer('네.'))
+    conversation = service.store.create()['id']
+    send(service, conversation, '내 노트에서 프로젝트 회의 내용 찾아줘', 'a')
+    send(service, conversation, '고마워', 'b')
+    system = calls[-1]['messages'][0]['content']
+    assert 'search_public_web' not in system.split('허용 도구:')[1]
+    assert '웹 검색·페이지·피드 도구를 쓸 수 없다' in system
