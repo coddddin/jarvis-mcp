@@ -353,6 +353,9 @@ def parse_usage(text):
 WAKE_INBOX_IDS = 20
 
 
+PYTEST_BASETEMP = '--basetemp=.pytest_cache/basetemp'
+
+
 def wake_prompt(employee, python='.venv/Scripts/python.exe', ids=()):
     """ids: the pending message ids that woke this run. With them the run reads only those messages, so an
     old broadcast backlog cannot push its real input past the inbox page."""
@@ -366,7 +369,10 @@ def wake_prompt(employee, python='.venv/Scripts/python.exe', ids=()):
         f'너는 J.A.R.V.I.S. 프로젝트의 AI 직원 {agent}다. 지금 폴더는 git worktree이고 브랜치는 {branch}다.',
         read,
         '2. AGENTS_CONTEXT.md 규칙을 따른다. 파일을 고치기 전에 board_claim으로 경로를 맡는다. 명부 등급을 넘는 도구는 쓰지 않는다.',
-        f'3. 커밋은 의미 있는 단위가 끝나고 검사({python} -m pytest)가 통과했을 때만 이 브랜치({branch})에 한다. '
+        # The Codex sandbox account cannot write the user's %TEMP%; pytest's temp root goes in the worktree
+        # (.pytest_cache is gitignored and inside the writable workspace).
+        f'3. 커밋은 의미 있는 단위가 끝나고 검사({python} -m pytest {PYTEST_BASETEMP})가 통과했을 때만 '
+        f'이 브랜치({branch})에 한다. '
         'main 브랜치 커밋·merge·push는 금지. push는 디스패처가 한다.',
         "4. 끝나면 board_release(status='review', summary에 브랜치·커밋·검증 결과)를 하고, 요청자와 user:heejun에게 "
         'board_send로 결과를 짧게 알린다. main 머지는 사용자 승인 후에만 이뤄진다.',

@@ -64,7 +64,7 @@ def test_usage_parsing_handles_claude_json_and_jsonl_events():
 def test_prompt_names_the_session_branch_and_merge_rule():
     prompt = wake_prompt('codex', 'C:/p/python.exe')
     assert 'codex:auto' in prompt and 'auto/codex' in prompt
-    assert 'board_inbox' in prompt and 'main' in prompt and 'user:heejun' in prompt and 'C:/p/python.exe -m pytest' in prompt
+    assert 'board_inbox' in prompt and 'main' in prompt and 'user:heejun' in prompt and 'C:/p/python.exe -m pytest --basetemp=.pytest_cache/basetemp' in prompt
     assert '"' not in prompt and '"' not in wake_prompt('cursor')
     assert '수습' in wake_prompt('cursor') and '수습' not in prompt
 
