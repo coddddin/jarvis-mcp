@@ -5,28 +5,31 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="color-scheme" content="dark">
   <title>J.A.R.V.I.S.</title>
-  <link rel="stylesheet" href="assistant.css">
-  <script src="orb.js" defer></script>
-  <script src="assistant.js" defer></script>
+  <link rel="stylesheet" href="/assets/assistant/assistant.css">
+  <script src="/assets/assistant/orb.js" defer></script>
+  <script src="/assets/assistant/connection.js" defer></script>
+  <script src="/assets/assistant/assistant.js" defer></script>
 </head>
 <body>
   <main class="stage" aria-label="자비스">
     <header class="presence">
       <span id="presenceDot" class="presence-dot" aria-hidden="true"></span>
-      <span id="presenceText">준비됨</span>
+      <span id="presenceText">연결 전</span>
     </header>
 
     <section class="core" aria-live="polite">
       <canvas id="orb" class="orb" role="img" aria-label="자비스 상태 표시"></canvas>
       <p id="caption" class="caption">무엇을 도와드릴까요?</p>
       <p id="reply" class="reply" hidden></p>
+      <p id="sources" class="sources" hidden></p>
+      <a id="connectLink" class="connect-link" href="/" hidden>개발자 화면에서 연결</a>
     </section>
 
     <section class="dock" aria-label="자비스에게 말하기">
       <div id="suggestions" class="suggestions">
-        <button type="button" data-prompt="오늘 일정 알려줘">오늘 일정</button>
-        <button type="button" data-prompt="안 읽은 메일 요약해줘">메일 요약</button>
+        <button type="button" data-prompt="지금 내 PC 상태 알려줘">내 PC 상태</button>
         <button type="button" data-prompt="내 노트에서 지난주 회의 결정 찾아줘">내 노트에서 찾기</button>
+        <button type="button" data-prompt="웹에서 오늘 IT 뉴스 검색해줘">웹 검색</button>
       </div>
       <form id="composer" class="composer">
         <label class="sr-only" for="input">자비스에게 메시지</label>
@@ -38,7 +41,7 @@
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 20.5 21 12 3 3.5 3 10l12 2-12 2z"/></svg>
         </button>
       </form>
-      <p class="hint">Space를 길게 누르면 듣고, Esc로 멈춰요.</p>
+      <p class="hint">Space를 길게 누르면 마이크 반응을 보여 줘요. 음성 입력은 준비 중이에요.</p>
     </section>
 
     <a class="dev-link" href="/" title="연결, 직원, 실행 기록">개발자 화면</a>

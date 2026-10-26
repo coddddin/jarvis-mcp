@@ -1,0 +1,176 @@
+const {test} = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const vm = require('node:vm');
+
+class Element {
+  constructor(tag = 'div') {
+    this.tagName = tag.toUpperCase(); this.children = []; this.events = {}; this.dataset = {}; this.value = ''; this.hidden = false;
+    this.disabled = false; this.textContent = ''; this.attributes = {}; this.classes = new Set();
+    this.classList = {toggle: (name, on) => on ? this.classes.add(name) : this.classes.delete(name), contains: name => this.classes.has(name)};
+  }
+  addEventListener(name, fn) { this.events[name] = fn; }
+  setAttribute(name, value) { this.attributes[name] = value; }
+  querySelectorAll() { return this.buttons || []; }
+  closest() { return this; }
+}
+const flush = async () => { for (let i = 0; i < 20; i++) await new Promise(resolve => setImmediate(resolve)); };
+const deferred = () => { let resolve; const promise = new Promise(r => resolve = r); return {promise, resolve}; };
+const source = (changes = {}) => ({note_id: 'm', title: '프로젝트 회의록', path: 'JARVIS-Vault/m.md', line_start: 1, line_end: 13, cited: true, ...changes});
+
+async function harness({hash = '', stored = null, handler, mic = false} = {}) {
+  const ids = [...fs.readFileSync('frontend/assistant/index.html', 'utf8').matchAll(/id="([^"]+)"/g)].map(m => m[1]);
+  const elements = Object.fromEntries(ids.map(id => [id, new Element()]));
+  elements.suggestions.buttons = [new Element('button')];
+  const storage = new Map(stored ? [['jarvis-hud-connection', stored]] : []);
+  const docEvents = {}, winEvents = {}, requests = [], timers = [], orbCalls = [];
+  const location = {hash, pathname: '/assistant'};
+  const document = {getElementById: id => elements[id], hidden: false, activeElement: null,
+    addEventListener: (name, fn) => docEvents[name] = fn};
+  const context = {
+    document, location, crypto: {randomUUID: () => 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'},
+    history: {replaceState: (_, __, path) => {location.hash = ''; location.replaced = path;}},
+    sessionStorage: {getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value), removeItem: key => storage.delete(key)},
+    setTimeout: (fn, ms) => {const timer = {fn, ms}; timers.push(timer); return timer;}, clearTimeout: timer => {if (timer) timer.cancelled = true;},
+    navigator: {mediaDevices: {getUserMedia: async () => {if (!mic) throw new Error('no mic in tests'); return {getTracks: () => [{stop() {}}]};}}},
+    AudioContext: class {createAnalyser() {return {getByteFrequencyData() {}, frequencyBinCount: 8};} createMediaStreamSource() {return {connect() {}};} close() {}},
+    Uint8Array,
+    fetch: async (path, options = {}) => {
+      requests.push({path, options});
+      const [status, data] = await handler(path, options);
+      return {ok: status < 400, status, json: async () => data};
+    },
+  };
+  context.window = {addEventListener: (name, fn) => winEvents[name] = fn,
+    JarvisOrb: {create: () => ({setMode: mode => orbCalls.push(mode), setSource() {}})}};
+  vm.createContext(context);
+  vm.runInContext(fs.readFileSync('frontend/assistant/connection.js', 'utf8'), context);
+  context.window.JarvisConnection = context.window.JarvisConnection || context.JarvisConnection;
+  vm.runInContext(fs.readFileSync('frontend/assistant/assistant.js', 'utf8'), context);
+  await flush();
+  const run = async () => { const due = timers.filter(timer => !timer.cancelled && !timer.done); due.forEach(timer => {timer.done = true; timer.fn();}); await flush(); };
+  return {elements, storage, requests, timers, docEvents, winEvents, document, location, run, orbCalls};
+}
+const listing = [200, {model: 'qwen2.5-coder:7b', conversations: [{id: 'c'.repeat(32), title: 't'}]}];
+const REQUEST = 'aaaaaaaabbbbccccddddeeeeeeeeeeee';
+
+test('connection key and #connect protocol match the HUD', () => {
+  const hud = fs.readFileSync('frontend/hud.js', 'utf8'), own = fs.readFileSync('frontend/assistant/connection.js', 'utf8');
+  const key = /SAVED_CONNECTION='([^']+)'/.exec(hud)[1];
+  assert.match(own, new RegExp(`const KEY = '${key}';`));
+  for (const pattern of ['#connect=([A-Za-z0-9_-]{43})', "'/api/connect'", '[A-Za-z0-9_-]{43}'])
+    assert.ok(hud.includes(pattern) && own.includes(pattern), pattern);
+});
+
+test('one-time code is removed from the address bar, exchanged and kept for this tab', async () => {
+  const token = 't'.repeat(43);
+  const h = await harness({hash: '#connect=' + 'k'.repeat(43), handler: async path =>
+    path === '/api/connect' ? [200, {token}] : listing});
+  assert.equal(h.location.hash, ''); assert.equal(h.location.replaced, '/assistant');
+  assert.equal(JSON.parse(h.requests[0].options.body).code, 'k'.repeat(43));
+  assert.equal(h.storage.get('jarvis-hud-connection'), token);
+  assert.equal(h.requests[1].options.headers.Authorization, 'Bearer ' + token);
+  assert.equal(h.elements.presenceText.textContent, '연결됨 · qwen2.5-coder:7b');
+  assert.equal(h.elements.connectLink.hidden, true);
+  assert.equal(h.elements.send.disabled, false);
+});
+
+test('without a connection the page says so in one line and links to the developer screen', async () => {
+  const h = await harness({handler: async () => assert.fail('no request without a token')});
+  assert.equal(h.elements.caption.textContent, '연결이 필요해요.');
+  assert.equal(h.elements.connectLink.hidden, false);
+  assert.equal(h.elements.send.disabled, true); assert.equal(h.elements.input.disabled, true);
+});
+
+test('a rejected saved token is forgotten', async () => {
+  const h = await harness({stored: 's'.repeat(43), handler: async () => [401, {error: 'connection_required'}]});
+  assert.equal(h.storage.has('jarvis-hud-connection'), false);
+  assert.equal(h.elements.connectLink.hidden, false);
+});
+
+test('a question goes to the chat API and the reply shows with a one-line note source', async () => {
+  const h = await harness({stored: 's'.repeat(43), handler: async (path, options) => {
+    if (options.method === 'POST') return [200, {turns: [{id: REQUEST, status: 'completed', assistant: '11월 첫째 주예요.', sources: [source(), source({title: '메모', line_start: 4, line_end: 4, cited: false})]}]}];
+    return listing;
+  }});
+  h.elements.input.value = '내 노트에서 회의 찾아줘';
+  h.elements.composer.events.submit({preventDefault() {}});
+  await flush();
+  const post = h.requests.find(request => request.options.method === 'POST');
+  assert.equal(post.path, '/api/chat/conversations/' + 'c'.repeat(32) + '/messages');
+  assert.deepEqual(JSON.parse(post.options.body), {request_id: REQUEST, message: '내 노트에서 회의 찾아줘', mode: 'auto'});
+  assert.equal(h.elements.reply.textContent, '11월 첫째 주예요.');
+  assert.equal(h.elements.sources.textContent, '출처: 프로젝트 회의록 줄 1-13');
+  assert.equal(h.elements.sources.hidden, false);
+});
+
+test('uncited notes are labelled, and no sources means no line', async () => {
+  let sources = [source({cited: false})];
+  const h = await harness({stored: 's'.repeat(43), handler: async (path, options) =>
+    options.method === 'POST' ? [200, {turns: [{id: REQUEST, status: 'completed', assistant: '네', sources}]}] : listing});
+  h.elements.composer.events.submit({preventDefault() {}}); h.elements.input.value = '질문';
+  h.elements.composer.events.submit({preventDefault() {}}); await flush();
+  assert.equal(h.elements.sources.textContent, '검색된 노트: 프로젝트 회의록 줄 1-13 (답변 인용 확인 안 됨)');
+  sources = [];
+  h.elements.input.value = '또 질문'; h.elements.composer.events.submit({preventDefault() {}}); await flush();
+  assert.equal(h.elements.sources.hidden, true);
+});
+
+test('the draft streams while pending, polling pauses while hidden and stops when the reply ends', async () => {
+  const answer = deferred();
+  let draft = '초안';
+  const h = await harness({stored: 's'.repeat(43), handler: async (path, options) => {
+    if (options.method === 'POST' && path.endsWith('/messages')) return answer.promise;
+    if (path === '/api/chat/conversations/' + 'c'.repeat(32)) return [200, {turns: [{id: REQUEST, status: 'pending', draft}]}];
+    return listing;
+  }});
+  h.elements.input.value = '질문'; h.elements.composer.events.submit({preventDefault() {}}); await flush();
+  assert.equal(h.elements.send.disabled, true);
+  await h.run();
+  assert.equal(h.elements.reply.textContent, '초안'); assert.ok(h.elements.reply.classList.contains('draft'));
+  const polls = () => h.requests.filter(request => request.path === '/api/chat/conversations/' + 'c'.repeat(32)).length;
+  const before = polls();
+  h.document.hidden = true; await h.run();
+  assert.equal(polls(), before, 'no poll while hidden');
+  draft = '초안 더'; h.document.hidden = false; h.docEvents.visibilitychange(); await flush();
+  assert.equal(polls(), before + 1, 'resumes when visible');
+  assert.equal(h.elements.reply.textContent, '초안 더');
+  answer.resolve([200, {turns: [{id: REQUEST, status: 'completed', assistant: '최종 답변', sources: []}]}]); await flush();
+  assert.equal(h.elements.reply.textContent, '최종 답변'); assert.ok(!h.elements.reply.classList.contains('draft'));
+  const after = polls(); await h.run(); await h.run();
+  assert.equal(polls(), after, 'polling stopped after the reply');
+  assert.equal(h.elements.send.disabled, false);
+});
+
+test('a failed turn is reported without a fake answer and pagehide stops polling', async () => {
+  const answer = deferred();
+  const h = await harness({stored: 's'.repeat(43), handler: async (path, options) =>
+    options.method === 'POST' && path.endsWith('/messages') ? answer.promise : path.endsWith('c'.repeat(32)) ? [200, {turns: []}] : listing});
+  h.elements.input.value = '질문'; h.elements.composer.events.submit({preventDefault() {}}); await flush();
+  h.winEvents.pagehide(); const count = h.requests.length; await h.run();
+  assert.equal(h.requests.length, count, 'no poll after pagehide');
+  const g = await harness({stored: 's'.repeat(43), handler: async (path, options) =>
+    options.method === 'POST' && path.endsWith('/messages') ? [200, {turns: [{id: REQUEST, status: 'failed', assistant: ''}]}] : listing});
+  g.elements.input.value = '질문'; g.elements.composer.events.submit({preventDefault() {}}); await flush();
+  assert.equal(g.elements.caption.textContent, '답변을 완료하지 못했어요. 자동으로 다시 실행하지 않아요.');
+  assert.equal(g.elements.reply.hidden, true);
+});
+
+test('releasing Space only says voice input is not ready; nothing is sent', async () => {
+  const h = await harness({stored: 's'.repeat(43), handler: async () => listing});
+  const posts = () => h.requests.filter(request => request.options.method === 'POST').length;
+  h.docEvents.keydown({code: 'Space', key: ' ', repeat: false, preventDefault() {}});
+  h.docEvents.keyup({code: 'Space'}); await flush();
+  assert.equal(posts(), 0);
+  assert.match(h.elements.caption.textContent, /마이크를 쓸 수 없어요|음성 입력은 준비 중이에요/);
+  assert.ok(!fs.readFileSync('frontend/assistant/assistant.js', 'utf8').includes('SAMPLES'));
+});
+
+test('with a working mic, releasing Space says voice input is coming and sends nothing', async () => {
+  const h = await harness({stored: 's'.repeat(43), handler: async () => listing, mic: true});
+  h.docEvents.keydown({code: 'Space', key: ' ', repeat: false, preventDefault() {}}); await flush();
+  assert.equal(h.elements.caption.textContent, '듣고 있어요');
+  h.docEvents.keyup({code: 'Space'}); await flush();
+  assert.equal(h.elements.caption.textContent, '음성 입력은 준비 중이에요. 입력창에 적어 주세요.');
+  assert.equal(h.requests.filter(request => request.options.method === 'POST').length, 0);
+});
