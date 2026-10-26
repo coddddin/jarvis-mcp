@@ -39,7 +39,10 @@
       body: body === undefined ? undefined : JSON.stringify(body), cache: 'no-store', credentials: 'omit'});
     if (token !== selected || generation !== version) throw new Error('stale');
     if (response.status === 401) {disconnect(); throw new Error(DISCONNECTED);}
-    const data = await response.json();
+    let data;
+    try {data = await response.json();} catch (_) {  // e.g. an HTML error page from something in between
+      throw new Error('자비스 서버 응답을 읽지 못했어요. 잠시 뒤 다시 시도해 주세요.');
+    }
     if (!response.ok) throw new Error(data.error || '자비스 연결을 확인해 주세요.');
     return data;
   }
@@ -56,10 +59,12 @@
   async function startListening() {
     if (mode === 'listening' || pending) return;
     setMode('listening');
+    let stream = null, context = null;
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({audio: true});
+      stream = await navigator.mediaDevices.getUserMedia({audio: true});
       if (mode !== 'listening') {stream.getTracks().forEach(track => track.stop()); return;}
-      const context = new AudioContext(), analyser = context.createAnalyser();
+      context = new AudioContext();
+      const analyser = context.createAnalyser();
       analyser.fftSize = 512;
       analyser.smoothingTimeConstant = .6;
       context.createMediaStreamSource(stream).connect(analyser);
@@ -72,6 +77,10 @@
         return sum / 62 / 255 * 2.4;
       });
     } catch (_) {
+      // Audio setup can fail after the mic was granted: never leave it recording.
+      if (stream) stream.getTracks().forEach(track => track.stop());
+      if (context) {try {context.close();} catch (__) { /* already closed */ }}
+      audio = null; orb.setSource(null);
       setMode('idle', '마이크를 쓸 수 없어요. 입력창에 적어 주세요.');
     }
   }
@@ -148,10 +157,10 @@
       }
     } catch (error) {
       polling = false; clearTimeout(timer);
+      if (!input.value) input.value = text;  // first, so a disconnect (401) never loses the question
       if (version !== generation) return;
       orb.setSource(null);
       showText('', false);
-      if (!input.value) input.value = text;
       if (token) setMode('idle', error.message);
     } finally {
       polling = false; clearTimeout(timer); resumePoll = null;
@@ -191,16 +200,18 @@
     const prompt = event.target.closest('button')?.dataset.prompt;
     if (prompt) ask(prompt);
   });
-  // Hold Space (outside the text field) to see the mic level; Esc stops the mic. Neither cancels a server reply.
+  // Hold Space to see the mic level, only when nothing is focused: on a button, link or field Space keeps its own
+  // meaning. Esc stops the mic. Neither cancels a server reply.
+  const spaceIsFree = () => !document.activeElement || document.activeElement === document.body;
   document.addEventListener('keydown', event => {
     if (event.key === 'Escape') stopListening();
-    if (event.code === 'Space' && document.activeElement !== input && !event.repeat) {
+    if (event.code === 'Space' && spaceIsFree() && !event.repeat) {
       event.preventDefault();
       startListening();
     }
   });
   document.addEventListener('keyup', event => {
-    if (event.code === 'Space' && mode === 'listening' && document.activeElement !== input) stopListening(NOT_YET);
+    if (event.code === 'Space' && mode === 'listening' && spaceIsFree()) stopListening(NOT_YET);
   });
   document.addEventListener('visibilitychange', () => {if (document.hidden) stopListening(); else if (resumePoll) resumePoll();});
   window.addEventListener('pagehide', () => {stopListening(); generation++; token = null; resumePoll = null;});

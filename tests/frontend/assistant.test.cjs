@@ -18,27 +18,29 @@ const flush = async () => { for (let i = 0; i < 20; i++) await new Promise(resol
 const deferred = () => { let resolve; const promise = new Promise(r => resolve = r); return {promise, resolve}; };
 const source = (changes = {}) => ({note_id: 'm', title: '프로젝트 회의록', path: 'JARVIS-Vault/m.md', line_start: 1, line_end: 13, cited: true, ...changes});
 
-async function harness({hash = '', stored = null, handler, mic = false} = {}) {
+async function harness({hash = '', stored = null, handler, mic = false, audioFails = false} = {}) {
+  const track = {stopped: false, stop() {this.stopped = true;}};
   const ids = [...fs.readFileSync('frontend/assistant/index.html', 'utf8').matchAll(/id="([^"]+)"/g)].map(m => m[1]);
   const elements = Object.fromEntries(ids.map(id => [id, new Element()]));
   elements.suggestions.buttons = [new Element('button')];
   const storage = new Map(stored ? [['jarvis-hud-connection', stored]] : []);
   const docEvents = {}, winEvents = {}, requests = [], timers = [], orbCalls = [];
   const location = {hash, pathname: '/assistant'};
-  const document = {getElementById: id => elements[id], hidden: false, activeElement: null,
+  const body = new Element('body');
+  const document = {getElementById: id => elements[id], hidden: false, activeElement: body, body,
     addEventListener: (name, fn) => docEvents[name] = fn};
   const context = {
     document, location, crypto: {randomUUID: () => 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'},
     history: {replaceState: (_, __, path) => {location.hash = ''; location.replaced = path;}},
     sessionStorage: {getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value), removeItem: key => storage.delete(key)},
     setTimeout: (fn, ms) => {const timer = {fn, ms}; timers.push(timer); return timer;}, clearTimeout: timer => {if (timer) timer.cancelled = true;},
-    navigator: {mediaDevices: {getUserMedia: async () => {if (!mic) throw new Error('no mic in tests'); return {getTracks: () => [{stop() {}}]};}}},
-    AudioContext: class {createAnalyser() {return {getByteFrequencyData() {}, frequencyBinCount: 8};} createMediaStreamSource() {return {connect() {}};} close() {}},
+    navigator: {mediaDevices: {getUserMedia: async () => {if (!mic) throw new Error('no mic in tests'); return {getTracks: () => [track]};}}},
+    AudioContext: class {constructor() {if (audioFails) throw new Error('audio setup failed');} createAnalyser() {return {getByteFrequencyData() {}, frequencyBinCount: 8};} createMediaStreamSource() {return {connect() {}};} close() {}},
     Uint8Array,
     fetch: async (path, options = {}) => {
       requests.push({path, options});
       const [status, data] = await handler(path, options);
-      return {ok: status < 400, status, json: async () => data};
+      return {ok: status < 400, status, json: async () => {if (data === 'html') throw new SyntaxError('Unexpected token <'); return data;}};
     },
   };
   context.window = {addEventListener: (name, fn) => winEvents[name] = fn,
@@ -49,7 +51,7 @@ async function harness({hash = '', stored = null, handler, mic = false} = {}) {
   vm.runInContext(fs.readFileSync('frontend/assistant/assistant.js', 'utf8'), context);
   await flush();
   const run = async () => { const due = timers.filter(timer => !timer.cancelled && !timer.done); due.forEach(timer => {timer.done = true; timer.fn();}); await flush(); };
-  return {elements, storage, requests, timers, docEvents, winEvents, document, location, run, orbCalls};
+  return {elements, storage, requests, timers, docEvents, winEvents, document, location, run, orbCalls, track};
 }
 const listing = [200, {model: 'qwen2.5-coder:7b', conversations: [{id: 'c'.repeat(32), title: 't'}]}];
 const REQUEST = 'aaaaaaaabbbbccccddddeeeeeeeeeeee';
@@ -173,4 +175,45 @@ test('with a working mic, releasing Space says voice input is coming and sends n
   h.docEvents.keyup({code: 'Space'}); await flush();
   assert.equal(h.elements.caption.textContent, '음성 입력은 준비 중이에요. 입력창에 적어 주세요.');
   assert.equal(h.requests.filter(request => request.options.method === 'POST').length, 0);
+});
+
+const space = h => ({code: 'Space', key: ' ', repeat: false, prevented: false, preventDefault() {this.prevented = true;}});
+
+test('Space on a focused button, link or field keeps its own meaning and does not start the mic', async () => {
+  const h = await harness({stored: 's'.repeat(43), handler: async () => listing, mic: true});
+  for (const focused of [h.elements.send, h.elements.mic, h.elements.connectLink, h.elements.input]) {
+    h.document.activeElement = focused;
+    const event = space(h);
+    h.docEvents.keydown(event); await flush();
+    assert.equal(event.prevented, false);
+    assert.notEqual(h.elements.mic.attributes['aria-pressed'], 'true');
+  }
+  h.document.activeElement = h.document.body;
+  const event = space(h); h.docEvents.keydown(event); await flush();
+  assert.equal(event.prevented, true);
+  assert.equal(h.elements.mic.attributes['aria-pressed'], 'true');
+});
+
+test('a question is put back in the input when the send ends in a disconnect (401)', async () => {
+  const h = await harness({stored: 's'.repeat(43), handler: async (path, options) =>
+    options.method === 'POST' && path.endsWith('/messages') ? [401, {error: 'connection_required'}] : listing});
+  h.elements.input.value = '긴 질문을 다시 쓰고 싶지 않아요'; h.elements.composer.events.submit({preventDefault() {}}); await flush();
+  assert.equal(h.elements.input.value, '긴 질문을 다시 쓰고 싶지 않아요');
+  assert.equal(h.elements.caption.textContent, '연결이 필요해요.');
+  assert.equal(h.storage.has('jarvis-hud-connection'), false);
+});
+
+test('a failed audio setup after the mic was granted stops the mic', async () => {
+  const h = await harness({stored: 's'.repeat(43), handler: async () => listing, mic: true, audioFails: true});
+  h.docEvents.keydown(space(h)); await flush();
+  assert.equal(h.track.stopped, true);
+  assert.equal(h.elements.caption.textContent, '마이크를 쓸 수 없어요. 입력창에 적어 주세요.');
+});
+
+test('a non-JSON error page is reported in plain words', async () => {
+  const h = await harness({stored: 's'.repeat(43), handler: async (path, options) =>
+    options.method === 'POST' && path.endsWith('/messages') ? [502, 'html'] : listing});
+  h.elements.input.value = '질문'; h.elements.composer.events.submit({preventDefault() {}}); await flush();
+  assert.equal(h.elements.caption.textContent, '자비스 서버 응답을 읽지 못했어요. 잠시 뒤 다시 시도해 주세요.');
+  assert.equal(h.elements.input.value, '질문');
 });
