@@ -42,13 +42,14 @@
           <p class="chat-footnote">필요한 도구와 로컬 협업은 자비스가 진행해요. 웹 검색 시 검색어를 Bing에 보내며, 외부 AI 협업은 자동으로 선택하지 않아요.</p>
           <p id="chatNotice" class="chat-notice" role="status" hidden></p>
           <div class="chat-suggestions"><button type="button" data-chat-prompt="지금 내 PC의 CPU와 메모리 상태를 확인해줘.">내 PC 상태 확인</button><button type="button" data-chat-prompt="등록된 공개 웹 출처를 확인해줘.">연결된 정보 출처</button></div>
-          <div class="chat-suggestions" role="group" aria-label="음성 대화">
+          <label class="voice-consent"><input id="voiceConsent" type="checkbox"> <span>브라우저 음성 인식 사용: 음성이 브라우저 제공자의 외부 서비스로 전송될 수 있습니다.</span></label>
+          <div class="chat-suggestions voice-controls" role="group" aria-label="음성 대화">
             <button id="voiceListen" type="button" disabled aria-pressed="false">말로 입력</button>
             <button id="voiceRead" type="button" disabled>최근 답변 읽기</button>
-            <button id="voiceStop" type="button" disabled>음성 중지</button>
+            <button id="voiceStop" type="button" disabled aria-describedby="voiceStopHelp">음성 중지</button>
           </div>
-          <label class="chat-footnote"><input id="voiceConsent" type="checkbox"> 브라우저 음성 인식 사용: 음성이 브라우저 제공자의 외부 서비스로 전송될 수 있습니다.</label>
-          <p id="voiceStatus" class="chat-footnote" role="status">말한 내용은 입력창에서 확인한 뒤 보내세요. 답변 읽기는 기기의 한국어 음성만 사용합니다.</p>
+          <p id="voiceStopHelp" class="voice-help">음성 입력·읽기만 중지합니다.</p>
+          <p id="voiceStatus" class="voice-status" role="status">말한 내용은 입력창에서 확인한 뒤 보내세요. 답변 읽기는 기기의 한국어 음성만 사용합니다.</p>
           <form id="chatForm" class="chat-composer"><label class="sr-only" for="chatInput">자비스에게 메시지 보내기</label><textarea id="chatInput" rows="2" maxlength="2000" placeholder="자비스에게 이야기해보세요. Shift + Enter로 줄바꿈" required></textarea><button id="chatSend" class="button primary" type="submit">보내기</button></form>
           <p class="chat-footnote">대화와 읽기 도구를 지원합니다. 파일 변경이나 프로그램 실행은 별도 작업으로 진행해요.</p>
         </div>
