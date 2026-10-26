@@ -448,7 +448,7 @@ class ChatService:
         hits = [item for item in result['results'] if item['score'] >= self.NOTE_MIN_SCORE]
         retrieved_at = datetime.now(timezone.utc).isoformat()
         notes = [{'evidence_id': f'n{index}', 'title': item['metadata']['title'],
-                  'line_start': item['line'], 'line_end': item['line'] + item['excerpt'].count('\n'),
+                  'line_start': item['line'], 'line_end': item['line'] + item['excerpt'].rstrip('\n').count('\n'),
                   'excerpt': item['excerpt']} for index, item in enumerate(hits, 1)]
         trace = {'name': 'search_obsidian_vault', 'status': 'ok', 'evidence_id': 'e1', 'retrieved_at': retrieved_at,
                  'detail': redact(json.dumps({'notes': notes, 'stale_documents': len(result['stale_documents'])},

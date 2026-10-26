@@ -61,7 +61,7 @@ def test_note_question_answers_locally_with_line_sources(service, monkeypatch):
     [source] = turn['sources']
     assert source['note_id'] == 'meeting' and source['title'] == '프로젝트 회의록'
     assert source['path'] == 'JARVIS-Vault/meeting.md' and source['cited'] is True
-    assert source['line_start'] == 1 and source['line_end'] >= 13
+    assert source['line_start'] == 1 and source['line_end'] == 13
     assert len(source['source_sha256']) == 64 and 'excerpt' not in source
     # One model call, no tools offered at all, citations restricted to the retrieved notes.
     [call] = calls
