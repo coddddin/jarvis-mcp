@@ -82,7 +82,7 @@ def create_event_app(tasks, *, token, task_ids, origins, chat=None, processes=No
 
     async def asset(request):
         filename = {'/': 'index.html', '/assets/hud.css': 'hud.css', '/assets/hud.js': 'hud.js',
-                    '/assets/task-stream.js': 'task-stream.js', '/assets/chat.js': 'chat.js',
+                    '/assets/task-stream.js': 'task-stream.js', '/assets/chat.js': 'chat.js', '/assets/sources.js': 'sources.js',
                     '/assets/collaboration.js': 'collaboration.js', '/assets/collaboration.css': 'collaboration.css',
                     '/assets/dispatcher.js': 'dispatcher.js', '/assets/briefing.js': 'briefing.js'}[request.url.path]
         return FileResponse(PROJECT_ROOT / 'frontend' / filename, headers=response_headers)
@@ -344,7 +344,7 @@ def create_event_app(tasks, *, token, task_ids, origins, chat=None, processes=No
     # Ollama card: last /api/tags observation for the configured chat model (same gate; no chat => 503).
     extra += model_status_routes(observer_for(chat), valid=valid, origins=origins, headers=response_headers)
     return Starlette(routes=extra + [Route('/', asset), Route('/assets/dispatcher.js', asset), Route('/assets/briefing.js', asset), Route('/assets/hud.css', asset), Route('/assets/hud.js', asset),
-        Route('/assets/task-stream.js', asset), Route('/assets/chat.js', asset),
+        Route('/assets/task-stream.js', asset), Route('/assets/chat.js', asset), Route('/assets/sources.js', asset),
         Route('/api/chat/conversations', chat_api, methods=['GET', 'POST']),
         Route('/api/chat/conversations/{conversation_id}', chat_api, methods=['GET']),
         Route('/api/chat/conversations/{conversation_id}/messages', chat_api, methods=['POST']),

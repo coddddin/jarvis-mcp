@@ -189,6 +189,7 @@
       }
       if (turn.assistant) list.append(bubble('assistant', turn.assistant));
       else if (turn.status === 'pending' && turn.draft) list.append(draftBubble(turn.draft));
+      const sources = window.JarvisSources?.render(turn); if (sources) list.append(sources);
       if (turn.tools?.length) {
         const details = node('details', 'chat-tools');
         details.append(node('summary', '', '확인한 도구 · ' + turn.tools.length + '개'));

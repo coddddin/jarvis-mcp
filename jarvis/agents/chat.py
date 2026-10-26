@@ -52,6 +52,9 @@ class ChatStore:
             # Streamed reply so far, unverified; only shown while the turn is pending, cleared on finish.
             if 'draft' not in columns:
                 db.execute('ALTER TABLE turns ADD COLUMN draft TEXT NOT NULL DEFAULT ""')
+            # Approved Vault notes behind a reply: identity, line range and file hash, never excerpt text.
+            if 'sources' not in columns:
+                db.execute('ALTER TABLE turns ADD COLUMN sources TEXT NOT NULL DEFAULT "[]"')
 
     @contextmanager
     def connection(self):
@@ -107,6 +110,7 @@ class ChatStore:
                 turn['team'] = json.loads(turn['team'])
                 turn['request_plan'] = json.loads(turn['request_plan'])
                 turn['dispatch'] = json.loads(turn['dispatch'])
+                turn['sources'] = json.loads(turn['sources'])
                 # A dead process is visible as interrupted; never fabricate an answer or replay tools.
                 if turn['status'] == 'pending' and time.time() > turn['deadline']:
                     turn['status'] = 'interrupted'
@@ -201,10 +205,13 @@ class ChatStore:
                 raise ChatError('Conversation model budget exhausted.')
             db.execute('UPDATE conversations SET reserved=reserved+9216 WHERE id=?', (identity,))
 
-    def finish(self, identity, request_id, *, reply='', status='completed', tools=()):
+    def finish(self, identity, request_id, *, reply='', status='completed', tools=(), sources=()):
         if status not in {'completed', 'failed'}:
             raise ChatError('Invalid result status.')
+        encoded = json.dumps(list(sources), ensure_ascii=False)
+        if len(encoded.encode()) > 8192:
+            raise ChatError('Source list exceeds storage limit.')
         with self.connection() as db:
-            db.execute('UPDATE turns SET assistant=?,status=?,tools=?,draft="" WHERE conversation=? AND id=? AND status="pending"',
-                       (redact(reply)[:6000], status, json.dumps(tools, ensure_ascii=True), identity, request_id))
+            db.execute('UPDATE turns SET assistant=?,status=?,tools=?,sources=?,draft="" WHERE conversation=? AND id=? AND status="pending"',
+                       (redact(reply)[:6000], status, json.dumps(tools, ensure_ascii=True), encoded, identity, request_id))
             db.execute('UPDATE conversations SET updated=? WHERE id=?', (time.time(), identity))
