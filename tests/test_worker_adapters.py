@@ -39,7 +39,7 @@ def legacy_build_command(employee, config, worktree, prompt, mcp_json, *, execut
                 '--allowedTools', *LEGACY_CLAUDE_TOOLS, *([f'Bash({python} -m pytest:*)'] if python else [])]
     if employee == 'codex':
         # claude/employee-safety: no user config, feature list without the shell, jarvis from mcp_json only.
-        disabled = ['code_mode_host', 'code_mode', 'browser_use', 'browser_use_external', 'computer_use',
+        disabled = ['code_mode', 'browser_use', 'browser_use_external', 'computer_use',
                     'in_app_browser', 'apps', 'plugins', 'hooks', 'image_generation', 'view_image', 'multi_agent',
                     'workspace_dependencies', 'skill_search', 'remote_plugin']
         return [executable, '-a', 'never', 'exec', '--ignore-user-config', '-C', worktree, '--sandbox', 'workspace-write',
@@ -314,10 +314,12 @@ def test_codex_work_run_ignores_user_config_and_keeps_only_the_sandboxed_shell()
     argv = work_argv('codex')
     assert '--ignore-user-config' in argv and 'windows.sandbox="elevated"' in argv
     disabled = [argv[index + 1] for index, part in enumerate(argv) if part == '--disable']
-    assert set(disabled) == set(wa.CODEX_DISABLED_FEATURES) - {'shell_tool', 'unified_exec'} | {'remote_plugin'}
-    for feature in ('computer_use', 'browser_use', 'apps', 'plugins', 'hooks'):
+    kept = {'shell_tool', 'unified_exec', 'code_mode_host'}
+    assert set(disabled) == set(wa.CODEX_DISABLED_FEATURES) - kept | {'remote_plugin'}
+    for feature in ('computer_use', 'browser_use', 'apps', 'plugins', 'hooks', 'code_mode'):
         assert feature in disabled
-    assert 'shell_tool' not in disabled and 'unified_exec' not in disabled
+    # code_mode_host carries every tool call in codex-cli 0.164; disabling it failed the first watched run.
+    assert not kept & set(disabled)
     assert argv[argv.index('--sandbox') + 1] == 'workspace-write' and argv[-1] == 'PROMPT'
 
 
