@@ -344,7 +344,7 @@ def execute_run(run, guard, ledger, board):
     usage = parse_usage_detail(output) or {'input': None, 'output': None, 'cache': None, 'quality': 'missing'}
     failed = process.returncode != 0 or '"is_error":true' in output.replace(' ', '')
     if status is None:
-        status = run_status(output, failed=failed)
+        status = run_status(output, failed=failed, employee=employee)
     ledger.finish(run_id, status=status, exit_code=process.returncode, input_tokens=usage['input'],
                   output_tokens=usage['output'], cache_tokens=usage['cache'], usage_quality=usage['quality'],
                   note=log_path.name)
