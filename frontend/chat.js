@@ -55,8 +55,10 @@
     let reader;
     try {reader = new Recognition();} catch (_) {voiceNote('이 브라우저에서 음성 인식을 시작할 수 없어요.'); return;}
     const identity = voiceContext, original = byId('chatInput').value;
+    let heardFinal = false;
     reader.lang = 'ko-KR'; reader.continuous = true; reader.interimResults = false;
     const active = () => recognition === reader && voiceContext === identity && voiceReady();
+    reader.onstart = () => {if (active()) voiceNote('듣고 있어요. 입력 마치기 또는 Esc로 중지할 수 있어요.');};
     reader.onresult = event => {
       if (!active()) return;
       const phrases = [];
@@ -64,20 +66,38 @@
         const result = event.results[i];
         if (result.isFinal && typeof result[0]?.transcript === 'string') phrases.push(result[0].transcript);
       }
-      if (!phrases.length) return;
+      if (!phrases.some(text => text.trim())) return;
+      heardFinal = true;
       const text = [original, ...phrases].filter(Boolean).join(' ');
       byId('chatInput').value = text.slice(0, 2000);
       if (text.length > 2000) stopVoice('입력 한도 2,000자에 도달했어요. 내용을 확인해주세요.');
       else voiceNote('듣고 있어요. 문장 중간에 쉬어도 자동 전송하지 않아요.');
     };
-    reader.onerror = () => {if (active()) stopVoice('음성을 인식하지 못했어요. 마이크 권한과 연결을 확인하거나 직접 입력해주세요.');};
-    reader.onend = () => {if (active()) {recognition = null; clearTimeout(voiceTimer); voiceTimer = null; voiceNote('입력을 마쳤어요. 내용을 확인하고 보내세요.'); syncVoice();}};
+    reader.onerror = event => {
+      if (!active()) return;
+      const messages = new Map([
+        ['not-allowed', '마이크 사용이 허용되지 않았어요. 이 화면과 Windows의 마이크 권한을 확인해주세요.'],
+        ['audio-capture', '마이크에서 소리를 가져오지 못했어요. 입력 장치와 다른 앱의 마이크 사용을 확인해주세요.'],
+        ['network', '음성 인식 서비스에 연결하지 못했어요. 앱 안의 탭이라면 일반 브라우저에서 같은 주소를 열어보세요.'],
+        ['service-not-allowed', '이 브라우저에서 음성 인식 서비스를 사용할 수 없어요. 음성 인식을 지원하는 브라우저에서 같은 주소를 열어주세요.'],
+        ['language-not-supported', '이 브라우저의 음성 인식 서비스가 한국어를 지원하지 않아요. 직접 입력할 수 있어요.'],
+        ['no-speech', '말소리가 감지되지 않아 입력을 중지했어요. 준비되면 말로 입력을 다시 눌러주세요.'],
+        ['aborted', '브라우저가 음성 입력을 중단했어요. 이미 입력된 내용은 그대로 남아 있어요.']
+      ]);
+      stopVoice(messages.get(event?.error) || '음성 인식을 계속할 수 없었어요. 입력 내용은 유지되며 직접 입력할 수 있어요.');
+    };
+    reader.onend = () => {if (active()) {
+      recognition = null; clearTimeout(voiceTimer); voiceTimer = null;
+      voiceNote(heardFinal ? '입력을 마쳤어요. 내용을 확인하고 보내세요.' : '음성이 입력되지 않은 채 인식이 끝났어요. 준비되면 말로 입력을 다시 눌러주세요.');
+      syncVoice();
+    }};
     recognition = reader;
+    voiceNote('마이크를 여는 중이에요. 권한 안내가 있으면 확인해주세요.');
     try {
       reader.start();
       if (recognition !== reader) return;
       voiceTimer = setTimeout(() => {if (active()) stopVoice('30초 입력을 마쳤어요. 내용을 확인하고 보내세요.');}, VOICE_LIMIT_MS);
-      voiceNote('듣고 있어요. 입력 마치기 또는 Esc로 중지할 수 있어요.'); syncVoice();
+      syncVoice();
     } catch (_) {stopVoice('마이크를 시작하지 못했어요. 직접 입력할 수 있어요.');}
   });
   byId('voiceRead').addEventListener('click', () => {

@@ -264,3 +264,42 @@ test('unsupported APIs keep text chat usable; failed microphone start is recover
   h.elements.voiceConsent.checked=true;h.elements.voiceConsent.events.change();h.elements.voiceListen.events.click();
   assert.match(h.elements.voiceStatus.textContent,/시작하지 못/);assert.equal(h.elements.chatSend.disabled,false);
 });
+
+
+test('voice waits for actual start and distinguishes empty end without automatic retry',async()=>{
+  const h=await voiceHarness();h.consent();h.click('voiceListen');const r=h.readers[0];
+  assert.match(h.elements.voiceStatus.textContent,/마이크를 여는 중/);
+  assert.doesNotMatch(h.elements.voiceStatus.textContent,/듣고 있어요/);
+  r.onstart();assert.match(h.elements.voiceStatus.textContent,/듣고 있어요/);
+  r.onend();assert.match(h.elements.voiceStatus.textContent,/음성이 입력되지 않은 채/);
+  const message=h.elements.voiceStatus.textContent;
+  r.onstart();h.result(r,['늦은 입력']);
+  assert.equal(h.elements.voiceStatus.textContent,message);assert.equal(h.elements.chatInput.value,'');
+  assert.equal(h.readers.length,1);assert.equal(h.elements.voiceStop.disabled,true);
+  h.click('voiceListen');const next=h.readers[1];next.onstart();h.result(next,['실제 입력']);next.onend();
+  assert.match(h.elements.voiceStatus.textContent,/입력을 마쳤어요/);
+  assert.equal(h.elements.chatInput.value,'실제 입력');
+});
+
+test('voice error reasons remain distinct and late callbacks cannot hide them',async()=>{
+  for(const [error,label] of [['not-allowed','마이크 사용이 허용되지'],['audio-capture','소리를 가져오지'],
+    ['network','서비스에 연결하지'],['service-not-allowed','서비스를 사용할 수'],
+    ['language-not-supported','한국어를 지원하지'],['no-speech','말소리가 감지되지'],
+    ['aborted','브라우저가 음성 입력을 중단'],['unknown-secret','계속할 수 없었어요']]){
+    const h=await voiceHarness();h.consent();h.elements.chatInput.value='보존';h.click('voiceListen');const r=h.readers[0];
+    r.onerror({error,message:'private-provider-message'});
+    const note=h.elements.voiceStatus.textContent;assert.ok(note.includes(label),error);
+    assert.doesNotMatch(note,/private-provider|unknown-secret/);
+    r.onend();r.onstart();h.result(r,['늦은 입력']);
+    assert.equal(h.elements.voiceStatus.textContent,note);assert.equal(h.elements.chatInput.value,'보존');
+    assert.ok(r.aborted);assert.ok(h.timers.at(-1).cancelled);assert.equal(h.readers.length,1);
+  }
+});
+
+test('synchronous recognition start is not overwritten by a pending notice',async()=>{
+  class Recognition{start(){this.onstart();}abort(){}}
+  const h=await harness({SpeechRecognition:Recognition});
+  h.elements.voiceConsent.checked=true;h.elements.voiceConsent.events.change();
+  h.elements.voiceListen.events.click();
+  assert.match(h.elements.voiceStatus.textContent,/듣고 있어요/);
+});
