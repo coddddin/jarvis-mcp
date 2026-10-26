@@ -67,11 +67,14 @@ class TelegramState:
                     db.execute(f'SELECT update_id FROM updates WHERE update_id IN ({marks})', ids)}
 
     def recent_answers(self, now):
-        """(time of the latest answered update or None, answers in the last hour) for the reply rate limit."""
+        """(time of the latest answered update or None, answers in the last hour, questions skipped by the rate
+        limit since that answer) for the reply rate limit and the 'N skipped' note."""
         with self.connection() as db:
             row = db.execute('SELECT MAX(received) AS last, SUM(received>=?) AS hour FROM updates '
                              'WHERE outcome IN (?,?)', (now - 3600, *ANSWERS)).fetchone()
-        return row['last'], int(row['hour'] or 0)
+            skipped = db.execute("SELECT COUNT(*) FROM updates WHERE outcome='rate_limited' AND received>=?",
+                                 (row['last'] if row['last'] is not None else now - 3600,)).fetchone()[0]
+        return row['last'], int(row['hour'] or 0), skipped
 
     def record(self, entries, last_update_id):
         """entries: [{'update_id', 'outcome', optional 'chat_id' and 'text'}]. Records the updates, queues the

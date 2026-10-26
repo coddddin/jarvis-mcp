@@ -15,6 +15,7 @@ Usage (operator-started, foreground; nothing registers a service):
 """
 import argparse
 import ctypes
+from http.client import HTTPException
 import json
 import os
 from pathlib import Path
@@ -123,23 +124,28 @@ class HttpTransport:
     def call(self, method, params, *, timeout=15):
         request = Request(f'{API}/bot{self._token}/{method}', data=json.dumps(params).encode(),
                           headers={'Content-Type': 'application/json'}, method='POST')
+        # The error is raised after the except blocks, so it carries no __context__ (the HTTPError holds the URL,
+        # and the URL holds the token).
+        failure, raw = None, None
         try:
             with self._opener.open(request, timeout=timeout) as response:
                 raw = response.read(MAX_BODY + 1)
         except HTTPError as exc:
             try:
                 body = json.loads(exc.read(65536))
-            except (OSError, ValueError):
+            except (OSError, ValueError, HTTPException):
                 body = None
-            raise classify(exc.code, body) from None
-        except (URLError, OSError, ValueError):
-            raise TelegramError('network') from None
+            failure = classify(exc.code, body)
+        except (URLError, OSError, ValueError, HTTPException):   # HTTPException: IncompleteRead, BadStatusLine
+            failure = TelegramError('network')
+        if failure is not None:
+            raise failure
         if len(raw) > MAX_BODY:
             raise TelegramError('invalid_response')
         try:
             body = json.loads(raw)
         except ValueError:
-            raise TelegramError('invalid_response') from None
+            body = None
         if not isinstance(body, dict) or body.get('ok') is not True or 'result' not in body:
             raise TelegramError('invalid_response')
         return body['result']
@@ -189,10 +195,8 @@ def load_token(path=None):
         plain = unprotect(path.read_bytes())
     except OSError:
         raise TokenError('Bot token file could not be read.') from None
-    try:
-        token = plain.decode('ascii')
-    except UnicodeDecodeError:
-        raise TokenError('Bot token format is invalid.') from None
+    # isascii first: a UnicodeDecodeError would keep the decrypted bytes in the exception context.
+    token = plain.decode('ascii') if plain.isascii() else ''
     if not TOKEN.fullmatch(token):
         raise TokenError('Bot token format is invalid.')
     return token
@@ -290,45 +294,41 @@ class Poller:
         now = self.clock()
         seen = self.state.seen(item['update_id'] for item in updates)
         fresh = [item for item in updates if item['update_id'] not in seen]
-        last, hour = self.state.recent_answers(now)
-        entries, backlog, answered = [], [], False
-        status_text = None
-
-        def status():
-            nonlocal status_text
-            if status_text is None:
-                status_text = telegram_view.status_reply(self.read_status(now), now, self.read_service())
-            return status_text
+        last, hour, skipped = self.state.recent_answers(now)
+        entries, questions = [], []   # questions: allowed text messages, in update order
 
         for item in fresh:
             message = item.get('message')
             entry = {'update_id': item['update_id']}
             if not allowed(message, self.config):
                 entries.append({**entry, 'outcome': 'rejected'})
-                continue
-            text, sent_at = message.get('text'), message.get('date')
-            if not isinstance(text, str) or not _int(sent_at):
+            elif not isinstance(message.get('text'), str) or not _int(message.get('date')):
                 entries.append({**entry, 'outcome': 'ignored'})
-                continue
-            if now - sent_at > telegram_view.BACKLOG_SECONDS:
-                backlog.append((item, sent_at))
-                continue
-            if answered or hour >= MAX_PER_HOUR or (last is not None and now - last < MIN_GAP_SECONDS):
-                entries.append({**entry, 'outcome': 'rate_limited'})
-                continue
-            answered, hour = True, hour + 1
-            entries.append({**entry, 'outcome': 'answered', 'chat_id': message['chat']['id'],
-                            'text': self.reply(text, now, status)})
-        if backlog:
-            if hour >= MAX_PER_HOUR:
-                entries += [{'update_id': item['update_id'], 'outcome': 'rate_limited'} for item, _ in backlog]
             else:
-                newest, oldest = backlog[-1][0], min(sent_at for _, sent_at in backlog)
-                text = telegram_view.finish(telegram_view.backlog_prefix(len(backlog), oldest, now) + '\n' + status())
-                entries += [{'update_id': item['update_id'], 'outcome': 'backlog_merged'} for item, _ in backlog[:-1]]
-                entries.append({'update_id': newest['update_id'], 'outcome': 'backlog',
-                                'chat_id': newest['message']['chat']['id'], 'text': text})
+                questions.append(item)
+        if questions:
+            entries += self.answer(questions, now, last=last, hour=hour, skipped=skipped)
         self.state.record(entries, highest)
+
+    def answer(self, questions, now, *, last, hour, skipped):
+        """At most one reply per batch. Questions sent while the PC or poller was off (older than
+        BACKLOG_SECONDS) turn the reply into one status summary that also covers the newer questions."""
+        late = [item for item in questions if now - item['message']['date'] > telegram_view.BACKLOG_SECONDS]
+        if hour >= MAX_PER_HOUR or (not late and last is not None and now - last < MIN_GAP_SECONDS):
+            return [{'update_id': item['update_id'], 'outcome': 'rate_limited'} for item in questions]
+        status = lambda: telegram_view.status_reply(self.read_status(now), now, self.read_service())  # noqa: E731
+        note = f'\n(빈도 제한으로 답하지 않은 질문 {skipped}건)' if skipped else ''
+        if late:
+            oldest = min(item['message']['date'] for item in late)
+            text = telegram_view.backlog_prefix(len(late), oldest, now) + '\n' + status()
+            chosen, outcome, other = late[-1], 'backlog', 'backlog_merged'
+        else:
+            chosen, outcome, other = questions[0], 'answered', 'rate_limited'
+            text = self.reply(chosen['message']['text'], now, status)
+        entries = [{'update_id': item['update_id'], 'outcome': other} for item in questions if item is not chosen]
+        entries.append({'update_id': chosen['update_id'], 'outcome': outcome,
+                        'chat_id': chosen['message']['chat']['id'], 'text': telegram_view.finish(text + note)})
+        return entries
 
     def reply(self, text, now, status):
         command, argument = telegram_view.parse(text)
@@ -413,7 +413,9 @@ def pair(guard, transport, state, *, code, confirm, clock=time.time, seconds=PAI
                 continue
             message, ids = item.get('message'), sender_ids(item.get('message'))
             text = message.get('text') if isinstance(message, dict) else None
-            if found is None and ids and isinstance(text, str) and secrets.compare_digest(text.strip(), code):
+            # Bytes, not str: compare_digest raises TypeError on non-ASCII str, which would crash on every rerun.
+            if (found is None and ids and isinstance(text, str)
+                    and secrets.compare_digest(text.strip().encode('utf-8'), code.encode('ascii'))):
                 found = ids
                 entries.append({'update_id': item['update_id'], 'outcome': 'pairing'})
             else:

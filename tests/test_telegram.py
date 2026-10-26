@@ -1,5 +1,6 @@
 """PA4-T1 Telegram status poller: fake transports only, never a real Telegram call."""
 import ctypes
+from http.client import BadStatusLine, IncompleteRead
 import io
 import json
 import os
@@ -196,10 +197,21 @@ def test_rate_limit_one_answer_per_batch_five_second_gap_and_hourly_cap(env, mon
     clock.now += 6
     poller.handle(*tp._updates([message(4, date=clock.now)]))
     assert outcomes(guard) == {1: 'answered', 2: 'rate_limited', 3: 'rate_limited', 4: 'answered'}
+    replies = [row['text'] for row in outbox(guard)]
+    assert '빈도 제한' not in replies[0] and '빈도 제한으로 답하지 않은 질문 2건' in replies[1]
     monkeypatch.setattr(tp, 'MAX_PER_HOUR', 2)
     clock.now += 10
     poller.handle(*tp._updates([message(5, date=clock.now)]))
     assert outcomes(guard)[5] == 'rate_limited'
+
+
+def test_backlog_and_new_question_in_one_batch_get_one_reply(env):
+    guard, _, _ = env
+    poller, _ = make(env, FakeTransport())
+    poller.handle(*tp._updates([message(1, date=NOW - 3600), message(2, '/task abcdef')]))
+    assert outcomes(guard) == {1: 'backlog', 2: 'backlog_merged'}
+    [reply] = outbox(guard)
+    assert reply['update_id'] == 1 and '질문 1건' in reply['text']
 
 
 def test_board_failure_replies_unknown(env):
@@ -331,6 +343,16 @@ def test_pairing_accepts_the_code_after_local_confirmation(env):
     assert outbox(guard) == []   # the pairing message is never answered as a command later
 
 
+@pytest.mark.parametrize('first', ['안녕', '😀', '１２３４５６'])
+def test_pairing_survives_non_ascii_messages(env, first):
+    guard, _, clock = env
+    transport = FakeTransport(getUpdates=[[message(1, first)], [message(2, '123456')]])
+    config = tp.pair(guard, transport, TelegramState(guard, clock=clock), code='123456',
+                     confirm=lambda ids: True, clock=clock)
+    assert config == CONFIG and outcomes(guard) == {1: 'rejected', 2: 'pairing'}
+    assert transport.calls[1][1]['offset'] == 2    # the cursor moved past the non-ASCII message
+
+
 def test_pairing_declined_or_too_many_wrong_codes(env):
     guard, _, clock = env
     state = TelegramState(guard, clock=clock)
@@ -396,6 +418,8 @@ def test_http_transport_posts_json_and_returns_result():
     (http_error(400, {'ok': False}), 'bad_request', None),
     (http_error(502, {'ok': False}), 'server', None),
     (URLError('down'), 'network', None),
+    (IncompleteRead(b'partial'), 'network', None),
+    (BadStatusLine('garbage'), 'network', None),
     (TimeoutError(), 'network', None),
     (b'not json', 'invalid_response', None),
     (json.dumps({'ok': False, 'description': 'x'}).encode(), 'invalid_response', None),
@@ -405,7 +429,8 @@ def test_http_errors_map_to_fixed_kinds_without_the_token(outcome, kind, retry):
     with pytest.raises(tp.TelegramError) as caught:
         transport.call('getUpdates', {})
     assert caught.value.kind == kind and caught.value.retry_after == retry
-    assert caught.value.__cause__ is None and (caught.value.__context__ is None or caught.value.__suppress_context__)
+    # No chained exception at all: the HTTPError's URL contains the token.
+    assert caught.value.__cause__ is None and caught.value.__context__ is None
     assert FAKE_TOKEN not in str(caught.value) + repr(caught.value) + repr(transport)
 
 
