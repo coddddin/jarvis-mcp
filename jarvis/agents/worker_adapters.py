@@ -25,9 +25,13 @@ CODEX_DISABLED_FEATURES = ('shell_tool', 'unified_exec', 'code_mode_host', 'code
                            'browser_use_external', 'computer_use', 'in_app_browser', 'apps', 'plugins', 'hooks',
                            'image_generation', 'view_image', 'multi_agent', 'workspace_dependencies', 'skill_search')
 # Work mode keeps the shell (tests and git commit run in the sandbox) and also drops remote plugins.
-# Every name was checked against `codex features list` of codex-cli 0.164.0-alpha.11.1 (2026-10-26).
+# It also keeps code_mode_host: in codex-cli 0.164.0-alpha.11.1 every tool call (shell and MCP) goes through it,
+# and without it the first watched run (2026-10-26) failed every call with "code-mode host is disabled".
+# code_mode itself (under development) stays off.
+# Every name was checked against `codex features list` of that version (2026-10-26).
+CODEX_WORK_KEPT_FEATURES = ('shell_tool', 'unified_exec', 'code_mode_host')
 CODEX_WORK_DISABLED_FEATURES = tuple(feature for feature in CODEX_DISABLED_FEATURES
-                                     if feature not in ('shell_tool', 'unified_exec')) + ('remote_plugin',)
+                                     if feature not in CODEX_WORK_KEPT_FEATURES) + ('remote_plugin',)
 
 
 def _local_app_data():
