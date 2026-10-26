@@ -506,3 +506,38 @@ class BoardStore:
                               'updated': int(task['updated'])})
             # Compact by design: details and notes come from board_get; board text is data, not instructions.
             return {'tasks': tasks}
+
+    def created_by(self, creator, *, active=5, closed=3, closed_since=None, prefix=''):
+        """Read-only view of one creator's tasks for status replies: id, title, status, owner, stale, updated.
+
+        Without prefix: the newest `active` unfinished tasks (with their total count) and the newest `closed`
+        done/cancelled tasks updated at or after closed_since. With prefix (6-32 lowercase hex): at most two of
+        this creator's tasks whose id starts with it, so a caller can tell a unique match from an ambiguous one.
+        No detail, notes or paths."""
+        creator = self._agent(creator)
+        if type(active) is not int or type(closed) is not int or not 1 <= active <= 20 or not 0 <= closed <= 20:
+            raise BoardError('active must be 1-20 and closed 0-20.')
+        if prefix and not re.fullmatch(r'[a-f0-9]{6,32}', prefix):
+            raise BoardError('Task id prefix must be 6-32 lowercase hex characters.')
+        now = self.clock()
+        since = now - 86400 if closed_since is None else closed_since
+        fields = 'SELECT id,title,status,owner,lease_until,updated FROM tasks WHERE creator=?'
+
+        def shown(rows):
+            return [{'id': row['id'], 'title': row['title'], 'status': row['status'], 'owner': row['owner'],
+                     'stale': row['status'] == 'claimed' and (row['lease_until'] or 0) <= now,
+                     'updated': int(row['updated'])} for row in rows]
+
+        with self.connection() as db:
+            if prefix:
+                # substr comparison instead of LIKE: ids are hex, but no pattern characters are ever interpreted.
+                rows = db.execute(fields + ' AND substr(id,1,?)=? ORDER BY id LIMIT 2',
+                                  (creator, len(prefix), prefix)).fetchall()
+                return {'matches': shown(rows)}
+            open_rows = db.execute(fields + " AND status NOT IN ('done','cancelled') ORDER BY updated DESC, id DESC "
+                                   'LIMIT ?', (creator, active)).fetchall()
+            total = db.execute("SELECT COUNT(*) FROM tasks WHERE creator=? AND status NOT IN ('done','cancelled')",
+                               (creator,)).fetchone()[0]
+            closed_rows = db.execute(fields + " AND status IN ('done','cancelled') AND updated>=? "
+                                     'ORDER BY updated DESC, id DESC LIMIT ?', (creator, since, closed)).fetchall()
+            return {'active': shown(open_rows), 'active_total': total, 'closed': shown(closed_rows)}

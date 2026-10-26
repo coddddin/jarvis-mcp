@@ -18,6 +18,7 @@
 
 - [플러그인 추가·구조](guides/plugins.md): 파일별 도구와 자동 로더 계약, 공통 실행 경계.
 - [AI 직원 명부와 온보딩](guides/agents-roster.md): config/agents.json 한 곳에 직원 등록, 수습·등급, 새 도구 들이는 절차.
+- [휴대폰 Telegram 상태 조회](guides/telegram.md): PA4-T1 조회 전용, 롱폴링(포트 개방 없음), 페어링한 1:1 대화만, DPAPI 토큰.
 - [W5 디스패처](guides/dispatcher.md): 게시판에 일이 온 AI 직원을 자동으로 깨우는 순환, 브랜치 작업·머지 승인·상한·장부.
 - [에이전트 스킬: 이슈 트래커](agents/issue-tracker.md): 이슈는 JARVIS 게시판 작업으로 다룸.
 - [에이전트 스킬: 분류 라벨](agents/triage-labels.md): 게시판에 라벨이 없어 `Triage: <label>` 줄이나 노트로 기록.
