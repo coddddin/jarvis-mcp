@@ -1,6 +1,20 @@
 # 문서 안내
 
-계획·상태는 [현재 통합 계획](PLAN.md), 개발 방법은 [개발 규칙](DEVELOPMENT.md)을 기준으로 합니다. 프로젝트 루트를 기준으로 실행합니다.
+이 페이지를 개발 문서의 유일한 목차로 사용합니다. Markdown 원문과 상대 링크를 유지해 GitHub와 Obsidian 양쪽에서 읽습니다. Obsidian은 열람·연결 도구이며, 앱이나 플러그인이 있어야 문서가 유효해지는 것은 아닙니다.
+
+## 문서를 찾는 순서
+
+1. 처음 실행하거나 사용하는 사람: 루트 [시작 안내](../README.md) → 필요한 사용 가이드.
+2. 개발하는 사람: [현재 계획](PLAN.md) → [개발 규칙](DEVELOPMENT.md) → [구조](architecture.md) → 변경 대상 가이드.
+3. 지금 진행 중인 일: Board의 담당·claim·인계와 GitHub PR/head를 확인. 과거 보고서나 문서에 복사된 상태를 현재 진행도로 사용하지 않습니다.
+4. 과거 결정·검증 근거: 아래 보관 자료에서 필요한 항목만 확인합니다.
+
+## 저장소 문서와 개인 지식의 경계
+
+- 이 저장소의 `docs/`는 제품 계획·개발 계약·사용법·검증 근거입니다. 현재 기준을 개인 Vault에 복제해 두 번째 원본으로 관리하지 않습니다.
+- 개인 지식은 작업공간의 `JARVIS-Vault`에서 관리합니다. 검색 승인과 민감도는 [Vault 안내](guides/obsidian.md)를 따릅니다. 저장소 문서 전체가 승인 지식으로 자동 편입되는 것은 아닙니다.
+- Obsidian으로 저장소를 별도로 열어 문서 링크를 탐색할 수 있습니다. 이 문서 정리는 Vault 초기화·파일 이동·플러그인 설치·자동 색인·클라우드 동기화를 실행하지 않습니다.
+- 문서 분류·상태·이관 규칙은 [개발 규칙의 문서 관리 절](DEVELOPMENT.md)을 기준으로 합니다.
 
 ## 현재 기준
 - [PLAN.md](PLAN.md): V2~V5를 통합한 유일한 현재 계획·진행 상태.
@@ -11,7 +25,6 @@
 ## 사용 안내
 - [Obsidian 로컬 검색](guides/obsidian.md): 승인된 Markdown 메타데이터 검증·별도 로컬 인덱스·개인자료 비전송.
 - [GitHub 우편함](guides/github-inbox.md) · [로그인 수신](guides/github-inbox-logon.md): 수동 미리보기·승인 Issue 수신·선택 설치.
-- [원격 인계](handoffs/work-2026-10-22.md) · [보안 검토·검증 기록](handoffs/work-review-2026-10-22.md): PR 의존성과 실제 검증 범위.
 - [로컬 리드·외부 작업자 협업](guides/hybrid-team.md): OpenRig 배정 소스 이식, 로컬/Codex 제안 협업과 운영자 CLI.
 - [자비스 전용 채팅](guides/chat.md): 로컬 모델 대화·기록·읽기 도구와 인증·예산 경계.
 - [Claude Code 세션 상태 보고](guides/claude-session-hooks.md): 공식 hook을 내용 없는 공통 신호로, turn_id=prompt_id, 미연결 이벤트와 설치 전 확인.
@@ -37,14 +50,16 @@
 - [로컬 작업 HUD](guides/local-hud.md): 실행·연결 파일 선택·작업/QA/예산/이벤트 표시와 읽기 전용 범위.
 - [REA · Agent Reach](guides/rea-agent-reach.md): 전용 설치, 단일 프로그램 정적 분석과 등록 RSS 읽기.
 
-## 보관 자료 (평소에는 읽지 않음)
+## 보관 자료 (현재 실행 지시가 아님)
 
-당시 기록입니다. 현재 상태는 PLAN.md가 우선합니다. 에이전트는 필요한 절만 grep으로 찾습니다.
+현재 기준은 PLAN.md이며 실시간 진행은 Board/PR에서 확인합니다. 아래 문서는 당시 근거를 보존하는 기록입니다. 기본 온보딩·실행 순서에 넣지 않습니다.
+
+- [2026-10-22 원격 인계](handoffs/work-2026-10-22.md) · [동일 인계의 보안 검토](handoffs/work-review-2026-10-22.md): 역사 기록. 기존 경로는 링크 보존을 위해 유지합니다.
 
 - 단계 보고서: [계획 이력](archive/reports/plan-history.md) · [협업 엔진](archive/reports/hybrid-team.md) · [Phase 1](archive/reports/phase-01.md) · [Phase 2](archive/reports/phase-02.md) · [Phase 2.5](archive/reports/phase-02-5.md) · [Phase 3](archive/reports/phase-03.md) · [REA · Agent Reach](archive/reports/rea-agent-reach.md)
 - 옛 계획 원문: [V2](archive/MASTER_BLUEPRINT_V2.md) · [V3](archive/MASTER_BLUEPRINT_V3.md) · [V4](archive/MASTER_BLUEPRINT_V4.md) · [이전 개발 지침](archive/DEVELOPMENT_GUIDELINES_ORIGINAL.md) · [V5 원안](master_blueprint_v5.md)(사용자 지정 위치의 보관본)
 
 ## 변경 후 확인
 
-단계 완료 체크리스트와 설계 결정 기록은 [현재 계획](PLAN.md)에 누적합니다. 문서를 바꾼 뒤 프로젝트 루트에서 `python scripts/check_docs.py`를 실행합니다. 필수 파일·로컬 파일 링크·문서 목록 누락·지도 길이를 검사하며 저장 시 자동 실행되는 설정은 아닙니다. 검사 범위는 [개발 규칙](DEVELOPMENT.md)을 참조하세요.
+현재 마일스톤과 채택한 결정은 [현재 계획](PLAN.md)에만 반영합니다. PR·Board에는 실제 검사와 인계를 기록하며 같은 내용을 새 보고서로 복제하지 않습니다. 문서를 바꾼 뒤 프로젝트 루트에서 `python scripts/check_docs.py`를 실행합니다. 필수 파일·로컬 파일 링크·문서 목록 누락·지도 길이를 검사하며 저장 시 자동 실행되는 설정은 아닙니다. 검사 범위는 [개발 규칙](DEVELOPMENT.md)을 참조하세요.
 
