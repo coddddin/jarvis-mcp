@@ -398,31 +398,61 @@ class ChatService:
         return '최근에 하신 말이에요.\n\n' + '\n'.join(f'{index}. ' + text.replace('\n', ' ')
                                                     for index, text in enumerate(said, 1))
 
-    # PA1-KNOWLEDGE v1: only questions that name the user's notes search the approved Vault. "메모리" (PC memory)
-    # and "노트북" (laptop) are not notes. Expressions this misses go to the normal chat path (widening is later work).
-    NOTE_REQUEST = re.compile(r'노트(?!북)|메모(?!리)|볼트|옵시디언|내\s*자료|(?:정리|적어|기록)\s*(?:해\s*)?(?:둔|놓은|뒀던)'
-                              r'|(?<![a-z])(?:vault|obsidian|my\s+notes?)(?![a-z])', re.I)
+    # PA1-KNOWLEDGE v1: only questions about the user's own notes search the approved Vault. A note word needs an
+    # owner or "that" marker ("내 노트", "그 메모") or a "kept" verb ("적어 둔"), so 패치노트, 갤럭시 노트, 220볼트,
+    # HashiCorp Vault or 메모장 stay ordinary questions. Missed expressions go to the normal chat path (later work).
+    _NOTE_OWNER = r'(?<![가-힣A-Za-z0-9])(?:내|제|나의|저의|그|이)\s*(?:[가-힣A-Za-z]{1,10}\s+)?'
+    _NOTE_NOUN = r'(?:노트(?!북)|메모(?![리장])|볼트|옵시디언|자료|vault|obsidian)'
+    _NOTE_KEPT = r'(?:정리|적어|기록|메모|저장|써)\s*(?:해\s*)?(?:둔|놓은|놨던|뒀던|두었던)'
+    NOTE_REQUEST = re.compile(_NOTE_OWNER + _NOTE_NOUN + '|' + _NOTE_KEPT
+                              + r'|(?<![a-z])my\s+(?:[a-z]+\s+)?(?:notes?|vault|obsidian)(?![a-z])', re.I)
+    # Words that only say "look in my notes" are removed before scoring, so they do not dilute the topic words.
+    _NOTE_FILLER = re.compile(r'(?:' + _NOTE_OWNER + r')?' + _NOTE_NOUN + r'(?:에서|에는|에|의|를|을|로|속)?(?![가-힣])|'
+        + _NOTE_KEPT + r'|(?<![가-힣])(?:내|제|나의|저의)(?![가-힣])'
+        + r'|(?:찾아|알려|보여|확인해|말해)\s*(?:줘|주세요|줄래|봐|볼래)|(?:뭐였지|뭐였어|뭐야|뭐지|있어|있나|있니)'
+        + r'|(?<![가-힣])(?:얘기|이야기|내용|거|것|게|언제야|언제였지|언제|어떻게|얼마였지|얼마야|있는지|했는지|한\s*거)(?![가-힣])'
+        + r'|(?<![a-z])(?:search|find|in|my|notes?|vault|obsidian|for)(?![a-z])|[?!.~,]', re.I)
     NOTE_EXTERNAL = re.compile(r'무료\s*(?:API|에이전트|모델)|OpenCode|Gemini|제미나이|외부\s*(?:직원|AI|에이전트|모델)'
                                r'|free\s*(?:api|agent)', re.I)
-    # Lexical-hash cosine floor. Synthetic Korean notes (PR description): relevant hits 0.116-0.247, unrelated <= 0.057.
-    NOTE_MIN_SCORE = 0.08
+    # Lexical-hash cosine floor after removing filler words. Measured on 10 synthetic notes (115-1350 chars, PR #55):
+    # relevant 0.040-0.305 and unrelated 0.014-0.073 overlap. 0.06 keeps 19/20 relevant questions and passes 3/12
+    # unrelated ones to the model, which is told to say "not found" and cites what it used.
+    NOTE_MIN_SCORE = 0.06
     NOTE_LIMIT = 3
+    # Tools that send anything out of this PC. A turn never has both note content in context and one of these.
+    EXTERNAL_TOOLS = frozenset({'search_public_web', 'read_public_web_page', 'collect_web_information',
+                                'read_registered_feed_with_agent_reach'})
     NOTE_EXTERNAL_REPLY = ("개인 노트는 외부 직원에게 보내지 않아요. 로컬로 찾으려면 '내 노트에서 ~ 찾아줘'라고 말해 주세요.")
     NOTE_NONE_REPLY = ('승인된 노트에서 관련 내용을 찾지 못했어요. 새로 승인했거나 고친 노트라면 '
                        'Vault 색인(index_obsidian_vault)을 다시 만든 뒤 물어봐 주세요.')
     NOTE_NO_INDEX_REPLY = 'Vault 색인이 아직 없어요. index_obsidian_vault로 승인된 노트를 색인한 뒤 다시 물어봐 주세요.'
     NOTE_FAILED_REPLY = '노트 검색을 완료하지 못했어요. Vault 색인과 노트 상태를 확인해 주세요.'
 
+    # Any wording that may lead this turn to an outside tool (forced search, page reads, live facts, feeds).
+    WEB_REQUEST = (r'웹|인터넷|검색|찾아\s*봐|뉴스|날씨|주가|환율|순위|트렌드|인기\s*키워드|원문|본문|페이지|피드|출처|실시간|최신'
+                   r'|\b(?:web|internet|search|look\s*up|weather|news|stock|exchange\s*rate|trending|ranking|feed|page)\b')
+
     @classmethod
     def _is_note_request(cls, message):
         return cls.NOTE_REQUEST.search(message) is not None
 
+    @classmethod
+    def _note_query(cls, message):
+        query = ' '.join(cls._NOTE_FILLER.sub(' ', message).split())[:500]
+        return query if re.search(r'[^\W_]', query) else message[:500]
+
+    @staticmethod
+    def _note_tainted(turns):
+        """Turns from the first one that gave note excerpts to the model onward. Later answers may repeat note
+        content (a summary, a follow-up), so all of them count as carrying it."""
+        first = next((index for index, turn in enumerate(turns) if turn.get('sources')), len(turns))
+        return turns[:first], turns[first:]
+
     def _current_notes(self, turns):
-        """Drop turns whose cited notes changed or were withdrawn since the answer, so their content stops reaching
-        the model. Stored records stay as they are; deleting old copies is a separate guarantee."""
-        verdict, kept = {}, []
-        for turn in turns:
-            current = True
+        """Cut the context at the first turn whose notes changed or were withdrawn since the answer: that turn and every
+        later one (which may repeat it) stop reaching the model. Stored records stay; deleting old copies is separate."""
+        verdict = {}
+        for index, turn in enumerate(turns):
             for source in turn.get('sources') or []:
                 key = (source.get('path'), source.get('source_sha256'))
                 if key not in verdict:
@@ -430,16 +460,17 @@ class ChatService:
                         verdict[key] = hashlib.sha256(self.notes._read(key[0])).hexdigest() == key[1]
                     except (OSError, ValueError, TypeError):  # KnowledgeError and GuardrailError are ValueErrors
                         verdict[key] = False
-                current = current and verdict[key]
-            if current:
-                kept.append(turn)
+                if not verdict[key]:
+                    self.guard.check_running()
+                    # The in-flight turn itself is kept so callers can still find their own request.
+                    return turns[:index] + [item for item in turns[index:] if item['status'] == 'pending']
         self.guard.check_running()
-        return kept
+        return turns
 
     def _note_answer(self, identity, request_id, message, history):
         """Answers from approved Vault excerpts with the local model only: no other tools, no web, no team."""
         try:
-            result = self.notes.search(message[:500], limit=self.NOTE_LIMIT)
+            result = self.notes.search(self._note_query(message), limit=self.NOTE_LIMIT)
         except KnowledgeError as exc:
             self.guard.check_running()
             reply = self.NOTE_NO_INDEX_REPLY if str(exc).startswith('No index') else self.NOTE_FAILED_REPLY
@@ -559,7 +590,15 @@ class ChatService:
                 answer, traces = self.team.run(identity, request_id, message, external=mode == 'team')
                 self.store.finish(identity, request_id, reply=answer, tools=traces)
                 return self.store.get(identity)
-            history = self._history(self._current_notes(self.store.get(identity)['turns']), request_id)
+            clean, tainted = self._note_tainted(self._current_notes(self.store.get(identity)['turns']))
+            # Note content and outside tools never meet in one turn: a web-like request drops note-derived turns from
+            # the context; any other turn keeps them and loses the outside tools instead.
+            web_turn = bool((plan is not None and (plan.web_action != 'none' or plan.evidence == 'external'))
+                            or re.search(self.WEB_REQUEST, message, re.I))
+            notes_in_context = any(turn['id'] != request_id and turn['status'] == 'completed' for turn in tainted)
+            history = self._history(clean if web_turn else clean + tainted, request_id)
+            offline = notes_in_context and not web_turn
+            tools = [name for name in self.tools if not (offline and name in self.EXTERNAL_TOOLS)]
             system = ('너는 사용자의 PC에서 실행되는 개인 비서 J.A.R.V.I.S.다. 자연스러운 한국어로 간결하게 대화하라. '
                 '대화를 기억하되 실제로 관찰하거나 도구로 확인하지 않은 실행/설치/분석 성공을 주장하지 마라. '
                 '사용 가능 기능은 일반 대화, PC 상태 확인, 로컬 문서 검색, 승인된 노트 검색(노트를 언급한 질문), 등록된 공개 피드 읽기, 명시한 파일의 정적 분석이다. '
@@ -590,8 +629,10 @@ class ChatService:
                 self.store.reserve(identity)
                 schema = ChatDecision.model_json_schema()
                 schema['required'] = list(schema.get('required', [])) + ['basis', 'evidence_ids']
-                schema['properties']['tool']['enum'] = ['none'] if iteration == 2 else ['none', *self.tools]
-                if iteration == 0 and ((plan is not None and plan.web_action != 'none') or re.search(r'웹.{0,12}검색|웹에서|\blook\s*up\b|\bsearch\b.{0,15}\bweb\b', message, re.I)):
+                schema['properties']['tool']['enum'] = ['none'] if iteration == 2 else ['none', *tools]
+                if offline:
+                    pass  # no forced outside tool while note content is in the context
+                elif iteration == 0 and ((plan is not None and plan.web_action != 'none') or re.search(r'웹.{0,12}검색|웹에서|\blook\s*up\b|\bsearch\b.{0,15}\bweb\b', message, re.I)):
                     schema['properties']['tool']['enum'] = ['search_public_web']
                 elif iteration == 0 and re.search(r'출처.{0,8}목록.{0,8}먼저', message):
                     schema['properties']['tool']['enum'] = ['list_web_sources']
