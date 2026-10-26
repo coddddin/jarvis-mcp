@@ -167,12 +167,21 @@ def create_event_app(tasks, *, token, task_ids, origins, chat=None, processes=No
                 or request.headers.get('origin') is not None and request.headers['origin'] not in origins):
             return JSONResponse({'error': 'origin_denied'}, status_code=403, headers=response_headers)
         header = request.headers.get('authorization', '')
-        if request.method == 'GET':
+        # The trace route is registered GET-only and never reaches the ingest branch, whatever its method.
+        trace = 'task_id' in request.path_params
+        if request.method == 'GET' or trace:
             if not header.startswith('Bearer ') or not valid(header[7:]):
                 return JSONResponse({'error': 'connection_required'}, status_code=401, headers=response_headers)
+            # Activity task IDs, not Board or selected TaskStore IDs. The HUD token already reads every run via
+            # /api/activity, so the trace adds no wider scope.
+            if trace and not re.fullmatch(r'[a-f0-9]{32}', request.path_params['task_id']):
+                return JSONResponse({'error': 'invalid_activity_task'}, status_code=400, headers=response_headers)
             if activity is None:
                 return JSONResponse({'error': 'activity_unavailable'}, status_code=503, headers=response_headers)
             try:
+                if trace:
+                    return JSONResponse(await asyncio.to_thread(activity.trace, request.path_params['task_id']),
+                                        headers=response_headers)
                 return JSONResponse(await asyncio.to_thread(activity.inspect, limit=100), headers=response_headers)
             except Exception:
                 return JSONResponse({'error': 'activity_unavailable'}, status_code=503, headers=response_headers)
@@ -341,5 +350,6 @@ def create_event_app(tasks, *, token, task_ids, origins, chat=None, processes=No
         Route('/api/chat/conversations/{conversation_id}/messages', chat_api, methods=['POST']),
         Route('/api/connect', connect_api, methods=['POST']),
         Route('/api/sessions', session_status), Route('/api/activity', activity_api), Route('/api/activity/runs/{run_id}/events', activity_api, methods=['POST']),
+        Route('/api/activity/tasks/{task_id}/trace', activity_api, methods=['GET']),
         Route('/assets/collaboration.js', asset), Route('/assets/collaboration.css', asset), Route('/api/collaboration', collaboration),
         Route('/api/tasks', listing), Route('/api/processes', listing), WebSocketRoute('/tasks/{task_id}/events', watch)])
