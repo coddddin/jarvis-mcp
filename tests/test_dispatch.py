@@ -104,6 +104,22 @@ def test_ledger_counts_runs_per_local_day_and_tracks_exhaustion(tmp_path):
     assert summary['codex']['total_input_tokens'] == 101
 
 
+def test_ledger_finished_runs_counts_only_ended_runs_across_employees(tmp_path):
+    ledger = DispatchLedger(Guardrails(tmp_path), clock=lambda: NOW, alive=lambda pid: True)
+    assert ledger.finished_runs() == 0
+
+    codex_run = ledger.start('codex', pid=1234)
+    assert ledger.finished_runs() == 0
+    ledger.finish(codex_run, status='ok', exit_code=0, input_tokens=1, output_tokens=1, note='')
+    assert ledger.finished_runs() == 1
+
+    cursor_run = ledger.start('cursor', pid=1235)
+    ledger.start('claude-code', pid=1236)
+    assert ledger.finished_runs() == 1
+    ledger.finish(cursor_run, status='error', exit_code=1, input_tokens=None, output_tokens=None, note='')
+    assert ledger.finished_runs() == 2
+
+
 def test_ledger_treats_a_dead_running_pid_as_not_running(tmp_path):
     ledger = DispatchLedger(Guardrails(tmp_path), alive=lambda pid: False)
     ledger.start('cursor', pid=999999)
