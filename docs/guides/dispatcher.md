@@ -28,7 +28,7 @@ API 키 환경변수만으로 로그인한 CLI나 SSH 에이전트 환경에 의
    - Claude Code: `claude -p --setting-sources "" --strict-mcp-config`(자비스만) `--permission-mode acceptEdits`, 허용 도구는 파일 편집·git 상태/커밋·프로젝트 pytest·게시판 9개. 권한 우회 옵션은 쓰지 않는다.
    - Codex: `codex -a never exec --ignore-user-config --sandbox workspace-write -C <worktree> --add-dir <.git>`. 사용자 설정(플러그인·다른 MCP·notify)은 읽지 않고, Windows 샌드박스는 `elevated`로 고정한다. 셸과 도구 호출 경로(`code_mode_host`, 이 버전에서는 모든 도구 호출이 이를 거친다)만 남기고 화면 조작·브라우저·앱·플러그인·훅·실험 기능 `code_mode` 등은 `--disable`로 끄며, MCP는 자비스 게시판 9개만(`-c`로 지정·자동 승인) 쓴다. 네트워크 push는 디스패처가 한다.
    - Cursor(수습): `agent -p --approve-mcps --trust`, `--force` 없음. 파일 수정·커밋 없이 검토·제안만. 프로젝트 `.cursor/cli.json`이 게시판 도구만 허용한다.
-   - OpenCode(수습, 무료 모델): `opencode-cli run --standalone -m <무료 모델> --format json`, 설정은 `OPENCODE_CONFIG_CONTENT`(파일 수정·웹·셸·작업 폴더 밖 접근 금지, 게시판 도구만). 403 FreeTierError는 `eligibility`로 기록하고 대기. 자세히는 [직원 명부](agents-roster.md).
+   - OpenCode(수습, 무료 모델): `opencode-cli run --standalone -m <무료 모델> --format json`, 설정은 `OPENCODE_CONFIG_CONTENT`(파일 수정·웹·셸·작업 폴더 밖 접근 금지, 게시판 도구만). 403 FreeTierError는 `eligibility`로 기록하고 대기(이 판정은 OpenCode 실행에만 한다. 다른 직원의 로그는 저장소 글을 인용할 수 있다). 자세히는 [직원 명부](agents-roster.md).
 5. 끝나면 장부(`작업공간/.jarvis-dispatch/ledger.sqlite3`)에 상태·종료 코드·토큰을 기록한다. 로그는 `%LOCALAPPDATA%\JarvisDispatch\logs`.
 6. 한도 오류(usage/rate limit, quota, 429 등)면 1시간 대기 후 다시 시도하고, 연속이면 2배씩 최대 6시간. 회복은 다음 실행 결과로 확인한다(시간으로 추정하지 않음).
 7. 브랜치에 새 커밋이 있으면 `origin`에 push. 실패·시간 초과·한도는 `user:heejun`에게 게시판 메시지로 알린다. 디스패처의 git은 모두 빈 훅 폴더(`%LOCALAPPDATA%\JarvisDispatch\no-hooks`)와 `core.fsmonitor=false`로 실행한다.

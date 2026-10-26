@@ -720,14 +720,23 @@ def test_a_run_without_a_model_still_backs_off_the_employee(tmp_path):
 def test_run_status_uses_opencode_wording_for_a_missing_model():
     from jarvis.agents.dispatch_policy import run_status
     # Wording from opencode-cli: error class ProviderModelNotFoundError, message 'Model not found: <provider>/<model>'.
-    assert run_status('Model not found: opencode/old-free\nDid you mean: opencode/new-free', failed=True) == 'model_missing'
-    assert run_status('{"type":"error","error":{"name":"ProviderModelNotFoundError"}}', failed=True) == 'model_missing'
+    assert run_status('Model not found: opencode/old-free\nDid you mean: opencode/new-free', failed=True, employee='opencode') == 'model_missing'
+    assert run_status('{"type":"error","error":{"name":"ProviderModelNotFoundError"}}', failed=True, employee='opencode') == 'model_missing'
     # A successful run that merely quotes the wording (e.g. it read these tests) is not a missing model.
-    assert run_status('read file: Model not found: opencode/old-free', failed=False) == 'ok'
-    assert run_status('{"name":"FreeTierError"} Model not found: a/b', failed=True) == 'eligibility'
-    assert run_status('rate limit exceeded', failed=True) == 'limit'
-    assert run_status('the model was not found in the docs', failed=True) == 'error'
-    assert run_status('fine', failed=False) == 'ok'
+    assert run_status('read file: Model not found: opencode/old-free', failed=False, employee='opencode') == 'ok'
+    assert run_status('{"name":"FreeTierError"} Model not found: a/b', failed=True, employee='opencode') == 'eligibility'
+    assert run_status('rate limit exceeded', failed=True, employee='opencode') == 'limit'
+    assert run_status('the model was not found in the docs', failed=True, employee='opencode') == 'error'
+    assert run_status('fine', failed=False, employee='opencode') == 'ok'
+
+
+def test_only_opencode_runs_can_be_free_tier_refusals():
+    from jarvis.agents.dispatch_policy import run_status
+    # Codex run 5 read this test file, quoted 'FreeTierError' in its log, and was backed off as 'eligibility'.
+    quoted = 'command output: # a custom restricted agent triggered FreeTierError 403'
+    assert run_status(quoted, failed=False, employee='codex') == 'ok'
+    assert run_status(quoted, failed=True, employee='claude-code') == 'error'
+    assert run_status(quoted, failed=False, employee='opencode') == 'eligibility'
 
 
 def test_models_line_has_a_fixed_format_and_no_free_text():

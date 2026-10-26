@@ -236,11 +236,12 @@ def detect_model_missing(text):
     return bool(MODEL_MISSING_PATTERN.search(text or ''))
 
 
-def run_status(output, *, failed):
+def run_status(output, *, failed, employee):
     """Ledger status for a finished run. A free-tier refusal can arrive as an error event with exit code 0,
-    so it is checked first (as before). A missing model counts only for a failed run: a successful run's
-    output may quote the wording (this repository's own tests and docs contain it)."""
-    if detect_eligibility(output):
+    so it is checked first (as before), but only for OpenCode, the only employee with a free tier: another
+    employee's log can quote the wording from this repository (Codex run 5 read tests/test_dispatch.py and was
+    backed off). A missing model counts only for a failed run, for the same reason."""
+    if employee == 'opencode' and detect_eligibility(output):
         return 'eligibility'
     if not failed:
         return 'ok'
