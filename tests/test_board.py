@@ -519,8 +519,10 @@ def test_message_headers_are_one_line_redacted_and_never_mark_read(board):
                             ('user:heejun', 'codex', None, 'api_key = sk-abcdef1234567890', 1.0)).lastrowid
     long = board.send('user:heejun', 'codex', 'x' * 300)['id']
     headers = board.message_headers([plain, linked, secret, long, 999999, 0, -1, True, '3'])
-    assert headers[0] == {'id': plain, 'sender': 'claude-code:main', 'title': 'first line here'}
-    assert headers[1] == {'id': linked, 'sender': 'user:heejun', 'title': 'Fix chat routing'}  # the task title
+    assert headers[0] == {'id': plain, 'sender': 'claude-code:main', 'title': 'first line here',
+                          'task_id': None, 'task_available': False}
+    assert headers[1] == {'id': linked, 'sender': 'user:heejun', 'title': 'Fix chat routing',  # the task title
+                          'task_id': task, 'task_available': True}
     assert 'sk-' not in headers[2]['title'] and 'REDACTED' in headers[2]['title']
     assert headers[3]['title'] == 'x' * 60
     assert headers[4] == {'id': 999999, 'missing': True}
@@ -533,3 +535,78 @@ def test_message_headers_take_at_most_twenty_ids(board):
     ids = [board.send('user:heejun', 'codex', f'm{i}')['id'] for i in range(25)]
     assert [h['id'] for h in board.message_headers(ids)] == ids[:20]
     assert board.message_headers([]) == []
+
+
+def _raw_message(board, task_id, body='raw body'):
+    """A row as an older or corrupt writer might have left it; send() would refuse it."""
+    with board.connection() as db:
+        return db.execute('INSERT INTO messages(sender,recipient,task_id,body,created) VALUES(?,?,?,?,?)',
+                          ('user:heejun', 'codex', task_id, body, 1.0)).lastrowid
+
+
+def _board_state(board):
+    with board.connection() as db:
+        return ([tuple(row) for row in db.execute('SELECT * FROM tasks ORDER BY id')],
+                [tuple(row) for row in db.execute('SELECT * FROM reads ORDER BY message_id, reader')],
+                [tuple(row) for row in db.execute('SELECT * FROM status_events ORDER BY id')])
+
+
+def test_message_headers_carry_only_the_saved_task_id(board):
+    task = make(board)
+    board.claim(CLAUDE, task)
+    linked = board.send('user:heejun', 'codex', 'go\nsecret detail', task_id=task)['id']
+    unlinked = board.send('user:heejun', 'codex', f'see task {task}')['id']  # an ID in the body is not a link
+    before = _board_state(board)
+    pending = board.pending_ids('codex')
+    headers = board.message_headers([linked, unlinked])
+    assert headers == [
+        {'id': linked, 'sender': 'user:heejun', 'title': 'Fix chat routing', 'task_id': task, 'task_available': True},
+        {'id': unlinked, 'sender': 'user:heejun', 'title': f'see task {task}', 'task_id': None,
+         'task_available': False}]
+    for header in headers:  # no Board status, owner or verification is read or inferred
+        assert not {'status', 'owner', 'lease_until', 'verification', 'claimed', 'done'} & set(header)
+    assert _board_state(board) == before and board.pending_ids('codex') == pending
+
+
+def test_message_header_keeps_a_saved_id_whose_task_row_is_gone(board):
+    task = make(board)
+    message = board.send('user:heejun', 'codex', 'first line\nmore', task_id=task)['id']
+    with board.connection() as db:  # simulate a pruned task record
+        db.execute('DELETE FROM tasks WHERE id=?', (task,))
+    assert board.message_headers([message]) == [
+        {'id': message, 'sender': 'user:heejun', 'title': 'first line', 'task_id': task, 'task_available': False}]
+    with board.connection() as db:  # no stand-in task is created
+        assert db.execute('SELECT COUNT(*) FROM tasks').fetchone()[0] == 0
+
+
+@pytest.mark.parametrize('stored', ['api_key=sk-abcdef1234567890abcdef1234', 'A' * 32, 'a' * 31, 'a' * 33,
+                                    'a' * 32 + '\n', ' ' + 'a' * 31, 'g' * 32, '', 12345, b'a' * 32])
+def test_malformed_saved_task_id_never_leaves(board, stored):
+    message = _raw_message(board, stored)
+    if isinstance(stored, str) and stored:
+        with board.connection() as db:  # even a task row matching the corrupt ID is not linked
+            db.execute('INSERT INTO tasks VALUES (?,?,?,?,?,?,?,?,?,?,?)',
+                       (stored, 'Linked by corrupt id', '', 'open', CODEX, None, None, '[]', '[]', 1.0, 1.0))
+    header = board.message_headers([message])[0]
+    assert header['task_id'] is None and header['task_available'] is False
+    assert header['title'] == 'raw body'
+    dumped = json.dumps(header)
+    assert 'sk-' not in dumped and 'Linked by corrupt id' not in dumped
+    if isinstance(stored, str) and len(stored) >= 8:
+        assert stored.strip() not in dumped
+
+
+def test_message_headers_keep_order_duplicates_missing_and_the_limit(board):
+    task = make(board)
+    first = board.send('user:heejun', 'codex', 'one', task_id=task)['id']
+    second = board.send('user:heejun', 'codex', 'two', task_id=task)['id']
+    gone = board.send('user:heejun', 'codex', 'pruned')['id']
+    with board.connection() as db:
+        db.execute('DELETE FROM messages WHERE id=?', (gone,))
+    ids = [second, gone, first, second] + [first] * 20
+    headers = board.message_headers(ids)
+    assert [h['id'] for h in headers] == ids[:20]
+    assert headers[1] == {'id': gone, 'missing': True}  # a pruned message keeps the old shape
+    assert headers[0] == headers[3] and headers[0]['task_id'] == headers[2]['task_id'] == task
+    assert all(h['task_available'] for h in headers if not h.get('missing'))
+    assert board.pending_ids('codex') == [first, second]  # nothing was marked read
