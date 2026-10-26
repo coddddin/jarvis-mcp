@@ -3,7 +3,8 @@
 Events come as plain data from the dispatcher tick (board rows, adapter check codes, process watch
 findings), so this module stays in the agents layer. Text is whitelisted: task titles (redacted, max 60
 characters), employee IDs and fixed Korean phrases; never notes, paths, commands or log names. Delivery
-(board_send) is the caller's job; Windows toast notifications are stage 2.
+(board_send) is the caller's job; Windows toast notifications are stage 2. The Telegram status poller (PA4-T1)
+also reports its own stop reasons here, as fixed codes.
 """
 from contextlib import contextmanager
 import sqlite3
@@ -23,6 +24,11 @@ WATCH_TEXT = {'service_down': '디스패처 서비스가 꺼져 있음 (설정�
               'overdue': '실행 제한 시간 초과'}
 # Only a missing record while enabled and not paused; a stopped or reused pid is service_down above.
 SERVICE_TEXT = {'not_registered': '디스패처 설정은 켜졌지만 서비스가 등록되지 않음 (일시정지 아님)'}
+# PA4-T1: why the Telegram status poller stopped or could not reply. Fixed text only, never API responses.
+TELEGRAM_TEXT = {'token_invalid': 'Telegram 봇 토큰이 거부됨 (조회 중단, 토큰 다시 설정 필요)',
+                 'conflict': 'Telegram 다른 조회 프로그램과 충돌 (조회 중단)',
+                 'webhook_set': 'Telegram 웹훅이 설정되어 있어 조회를 시작하지 않음',
+                 'blocked': 'Telegram 봇이 차단되어 답장을 보내지 못함'}
 
 
 def day_of(now):
@@ -37,11 +43,13 @@ def _who(agent):
     return str(agent or '-').split(':')[0]
 
 
-def events(*, stale=(), blocked=(), problems=None, not_woken=(), findings=(), service=None, unchanged=()):
+def events(*, stale=(), blocked=(), problems=None, not_woken=(), findings=(), service=None, unchanged=(),
+           telegram=()):
     """[(key, text)] in a stable order. stale/blocked: board task rows; problems: {employee: [codes]};
     not_woken: employees with waiting work the adapter check kept asleep; findings: process_watch findings;
     service: dispatcher service status, passed only when the dispatcher is enabled and not paused;
-    unchanged: employees not woken again because their unread input is the same as their last run's (J2 H-02)."""
+    unchanged: employees not woken again because their unread input is the same as their last run's (J2 H-02);
+    telegram: TELEGRAM_TEXT codes from the Telegram status poller (unknown codes are dropped)."""
     found = []
     for task in stale:
         found.append((f"stale_claim:task:{task['id']}", f'멈춘 담당: {_title(task)}({_who(task.get("owner"))})'))
@@ -64,6 +72,9 @@ def events(*, stale=(), blocked=(), problems=None, not_woken=(), findings=(), se
         found.append((f"watch:{kind}:{item.get('ref')}", WATCH_TEXT[kind] + suffix))
     if service in SERVICE_TEXT:
         found.append((f'service:{service}', SERVICE_TEXT[service]))
+    for code in sorted(set(telegram)):
+        if code in TELEGRAM_TEXT:
+            found.append((f'telegram:{code}', TELEGRAM_TEXT[code]))
     return found
 
 
@@ -75,7 +86,7 @@ def message(lines, more=0):
 
 
 class AlertLedger:
-    """Which alert keys were sent on which day. Written only by the dispatcher tick."""
+    """Which alert keys were sent on which day. Written by the dispatcher tick and the Telegram status poller."""
 
     def __init__(self, guard, *, clock=time.time):
         self.guard, self.clock = guard, clock
