@@ -413,12 +413,14 @@ class ChatService:
     NOTE_REQUEST = re.compile(_NOTE_OWNER + _NOTE_NOUN + '|' + _NOTE_THAT + '|' + _NOTE_KEPT
                               + r'|(?<![a-z])my\s+(?:[a-z]+\s+)?(?:notes?|vault|obsidian)(?![a-z])', re.I)
     # Strong signals: a "kept" verb or looking inside the notes ("내 노트에서", "그 메모에", "in my notes").
-    _NOTE_INSIDE = r'(?:들)?(?:에서|에는|에|속|안에서|안에|중에)'
+    _NOTE_INSIDE = r'(?:들)?(?:에서|에는|에|속|안에서|안에|중에|\s*(?:내용\s*)?중(?![가-힣])|\s*보면)'
     NOTE_STRONG = re.compile(_NOTE_KEPT + '|' + _NOTE_OWNER + _NOTE_NOUN + _NOTE_INSIDE + '|' + _NOTE_THAT + _NOTE_INSIDE
                              + r'|(?<![a-z])in\s+my\s+(?:[a-z]+\s+)?(?:notes?|vault|obsidian)(?![a-z])', re.I)
     # With only an owner marker, a question about using notes ("내 메모 정리하는 방법", "내 옵시디언 동기화") is an
     # ordinary question, not a search of their content.
-    NOTE_HOW_TO = re.compile(r'방법|어떻게|사용법|쓰는\s*법|앱|어플|프로그램|플러그인|설정|동기화|백업|설치|추천|단축키|템플릿'
+    # "어떻게" alone is often the note's topic ("출시 어떻게 하기로 했지"), so it counts only with a using verb.
+    NOTE_HOW_TO = re.compile(r'방법|어떻게\s*(?:정리|써|쓰|사용|관리|설정|옮기|동기화|백업|만들)|사용법|쓰는\s*법|앱|어플|프로그램'
+                             r'|플러그인|설정|동기화|백업|설치|추천|단축키|템플릿'
                              r'|(?<![a-z])(?:how|app|plugin|sync|backup|setting|install|recommend)', re.I)
     # Words that only say "look in my notes" are removed before scoring, so they do not dilute the topic words.
     _NOTE_FILLER = re.compile(r'(?:' + _NOTE_START + r'(?:내|제|나의|저의|그|이)' + _NOTE_MODIFIER + r')?' + _NOTE_NOUN

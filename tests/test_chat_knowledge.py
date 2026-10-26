@@ -163,7 +163,9 @@ def test_missing_index_is_reported_without_model_call(tmp_path, vault, monkeypat
                                      '제 자료에서 견적 찾아줘', '내 노트들 중에 여행 계획', '이 메모 다시 보여줘',
                                      # Looking inside the notes or a kept verb wins over how-to words.
                                      '내 노트에 적어 둔 앱 추천 목록 보여줘', '내 노트에서 백업 방법 찾아줘',
-                                     '내 노트에 이사 설정 적어 둔 거 있어?', 'what is in my notes about moving'])
+                                     '내 노트에 이사 설정 적어 둔 거 있어?', 'what is in my notes about moving',
+                                     # How-to words used as the note's topic (review of #58).
+                                     '내 노트 보면 출시 어떻게 하기로 했지?', '내 메모 중 백업 서버 주소', '내 노트 내용 중 앱 이름'])
 def test_note_questions_are_detected(message):
     assert ChatService._is_note_request(message)
 
