@@ -94,7 +94,7 @@ class DraftWriter:
 
 
 class ChatService:
-    def __init__(self, guard, *, model='qwen2.5-coder:7b', provider_candidates=(), provider_executors=None):
+    def __init__(self, guard, *, model='qwen3.5:9b', provider_candidates=(), provider_executors=None):
         self.guard = guard
         self.model = LocalConfig(model=model).model
         self.store = ChatStore(guard)

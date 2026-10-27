@@ -53,7 +53,7 @@ def generate(payload):
               'network access, credentials or permissions. Produce a short summary. '
               'Coder: return complete Python source in proposal, not Markdown. '
               'Planner: give a concise plan and no source. No QA verdicts or hidden reasoning.')
-    data = request('/api/chat', {'model': model, 'stream': False, 'format': schema,
+    data = request('/api/chat', {'model': model, 'stream': False, 'think': False, 'format': schema,
         'messages': [{'role': 'system', 'content': system},
                      {'role': 'user', 'content': payload['context']}],
         'options': {'temperature': 0, 'num_predict': 1024, 'num_ctx': 8192}, 'keep_alive': '2m'})

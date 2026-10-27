@@ -41,7 +41,7 @@ def main():
     parser.add_argument('--task-id', action='append', help='Explicit task allowlist; defaults to latest 8 at startup.')
     parser.add_argument('--port', type=int, default=8787)
     parser.add_argument('--open', action='store_true', help='Open the local page in the default browser.')
-    parser.add_argument('--model', default='qwen2.5-coder:7b', help='Installed local Ollama model tag; no automatic downloads.')
+    parser.add_argument('--model', default='qwen3.5:9b', help='Installed local Ollama model tag; no automatic downloads.')
     args = parser.parse_args()
     if not 1024 <= args.port <= 65535:
         parser.error('Choose an unprivileged local port.')
