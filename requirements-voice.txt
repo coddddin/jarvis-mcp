@@ -1,0 +1,14 @@
+# Optional local voice for `hud --voice` (docs/guides/voice.md). Tested 2026-10-28 on Windows 11, Python 3.13, RTX 4070 Ti SUPER.
+# CosyVoice itself is not installed here: it runs in JARVIS's own Python 3.10 copy (scripts/voice/link_cosyvoice.py,
+# scripts/voice/cosyvoice-lock.txt). Without that copy the Windows voice Heami speaks instead.
+-r requirements.txt
+numpy==2.5.4
+faster-whisper==1.2.1
+ctranslate2==4.8.4
+# faster-whisper 1.2.1 cannot decode files with PyAV 19; the service passes numpy audio, so files are never decoded.
+av==19.0.2
+sounddevice==0.5.6
+comtypes==1.4.17
+# GPU speech to text (CUDA 12, cuDNN 9). Without a working GPU the service falls back to the CPU model.
+nvidia-cublas-cu12==12.9.2.10
+nvidia-cudnn-cu12==9.27.0.42

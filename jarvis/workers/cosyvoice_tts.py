@@ -1,7 +1,7 @@
 """CosyVoice 3 speech worker. Runs in JARVIS's own CosyVoice copy (Python 3.10), never in the project venv.
 
 Started by CosyVoiceSynthesizer in service.py as
-    <root>/venv/Scripts/python.exe -I -X utf8 cosyvoice_worker.py --root <root> --ref <voice.wav>
+    <root>/venv/Scripts/python.exe -I -X utf8 cosyvoice_tts.py --root <root> --ref <voice.wav>
 It imports nothing from JARVIS. Protocol over stdin/stdout:
     worker -> {"ready": true, "rate": 24000}                after the model loaded and one warm-up sentence
     client -> {"text": "..."}                               one sentence per line, UTF-8 JSON
