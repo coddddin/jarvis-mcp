@@ -82,8 +82,8 @@ def test_hud_opens_the_browser_with_a_fresh_code_in_the_fragment_only(monkeypatc
     captured = {}
 
     class Server:
-        def __init__(self, config, *, open_url=None, on_start=None):
-            captured['open_url'] = open_url
+        def __init__(self, config, *, open_url=None, on_start=None, shell_url=None):
+            captured['open_url'], captured['shell_url'] = open_url, shell_url
 
         def run(self):
             pass
@@ -114,4 +114,35 @@ def test_hud_opens_the_browser_with_a_fresh_code_in_the_fragment_only(monkeypatc
     assert captured['open_url'] == 'http://127.0.0.1:8787/assistant#connect=' + code
     monkeypatch.setattr('sys.argv', ['hud'])
     hud.main()
-    assert captured['code'] is None and captured['open_url'] is None
+    assert captured['code'] is None and captured['open_url'] is None and captured['shell_url'] is None
+    monkeypatch.setattr('sys.argv', ['hud', '--shell'])
+    hud.main()
+    code = captured['code']
+    assert isinstance(code, str) and len(code) == 43 and code != TOKEN and captured['open_url'] is None
+    assert captured['shell_url'] == 'http://127.0.0.1:8787/assistant#connect=' + code
+    monkeypatch.setattr('sys.argv', ['hud', '--shell', '--open'])
+    with pytest.raises(SystemExit):
+        hud.main()
+
+
+def test_shell_mode_prints_ready_only_after_bind_and_never_opens_a_browser(monkeypatch, capsys):
+    import asyncio
+
+    import uvicorn
+
+    from jarvis.cli.hud import HUDServer
+    opened = []
+
+    async def failed(server, sockets=None):
+        server.started = False
+
+    async def bound(server, sockets=None):
+        server.started = True
+    monkeypatch.setattr('jarvis.cli.hud.webbrowser.open', opened.append)
+    url = 'http://127.0.0.1:8787/assistant#connect=' + CODE
+    monkeypatch.setattr(uvicorn.Server, 'startup', failed)
+    asyncio.run(HUDServer(uvicorn.Config('unused'), shell_url=url).startup())
+    assert 'READY' not in capsys.readouterr().out
+    monkeypatch.setattr(uvicorn.Server, 'startup', bound)
+    asyncio.run(HUDServer(uvicorn.Config('unused'), shell_url=url).startup())
+    assert capsys.readouterr().out == f'READY {url}\n' and opened == []
