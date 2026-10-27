@@ -1,7 +1,9 @@
 // J.A.R.V.I.S. desktop app (Tauri v2, Windows).
 // Starts the HUD server from this repository as a child in a kill-on-close job object, opens /assistant with the
 // server's one-time connect code, and adds a tray, close-to-tray, a single instance, a global show/hide hotkey and
-// an opt-in start at login. The server page gets no Tauri IPC; navigation is held to the local server.
+// an opt-in start at login, plus a transparent mini ring that follows the assistant's state.
+// IPC is narrow: the server page may only call `presence` (capabilities/server-page.json), the bundled mini ring only
+// `expand` and `drag` (capabilities/mini.json). Navigation in the main window is held to the local server.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod server;
@@ -13,7 +15,7 @@ use std::sync::Mutex;
 use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::webview::NewWindowResponse;
-use tauri::{AppHandle, Manager, RunEvent, Url, WebviewUrl, WebviewWindowBuilder, WindowEvent};
+use tauri::{AppHandle, Manager, PhysicalPosition, RunEvent, Url, WebviewUrl, WebviewWindow, WebviewWindowBuilder, WindowEvent};
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 
@@ -22,7 +24,68 @@ const HIDDEN_ARG: &str = "--hidden";
 /// Ctrl+Alt+J: not a Windows or common app shortcut, and the spike verified it registers.
 const HOTKEY: (Modifiers, Code, &str) = (Modifiers::CONTROL.union(Modifiers::ALT), Code::KeyJ, "Ctrl+Alt+J");
 
+/// The presence states of frontend/assistant/presence.js.
+const STATES: [&str; 7] = ["offline", "connecting", "idle", "listening", "thinking", "speaking", "error"];
+const MINI_SIZE: f64 = 128.0;
+
 struct Running(Mutex<Option<server::Server>>);
+/// The last state the main window reported, so a mini ring shown later starts right.
+struct Presence(Mutex<&'static str>);
+
+fn known_state(state: &str) -> Option<&'static str> {
+    STATES.iter().copied().find(|known| *known == state)
+}
+
+fn send_to_mini(app: &AppHandle, state: &'static str) {
+    if let Some(mini) = app.get_webview_window("mini") {
+        // `state` is one of STATES, so the script is fixed text.
+        let _ = mini.eval(format!("window.jarvisMini && window.jarvisMini.set('{state}')"));
+    }
+}
+
+#[tauri::command]
+fn presence(app: AppHandle, window: WebviewWindow, state: String) -> Result<(), String> {
+    let state = known_state(&state).filter(|_| window.label() == "main").ok_or("rejected")?;
+    *app.state::<Presence>().0.lock().unwrap() = state;
+    send_to_mini(&app, state);
+    Ok(())
+}
+
+#[tauri::command]
+fn expand(app: AppHandle, window: WebviewWindow) {
+    if window.label() == "mini" {
+        show_main(&app);
+    }
+}
+
+#[tauri::command]
+fn drag(window: WebviewWindow) {
+    if window.label() == "mini" {
+        let _ = window.start_dragging();
+    }
+}
+
+fn set_mini(app: &AppHandle, visible: bool) {
+    if let Some(mini) = app.get_webview_window("mini") {
+        if visible {
+            send_to_mini(app, *app.state::<Presence>().0.lock().unwrap());
+            let _ = mini.show();
+        } else {
+            let _ = mini.hide();
+        }
+    }
+}
+
+/// Bottom right of the primary work area, clear of the taskbar.
+fn place_mini(app: &tauri::App, mini: &WebviewWindow) {
+    if let Ok(Some(monitor)) = app.primary_monitor() {
+        let (area, scale) = (monitor.work_area(), monitor.scale_factor());
+        let (side, margin) = ((MINI_SIZE * scale) as i32, (24.0 * scale) as i32);
+        let x = area.position.x + area.size.width as i32 - side - margin;
+        let y = area.position.y + area.size.height as i32 - side - margin;
+        let _ = mini.set_position(PhysicalPosition::new(x, y));
+    }
+}
 
 /// The app window may show only the local server (and the bundled loading page).
 fn stays_in_app(url: &Url, port: u16) -> bool {
@@ -76,11 +139,13 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
     let autostart_on = app.autolaunch().is_enabled().unwrap_or(false);
     let open = MenuItem::with_id(app, "open", "열기", true, None::<&str>)?;
     let hide = MenuItem::with_id(app, "hide", "숨기기", true, None::<&str>)?;
+    let mini = CheckMenuItem::with_id(app, "mini", "미니 고리", true, false, None::<&str>)?;
     let login = CheckMenuItem::with_id(app, "login", "로그인 시 자동 실행", true, autostart_on, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "종료", true, None::<&str>)?;
     let separator = PredefinedMenuItem::separator(app)?;
-    let menu = Menu::with_items(app, &[&open, &hide, &separator, &login, &separator, &quit])?;
+    let menu = Menu::with_items(app, &[&open, &hide, &mini, &separator, &login, &separator, &quit])?;
     let toggle = login.clone();
+    let mini_toggle = mini.clone();
     TrayIconBuilder::with_id("tray")
         .icon(app.default_window_icon().expect("bundled icon").clone())
         .tooltip(format!("J.A.R.V.I.S. ({} 보이기/숨기기)", HOTKEY.2))
@@ -92,6 +157,11 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
                 if let Some(window) = app.get_webview_window("main") {
                     let _ = window.hide();
                 }
+            }
+            "mini" => {
+                let shown = app.get_webview_window("mini").and_then(|m| m.is_visible().ok()).unwrap_or(false);
+                set_mini(app, !shown);
+                let _ = mini_toggle.set_checked(!shown);
             }
             "login" => {
                 let manager = app.autolaunch();
@@ -135,6 +205,7 @@ fn main() {
         .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, Some(vec![HIDDEN_ARG])))
         .setup(move |app| {
             app.manage(Running(Mutex::new(None)));
+            app.manage(Presence(Mutex::new("offline")));
             let (root, python) = match locate() {
                 Ok(found) => found,
                 Err(text) => {
@@ -159,7 +230,24 @@ fn main() {
                     NewWindowResponse::Deny
                 })
                 .build()?;
+            let mini = WebviewWindowBuilder::new(app, "mini", WebviewUrl::App("mini.html".into()))
+                .title("J.A.R.V.I.S. mini")
+                .inner_size(MINI_SIZE, MINI_SIZE)
+                .decorations(false)
+                .transparent(true)
+                .shadow(false)
+                .always_on_top(true)
+                .skip_taskbar(true)
+                .resizable(false)
+                .visible(false)
+                .on_navigation(|url| url.host_str() == Some("tauri.localhost") || url.scheme() == "tauri")
+                .build()?;
+            place_mini(app, &mini);
             build_tray(app)?;
+            // Debug builds only: lets scripts/desktop_smoke.py check the mini ring without clicking the tray.
+            if cfg!(debug_assertions) && std::env::var_os("JARVIS_DESKTOP_SHOW_MINI").is_some() {
+                set_mini(app.handle(), true);
+            }
             if let Err(e) = app.global_shortcut().register(hotkey) {
                 if let Some(tray) = app.tray_by_id("tray") {
                     let _ = tray.set_tooltip(Some(format!("J.A.R.V.I.S. (단축키 {} 등록 실패: {e})", HOTKEY.2)));
@@ -178,6 +266,7 @@ fn main() {
             });
             Ok(())
         })
+        .invoke_handler(tauri::generate_handler![presence, expand, drag])
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
                 if window.label() == "main" {
@@ -200,6 +289,28 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_known_presence_states_reach_the_mini_ring() {
+        for state in STATES {
+            assert_eq!(known_state(state), Some(state));
+        }
+        for bad in ["", "Idle", "idle'); alert(1); ('", "unknown"] {
+            assert_eq!(known_state(bad), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn presence_states_match_the_frontend_state_machine() {
+        let source = include_str!("../../frontend/assistant/presence.js");
+        let mut states: Vec<&str> = STATES.to_vec();
+        states.sort_unstable();
+        let line = source.lines().find(|l| l.contains("// States:")).expect("presence.js lists its states");
+        let list = line.split("States:").nth(1).unwrap().split('.').next().unwrap();
+        let mut listed: Vec<&str> = list.split(',').map(str::trim).collect();
+        listed.sort_unstable();
+        assert_eq!(states, listed);
+    }
 
     #[test]
     fn the_window_stays_on_the_local_server_and_bundled_pages() {
