@@ -90,13 +90,14 @@
         if (!pause) {
           energy = Math.max(energy, .55 + .45 * random());
           for (let i = 0; i < BINS; i++) shape[i] = random();
+          for (let i = 1; i < BINS - 1; i++) shape[i] = (shape[i - 1] + 2 * shape[i] + shape[i + 1]) / 4;  // no lone spikes
         }
         nextAt = t + SYLLABLE_S * (pause || .7 + .6 * random());
       }
       energy *= Math.pow(.004, dt);  // a burst fades in about a tenth of a second
       for (let i = 0; i < BINS; i++) {
         const voice = Math.exp(-Math.pow(i / BINS - .2, 2) / .05);  // most energy low-mid, like speech
-        out.spectrum[i] = clamp(energy * (.25 + .75 * voice) * (.45 + .55 * shape[i]));
+        out.spectrum[i] = clamp(energy * (.45 + .55 * voice) * (.3 + .7 * shape[i]));
       }
       out.level = energy;
       return out;
