@@ -36,16 +36,18 @@ async function harness({hash = '', stored = null, handler, mic = false, audioFai
     setTimeout: (fn, ms) => {const timer = {fn, ms}; timers.push(timer); return timer;}, clearTimeout: timer => {if (timer) timer.cancelled = true;},
     navigator: {mediaDevices: {getUserMedia: async () => {if (!mic) throw new Error('no mic in tests'); return {getTracks: () => [track]};}}},
     AudioContext: class {constructor() {if (audioFails) throw new Error('audio setup failed');} createAnalyser() {return {getByteFrequencyData() {}, frequencyBinCount: 8};} createMediaStreamSource() {return {connect() {}};} close() {}},
-    Uint8Array,
+    Uint8Array, Float32Array, performance: {now: () => 0},
     fetch: async (path, options = {}) => {
       requests.push({path, options});
+      if (handler === 'down') throw new TypeError('Failed to fetch');
       const [status, data] = await handler(path, options);
       return {ok: status < 400, status, json: async () => {if (data === 'html') throw new SyntaxError('Unexpected token <'); return data;}};
     },
   };
   context.window = {addEventListener: (name, fn) => winEvents[name] = fn,
-    JarvisOrb: {create: () => ({setMode: mode => orbCalls.push(mode), setSource() {}})}};
+    JarvisOrb: {create: (canvas, presence) => {presence.subscribe(state => orbCalls.push(state)); return {ok: true};}}};
   vm.createContext(context);
+  vm.runInContext(fs.readFileSync('frontend/assistant/presence.js', 'utf8'), context);
   vm.runInContext(fs.readFileSync('frontend/assistant/connection.js', 'utf8'), context);
   context.window.JarvisConnection = context.window.JarvisConnection || context.JarvisConnection;
   vm.runInContext(fs.readFileSync('frontend/assistant/assistant.js', 'utf8'), context);
@@ -216,4 +218,99 @@ test('a non-JSON error page is reported in plain words', async () => {
   h.elements.input.value = '질문'; h.elements.composer.events.submit({preventDefault() {}}); await flush();
   assert.equal(h.elements.caption.textContent, '자비스 서버 응답을 읽지 못했어요. 잠시 뒤 다시 시도해 주세요.');
   assert.equal(h.elements.input.value, '질문');
+});
+
+test('the orb follows the presence states: connect, think, speak, then rest', async () => {
+  const answer = deferred();
+  const h = await harness({stored: 's'.repeat(43), handler: async (path, options) =>
+    options.method === 'POST' && path.endsWith('/messages') ? answer.promise
+      : path.endsWith('c'.repeat(32)) ? [200, {turns: [{id: REQUEST, status: 'pending', draft: '안녕하세요'}]}] : listing});
+  assert.deepEqual(h.orbCalls, ['offline', 'connecting', 'idle']);
+  assert.equal(h.elements.presenceDot.dataset.state, 'online');
+  h.elements.input.value = '질문'; h.elements.composer.events.submit({preventDefault() {}}); await flush();
+  assert.equal(h.orbCalls.at(-1), 'thinking'); assert.equal(h.elements.caption.dataset.mode, 'thinking');
+  await h.run();
+  assert.equal(h.orbCalls.at(-1), 'speaking');
+  answer.resolve([200, {turns: [{id: REQUEST, status: 'completed', assistant: '안녕하세요, 자비스예요.', sources: []}]}]); await flush();
+  const rest = h.timers.find(timer => !timer.done && !timer.cancelled);
+  assert.ok(rest.ms >= 900 && rest.ms <= 4000, 'speaking lasts about as long as the text: ' + rest.ms);
+  await h.run();
+  assert.equal(h.orbCalls.at(-1), 'idle');
+});
+
+test('a failed reply dims the orb, and the next question starts thinking again', async () => {
+  let status = 'failed';
+  const h = await harness({stored: 's'.repeat(43), handler: async (path, options) =>
+    options.method === 'POST' && path.endsWith('/messages') ? [200, {turns: [{id: REQUEST, status, assistant: status === 'failed' ? '' : '네'}]}] : listing});
+  h.elements.input.value = '질문'; h.elements.composer.events.submit({preventDefault() {}}); await flush();
+  assert.equal(h.orbCalls.at(-1), 'error'); assert.equal(h.elements.caption.dataset.mode, 'error');
+  status = 'completed';
+  h.elements.input.value = '다시'; h.elements.composer.events.submit({preventDefault() {}}); await flush();
+  assert.deepEqual(h.orbCalls.slice(-2), ['thinking', 'speaking']);
+});
+
+test('the status line follows the real connection: offline, unreachable server, then back', async () => {
+  const offline = await harness({handler: async () => assert.fail('no request without a token')});
+  assert.equal(offline.elements.presenceText.textContent, '연결 전');
+  assert.equal(offline.elements.presenceDot.dataset.state, 'offline');
+  const html = fs.readFileSync('frontend/assistant/index.html', 'utf8');
+  assert.match(html, /id="presenceDot"[^>]*data-state="offline"/, 'no online glow before the script runs');
+
+  let down = false;
+  const h = await harness({stored: 's'.repeat(43), handler: async (path, options) => {
+    if (down) throw new TypeError('Failed to fetch');
+    return options.method === 'POST' ? [200, {turns: [{id: REQUEST, status: 'completed', assistant: '네', sources: []}]}] : listing;
+  }});
+  assert.equal(h.elements.presenceText.textContent, '연결됨 · qwen2.5-coder:7b');
+  down = true;
+  h.elements.input.value = '질문'; h.elements.composer.events.submit({preventDefault() {}}); await flush();
+  assert.equal(h.elements.presenceText.textContent, '연결 확인 필요');
+  assert.equal(h.elements.presenceDot.dataset.state, 'warn');
+  assert.equal(h.elements.caption.textContent, '자비스 서버에 연결하지 못했어요. 서버가 켜져 있는지 확인해 주세요.');
+  assert.equal(h.elements.input.value, '질문');
+  down = false;
+  h.elements.composer.events.submit({preventDefault() {}}); await flush();
+  assert.equal(h.elements.presenceText.textContent, '연결됨 · qwen2.5-coder:7b');
+  assert.equal(h.elements.presenceDot.dataset.state, 'online');
+});
+
+test('the mic needs a connection and its failure dims the orb', async () => {
+  const offline = await harness({handler: async () => assert.fail('no request'), mic: true});
+  offline.docEvents.keydown(space(offline)); await flush();
+  assert.notEqual(offline.elements.mic.attributes['aria-pressed'], 'true');
+  const h = await harness({stored: 's'.repeat(43), handler: async () => listing, mic: false});
+  h.docEvents.keydown(space(h)); await flush();
+  assert.equal(h.orbCalls.at(-1), 'error');
+});
+
+test('a question asked while the last answer is still speaking shows thinking, and the old timer cannot end the new answer', async () => {
+  const second = deferred();
+  let posts = 0;
+  const h = await harness({stored: 's'.repeat(43), handler: async (path, options) => {
+    if (options.method === 'POST' && path.endsWith('/messages'))
+      return ++posts === 1 ? [200, {turns: [{id: REQUEST, status: 'completed', assistant: '첫 번째 답이에요. 조금 길게 말해요.', sources: []}]}] : second.promise;
+    return path.endsWith('c'.repeat(32)) ? [200, {turns: []}] : listing;
+  }});
+  h.elements.input.value = '첫 질문'; h.elements.composer.events.submit({preventDefault() {}}); await flush();
+  assert.equal(h.orbCalls.at(-1), 'speaking');
+  const oldTimer = h.timers.find(timer => !timer.done && !timer.cancelled && timer.ms >= 900);
+  h.elements.input.value = '두 번째 질문'; h.elements.composer.events.submit({preventDefault() {}}); await flush();
+  assert.equal(h.orbCalls.at(-1), 'thinking');
+  assert.equal(h.elements.caption.textContent, '생각하고 있어요');
+  assert.equal(h.elements.caption.dataset.mode, 'thinking');
+  second.resolve([200, {turns: [{id: REQUEST, status: 'completed', assistant: '두 번째 답이에요. 이것도 길게 말해요.', sources: []}]}]); await flush();
+  assert.equal(h.orbCalls.at(-1), 'speaking');
+  oldTimer.fn();  // even if it fired late, it belongs to the first answer
+  assert.equal(h.orbCalls.at(-1), 'speaking', 'the first answer timer does not end the second answer');
+});
+
+test('the mic interrupts speaking and starts listening', async () => {
+  const h = await harness({stored: 's'.repeat(43), mic: true, handler: async (path, options) =>
+    options.method === 'POST' && path.endsWith('/messages') ? [200, {turns: [{id: REQUEST, status: 'completed', assistant: '답이에요.', sources: []}]}] : listing});
+  h.elements.input.value = '질문'; h.elements.composer.events.submit({preventDefault() {}}); await flush();
+  assert.equal(h.orbCalls.at(-1), 'speaking');
+  h.elements.mic.events.click(); await flush();
+  assert.equal(h.orbCalls.at(-1), 'listening');
+  assert.equal(h.elements.mic.attributes['aria-pressed'], 'true');
+  assert.equal(h.elements.caption.textContent, '듣고 있어요');
 });
