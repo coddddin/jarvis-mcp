@@ -6,6 +6,7 @@ import subprocess
 import pytest
 
 from jarvis.agents.lead_judge import LeadJudgeError, judgment_schema, ollama_judge
+from jarvis.agents.runner import LocalConfig
 from jarvis.agents.lead_planner import plan_candidates, validate_judgment
 
 PAYLOAD = {'candidates': [{'index': 0, 'section': 'W5', 'text': 'HUD 상태 표시 개선'},
@@ -57,7 +58,7 @@ def test_success_returns_the_raw_judgment_and_sends_a_fixed_request():
     assert args[1] == '-I' and args[2].endswith(os.path.join('workers', 'chat_step.py'))
     assert set(kwargs['env']) <= {'SYSTEMROOT', 'WINDIR', 'TEMP', 'TMP', 'SystemRoot', 'windir', 'Temp', 'Tmp'}
     sent = json.loads(process.stdin_data)
-    assert sent['model'] == 'qwen2.5-coder:7b'
+    assert sent['model'] == LocalConfig().model  # follows the shared default model
     assert sent['schema'] == judgment_schema(2) and sent['schema']['properties']['index']['maximum'] == 1
     system, user = sent['messages']
     assert 'DATA' in system['content'] and 're-checks sensitivity' in system['content']
