@@ -22,7 +22,7 @@
 ## 2. 현재 기준과 증거
 
 - 원격 코드 확인 기준: main `ef2054ba0a93077232c3764f14f274c9113f3c7d` (2026-10-25). 다음 세션은 최신 main과 전체 열린 PR을 다시 확인한다. 과거 재편 기준은 main `32765d0e`, PR #11 `5a3e646`, 재편 전 PR #13 `f5be45f`이며 현재 미병합 목록으로 사용하지 않는다.
-- main에는 Board·Dispatcher·직원 어댑터·HybridTeam·로컬 리드·HUD·기억/관찰 저장이 있다. PR #11의 GitHub 입력 강화·작업자 환경변수 제한·Obsidian 로컬 검색도 통합된 상태다. PR 자체의 closed/merged와 내용의 squash·개별 통합은 구분한다. 이전 [검증 기록](handoffs/work-review-2026-10-22.md), [Vault 계약](guides/obsidian.md)은 해당 시점의 근거다.
+- main에는 Board·Dispatcher·직원 어댑터·HybridTeam·로컬 리드·HUD·기억/관찰 저장이 있다. PR #11의 GitHub 입력 강화·작업자 환경변수 제한·Obsidian 로컬 검색도 통합된 상태다. PR 자체의 closed/merged와 내용의 squash·개별 통합은 구분한다. 이전 [검증 기록](archive/reports/github-vault-review-2026-10-22.md), [Vault 계약](guides/obsidian.md)은 해당 시점의 근거다.
 - 아래 완료는 명시한 **개별 산출물**의 완료다. J0~J5 전체 완료나 모든 경로의 운영 검증을 뜻하지 않으며 재구현하지 않는다.
   - [x] W5 직원별 하루 토큰 상한(J2): `daily_tokens`, `tokens_today`, `token_cap`. c3610c0. 캐시 포함 합계이며 누락을 0으로 세는 기존 상한 정책과 실행 횟수 제한은 유지한다. [안내](guides/dispatcher.md).
   - [x] W3 알림 1단계(J4): 사건별 하루 한 번 게시판 알림과 HUD 경고. 2647482. Windows 토스트는 별도다.

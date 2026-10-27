@@ -38,8 +38,8 @@
 - [프로젝트 지도](../AGENTS_CONTEXT.md): 에이전트가 처음 읽는 50줄 이내의 요약.
 
 ## 사용 안내
-- [Obsidian 로컬 검색](guides/obsidian.md): 승인된 Markdown 메타데이터 검증·별도 로컬 인덱스·개인자료 비전송.
-- [GitHub 우편함](guides/github-inbox.md) · [로그인 수신](guides/github-inbox-logon.md): 수동 미리보기·승인 Issue 수신·선택 설치.
+- [자비스 제2의 두뇌: Obsidian 사용법](guides/obsidian.md): Vault 열기·작업 노트·검토·색인·대화 검색·수정/철회.
+- [GitHub 우편함과 선택 로그인 수신](guides/github-inbox.md): 수동 미리보기·승인 Issue 수신·선택 설치를 한 곳에서 안내.
 - [로컬 리드·외부 작업자 협업](guides/hybrid-team.md): OpenRig 배정 소스 이식, 로컬/Codex 제안 협업과 운영자 CLI.
 - [자비스 전용 채팅](guides/chat.md): 로컬 모델 대화·기록·읽기 도구와 인증·예산 경계.
 - [Claude Code 세션 상태 보고](guides/claude-session-hooks.md): 공식 hook을 내용 없는 공통 신호로, turn_id=prompt_id, 미연결 이벤트와 설치 전 확인.
@@ -69,7 +69,7 @@
 
 현재 기준은 PLAN.md이며 실시간 진행은 Board/PR에서 확인합니다. 아래 문서는 당시 근거를 보존하는 기록입니다. 기본 온보딩·실행 순서에 넣지 않습니다.
 
-- [2026-10-22 원격 인계](handoffs/work-2026-10-22.md) · [동일 인계의 보안 검토](handoffs/work-review-2026-10-22.md): 역사 기록. 기존 경로는 링크 보존을 위해 유지합니다.
+- [2026-10-22 GitHub·Vault 통합 인계/검증](archive/reports/github-vault-review-2026-10-22.md): 원래 인계 두 건의 본문과 근거를 보존한 역사 기록.
 
 - 단계 보고서: [계획 이력](archive/reports/plan-history.md) · [협업 엔진](archive/reports/hybrid-team.md) · [Phase 1](archive/reports/phase-01.md) · [Phase 2](archive/reports/phase-02.md) · [Phase 2.5](archive/reports/phase-02-5.md) · [Phase 3](archive/reports/phase-03.md) · [REA · Agent Reach](archive/reports/rea-agent-reach.md)
 - 옛 계획 원문: [V2](archive/MASTER_BLUEPRINT_V2.md) · [V3](archive/MASTER_BLUEPRINT_V3.md) · [V4](archive/MASTER_BLUEPRINT_V4.md) · [이전 개발 지침](archive/DEVELOPMENT_GUIDELINES_ORIGINAL.md) · [V5 원안](master_blueprint_v5.md)(사용자 지정 위치의 보관본)
@@ -78,3 +78,61 @@
 
 현재 마일스톤과 채택한 결정은 [현재 계획](PLAN.md)에만 반영합니다. PR·Board에는 실제 검사와 인계를 기록하며 같은 내용을 새 보고서로 복제하지 않습니다. 문서를 바꾼 뒤 프로젝트 루트에서 `python scripts/check_docs.py`를 실행합니다. 필수 파일·로컬 파일 링크·문서 목록 누락·지도 길이를 검사하며 저장 시 자동 실행되는 설정은 아닙니다. 검사 범위는 [개발 규칙](DEVELOPMENT.md)을 참조하세요.
 
+
+## 문서별 정리 판정 — 2026-10-27
+
+범위는 기준 main84d24c1과 이 문서 브랜치의 `docs/` Markdown 46개입니다. 목적·제목/절·참조와 통합 대상 본문을 대조한 구조 판정이며, 모든 가이드의 명령을 재실행하거나 전 문장의 최신성을 검증했다는 뜻은 아닙니다. 개인 Vault·동기화 sources·제3자 문서는 대상 밖입니다.
+
+판정: 유지 29개, 통합 3개, 보관 14개. 무근거 폐기 0개. 통합으로 기존 파일 3개를 제거하고 보관 파일 1개를 만들어 **46개 → 44개**입니다. 과거 원안과 검증 근거는 보존합니다.
+
+<details>
+<summary>46개 문서 각각의 판정과 이유</summary>
+
+- `agents/domain.md` — **유지**: 도메인 용어·ADR 탐색 계약.
+- `agents/issue-tracker.md` — **유지**: Board 작업 운영.
+- `agents/triage-labels.md` — **유지**: CLAUDE/이슈 안내가 참조하는 분류 어휘.
+- `architecture.md` — **유지**: 코드 경계·의존 방향.
+- `archive/DEVELOPMENT_GUIDELINES_ORIGINAL.md` — **보관**: 고유한 과거 계획/결정/검증 근거; 현재 지시에서 제외.
+- `archive/MASTER_BLUEPRINT_V2.md` — **보관**: 고유한 과거 계획/결정/검증 근거; 현재 지시에서 제외.
+- `archive/MASTER_BLUEPRINT_V3.md` — **보관**: 고유한 과거 계획/결정/검증 근거; 현재 지시에서 제외.
+- `archive/MASTER_BLUEPRINT_V4.md` — **보관**: 고유한 과거 계획/결정/검증 근거; 현재 지시에서 제외.
+- `archive/plan-before-restructure-2026-10-23.md` — **보관**: 고유한 과거 계획/결정/검증 근거; 현재 지시에서 제외.
+- `archive/reports/graphify-pilot-2026-10-24.md` — **보관**: 고유한 과거 계획/결정/검증 근거; 현재 지시에서 제외.
+- `archive/reports/hybrid-team.md` — **보관**: 고유한 과거 계획/결정/검증 근거; 현재 지시에서 제외.
+- `archive/reports/phase-01.md` — **보관**: 고유한 과거 계획/결정/검증 근거; 현재 지시에서 제외.
+- `archive/reports/phase-02-5.md` — **보관**: 고유한 과거 계획/결정/검증 근거; 현재 지시에서 제외.
+- `archive/reports/phase-02.md` — **보관**: 고유한 과거 계획/결정/검증 근거; 현재 지시에서 제외.
+- `archive/reports/phase-03.md` — **보관**: 고유한 과거 계획/결정/검증 근거; 현재 지시에서 제외.
+- `archive/reports/plan-history.md` — **보관**: 고유한 과거 계획/결정/검증 근거; 현재 지시에서 제외.
+- `archive/reports/rea-agent-reach.md` — **보관**: 고유한 과거 계획/결정/검증 근거; 현재 지시에서 제외.
+- `DEVELOPMENT.md` — **유지**: 개발·검증·문서 규칙 원본.
+- `guides/agent-controls.md` — **유지**: QA·예산·확인된 기억·이벤트.
+- `guides/agent-tasks.md` — **유지**: 작업 상태·재시도·코드 제안 경계.
+- `guides/agents-roster.md` — **유지**: 직원 등록·등급·온보딩.
+- `guides/backup.md` — **유지**: 개인 데이터의 암호화 원격 백업.
+- `guides/board.md` — **유지**: 협업 기록·claim·인계 계약.
+- `guides/chat.md` — **유지**: 대화 저장·검색 출처·실행 구분.
+- `guides/claude-session-hooks.md` — **유지**: 세션 관찰 신호·설치 계약.
+- `guides/debug-assistant.md` — **유지**: 로그 진단·읽기 전용 제안.
+- `guides/dispatcher.md` — **유지**: 자동 배정 장부·예산·중단 계약.
+- `guides/file-organization.md` — **유지**: 사용자 파일 이동·복구 계약.
+- `guides/github-inbox-logon.md` — **통합**: guides/github-inbox.md 로그인 수신 절로 통합; 기존 파일 제거.
+- `guides/github-inbox.md` — **유지**: Issue 수신 및 로그인 수신 통합 원본.
+- `guides/hybrid-team.md` — **유지**: 로컬 리드·외부 작업자 협업.
+- `guides/knowledge-and-google.md` — **유지**: 일반 문서 검색과 Google OAuth; Vault 검색과 구별.
+- `guides/local-hud.md` — **유지**: HUD 연결·관찰 API; 채팅 가이드와 구별.
+- `guides/obsidian.md` — **유지**: 제2의 두뇌 실제 사용 경로로 재작성.
+- `guides/plugins.md` — **유지**: 도구 추가·자동 로더·보안 경계.
+- `guides/rea-agent-reach.md` — **유지**: REA 전용 설치·분석 범위.
+- `guides/snapshots.md` — **유지**: 프로젝트 스냅샷·복구; 원격 암호화 백업과 구별.
+- `guides/system-tools.md` — **유지**: 시스템 조회·명령 공통 제한.
+- `guides/telegram.md` — **유지**: 휴대폰 조회·페어링·토큰 경계.
+- `guides/web-information.md` — **유지**: 웹 수집·검색·출처 계약.
+- `guides/workflows.md` — **유지**: 등록 프로세스 실행·종료·제약.
+- `handoffs/work-2026-10-22.md` — **통합**: archive/reports/github-vault-review-2026-10-22.md에 본문 보존; 기존 파일 제거.
+- `handoffs/work-review-2026-10-22.md` — **통합**: archive/reports/github-vault-review-2026-10-22.md에 본문 보존; 기존 파일 제거.
+- `master_blueprint_v5.md` — **보관**: 고유한 과거 계획/결정/검증 근거; 현재 지시에서 제외·사용자 지정 경로 유지.
+- `PLAN.md` — **유지**: 현재 목표·마일스톤 원본.
+- `README.md` — **유지**: 목차·기억 구축 순서 원본.
+
+</details>
