@@ -10,7 +10,7 @@ hands reply text back here to be spoken. This module only moves audio.
 - Speech to text: faster-whisper. GPU (large-v3-turbo, float16) when CUDA works, otherwise CPU (small, int8).
   Models live in one fixed folder; after the first download they load with local_files_only, so an offline
   restart never downloads again.
-- Text to speech: a Synthesizer. CosyVoice 3 in its own Python 3.10 process (cosyvoice_worker.py) when JARVIS's copy
+- Text to speech: a Synthesizer. CosyVoice 3 in its own Python 3.10 process (scripts/voice/cosyvoice_worker.py) when JARVIS's copy
   exists (scripts/voice/link_cosyvoice.py); the Windows voice Heami only if it is missing or fails to load.
 - Barge-in: listening while speaking stops playback at once and drops queued sentences.
 
@@ -28,6 +28,8 @@ import threading
 from typing import Callable, Protocol
 
 import numpy as np
+
+from jarvis.core.paths import PROJECT_ROOT
 
 SAMPLE_RATE = 16000
 CAPTURE_BLOCK = 480                # 30 ms
@@ -221,7 +223,7 @@ COSYVOICE_SENTENCE_SECONDS = 60
 
 
 class CosyVoiceSynthesizer:
-    """CosyVoice 3 in a separate Python 3.10 process (cosyvoice_worker.py) that JARVIS owns.
+    """CosyVoice 3 in a separate Python 3.10 process (scripts/voice/cosyvoice_worker.py) that JARVIS owns.
 
     The worker is started by warm_up() and ends when its stdin closes (close() or this process exiting). One
     sentence is in flight at a time. A worker that dies or stalls is stopped and reported as tts_unavailable."""
@@ -229,7 +231,7 @@ class CosyVoiceSynthesizer:
     def __init__(self, root=DEFAULT_COSYVOICE_ROOT, ref=DEFAULT_VOICE_REF, *, python=None, worker=None):
         self.root, self.ref = Path(root), Path(ref)
         self.python = Path(python) if python else self.root / 'venv' / 'Scripts' / 'python.exe'
-        self.worker = Path(worker) if worker else Path(__file__).with_name('cosyvoice_worker.py')
+        self.worker = Path(worker) if worker else PROJECT_ROOT / 'scripts' / 'voice' / 'cosyvoice_worker.py'
         self.name = 'cosyvoice3'
         self.process = self.rate = None
         self.lock = threading.Lock()
