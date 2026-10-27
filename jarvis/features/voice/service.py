@@ -231,7 +231,7 @@ class WhisperTranscriber:
 # --- audio devices ---------------------------------------------------------------------------------------------
 
 class SoundDeviceAudio:
-    """Default input and output devices through PortAudio. Streams run their callbacks on PortAudio threads."""
+    """Default input and output devices through PortAudio. Callbacks run on PortAudio threads."""
 
     def open_input(self, callback, rate, block):
         import sounddevice
@@ -240,37 +240,45 @@ class SoundDeviceAudio:
         stream.start()
         return stream
 
-    def open_output(self, callback, rate, block):
+    def open_output(self, source, rate, block):
+        """source.pull(frames) gives samples; once source.finished() the last block plays and source.done() runs."""
         import sounddevice
 
         def fill(out, frames, time, status):
-            data = callback(frames)
-            out[:, 0] = data
-            if data.size and not data.any() and callback.finished():
+            out[:, 0] = source.pull(frames)
+            if source.finished():
                 raise sounddevice.CallbackStop
-        fill.finished = callback.finished
-        stream = sounddevice.OutputStream(samplerate=rate, channels=1, dtype='float32', blocksize=block, callback=fill,
-                                          finished_callback=callback.done)
+
+        stream = sounddevice.OutputStream(samplerate=rate, channels=1, dtype='float32', blocksize=block,
+                                          callback=fill, finished_callback=source.done)
         stream.start()
         return stream
+
+
+def resample(samples, rate, target):
+    """Linear resampling; enough for speech that is only played back."""
+    samples = np.asarray(samples, dtype=np.float32)
+    if rate == target or samples.size == 0:
+        return samples
+    positions = np.arange(0, samples.size, rate / target)
+    return np.interp(positions, np.arange(samples.size), samples).astype(np.float32)
 
 
 # --- the service -----------------------------------------------------------------------------------------------
 
 class _Playback:
-    """Samples waiting to be played at one rate, pulled block by block by the output stream."""
+    """Sentences waiting to be played at one rate, pulled block by block by the output stream."""
 
     def __init__(self, service, rate):
         self.service, self.rate = service, rate
         self.chunks, self.offset = [], 0
         self.lock = threading.Lock()
-        self.closed = False
 
-    def add(self, samples):
+    def add(self, samples, rate):
         with self.lock:
-            self.chunks.append(np.asarray(samples, dtype=np.float32))
+            self.chunks.append(resample(samples, rate, self.rate))
 
-    def __call__(self, frames):
+    def pull(self, frames):
         out = np.zeros(frames, dtype=np.float32)
         filled = 0
         with self.lock:
@@ -287,34 +295,41 @@ class _Playback:
             self.service._frame(out[:filled], self.rate)
         return out
 
-    def finished(self):
+    def drained(self):
         with self.lock:
-            return not self.chunks and self.service._synthesis_idle()
+            return not self.chunks
+
+    def finished(self):
+        """Nothing left to play and nothing more coming for this playback."""
+        return self.drained() and self.service._reply_complete(self)
 
     def done(self):
         self.service._playback_done(self)
 
 
 class VoiceService:
-    """One local voice session. Thread-safe; events go to listeners as plain dicts (see EVENTS in voice_routes)."""
+    """One local voice session. Thread-safe. Listeners receive plain dicts:
+    {'type': 'state', 'state', 'error'?}, {'type': 'transcript', 'text'}, {'type': 'frame', 'level', 'bins'},
+    {'type': 'error', 'code'}."""
 
-    def __init__(self, *, transcriber, synthesizer, audio=None, clock=None):
+    def __init__(self, *, transcriber, synthesizer, audio=None, clock=None, fallback=None):
         import time
-        self.transcriber, self.synthesizer = transcriber, synthesizer
+        self.transcriber, self.synthesizer, self.fallback = transcriber, synthesizer, fallback
         self.audio = audio or SoundDeviceAudio()
         self.clock = clock or time.monotonic
         self.lock = threading.RLock()
         self.listeners: set[Callable[[dict], None]] = set()
         self.state, self.error = 'loading', None
-        self.turn = 0                                       # bumps on every listen/cancel/hush: stale work is dropped
+        # Separate generations: a new capture drops a stale transcript, a hush drops stale sentences.
+        self.capture_turn = self.speech_turn = 0
         self.mic = None
         self.captured, self.captured_count = [], 0
-        self.heard_speech, self.silent_since, self.noise = False, None, 0.0
-        self.pending_text = ''
+        self.levels, self.silent_since = [], None
+        self.pending_text, self.reply_open = '', False     # reply_open: the page may still send more text
         self.sentences = queue.Queue()
         self.synthesizing = False
         self.playback = self.speaker = None
-        self.last_frame = 0.0
+        self.last_frame = -1.0
         self.closed = False
         self.worker = threading.Thread(target=self._synthesis_loop, daemon=True, name='voice-tts')
         self.worker.start()
@@ -333,8 +348,10 @@ class VoiceService:
                 pass
 
     def _set_state(self, state, error=None):
+        changed = (state, error) != (self.state, self.error)
         self.state, self.error = state, error
-        self._emit({'type': 'state', 'state': state, **({'error': error} if error else {})})
+        if changed:
+            self._emit({'type': 'state', 'state': state, **({'error': error} if error else {})})
 
     def status(self):
         return {'state': self.state, 'error': self.error, 'device': self.transcriber.device,
@@ -345,36 +362,43 @@ class VoiceService:
         threading.Thread(target=self._load, daemon=True, name='voice-load').start()
 
     def _load(self):
+        code = None
         try:
             self.transcriber.load()
         except VoiceError as exc:
-            with self.lock:
-                self._set_state('unavailable', exc.code)
-            return
+            code = exc.code
         except Exception:
-            with self.lock:
-                self._set_state('unavailable', 'stt_unavailable')
-            return
+            code = 'stt_unavailable'
+        warm = getattr(self.synthesizer, 'warm_up', None)
+        if code is None and warm is not None:
+            try:
+                warm()                                      # e.g. the first neural TTS call is slow
+            except Exception:
+                if self.fallback is None:
+                    code = 'tts_unavailable'
+                else:
+                    self.synthesizer = self.fallback        # only a failed engine load falls back
         with self.lock:
-            if self.state == 'loading':
-                self._set_state('ready')
+            if not self.closed and self.state == 'loading':
+                self._set_state('unavailable', code) if code else self._set_state('ready')
 
     # listening
     def listen(self):
+        """Open the mic. Speaking stops first (barge-in)."""
         with self.lock:
             if self.closed or self.state in ('loading', 'unavailable'):
                 raise VoiceError('not_ready' if self.state == 'loading' else 'unavailable')
             if self.state == 'listening':
                 return
-            self._silence_locked()                          # barge-in: speaking stops before the mic opens
-            self.turn += 1
+            self._silence_locked()
+            self.capture_turn += 1                          # a transcript still being made is dropped
             self.captured, self.captured_count = [], 0
-            self.heard_speech, self.silent_since, self.noise = False, None, 0.0
+            self.levels, self.silent_since = [], None
             try:
                 self.mic = self.audio.open_input(self._captured_block, SAMPLE_RATE, CAPTURE_BLOCK)
             except Exception:
                 self.mic = None
-                self._set_state('ready')
+                self._set_state('ready', 'mic_unavailable')
                 raise VoiceError('mic_unavailable')
             self._set_state('listening')
 
@@ -385,15 +409,17 @@ class VoiceService:
             self.captured.append(block)
             self.captured_count += block.size
             level, _ = self._frame(block, SAMPLE_RATE)
-            now = self.captured_count / SAMPLE_RATE
-            # Speech = clearly above the quietest level heard so far (adapts to fans and room noise).
-            self.noise = level if not self.heard_speech and self.captured_count <= CAPTURE_BLOCK else min(self.noise, level) if self.noise else level
-            if level > self.noise + 0.15:
-                self.heard_speech, self.silent_since = True, None
-            elif self.heard_speech and self.silent_since is None:
-                self.silent_since = now
-            ended = (self.heard_speech and self.silent_since is not None and now - self.silent_since >= AUTO_STOP_SILENCE)
-            if ended or now >= MAX_LISTEN_SECONDS:
+            heard = self.captured_count / SAMPLE_RATE
+            # Noise = a low percentile of the levels so far, so fans and room noise set the floor. Speech was heard
+            # once the loudest block stood well above it; a pause is a run of blocks near the floor after that.
+            self.levels.append(level)
+            noise = float(np.percentile(self.levels, 10))
+            if max(self.levels) > noise + 0.15 and level < noise + 0.08:
+                self.silent_since = heard if self.silent_since is None else self.silent_since
+            else:
+                self.silent_since = None
+            paused = self.silent_since is not None and heard - self.silent_since >= AUTO_STOP_SILENCE
+            if paused or heard >= MAX_LISTEN_SECONDS:
                 threading.Thread(target=self.stop_listening, daemon=True, name='voice-autostop').start()
 
     def _close_mic_locked(self):
@@ -406,14 +432,14 @@ class VoiceService:
                 pass
 
     def stop_listening(self):
-        """End of push-to-talk: transcribe what was heard. Short or silent captures give an empty transcript."""
+        """End of push-to-talk: transcribe what was heard. A short capture gives an empty transcript."""
         with self.lock:
             if self.state != 'listening':
                 return
             self._close_mic_locked()
             samples = np.concatenate(self.captured) if self.captured else np.zeros(0, dtype=np.float32)
             self.captured, self.captured_count = [], 0
-            turn = self.turn
+            turn = self.capture_turn
             if samples.size < MIN_SPEECH_SECONDS * SAMPLE_RATE:
                 self._set_state('ready')
                 self._emit({'type': 'transcript', 'text': ''})
@@ -423,21 +449,21 @@ class VoiceService:
 
     def _transcribe(self, samples, turn):
         try:
-            text = self.transcriber.transcribe(samples)
-            failed = None
+            text, failed = self.transcriber.transcribe(samples), None
         except Exception:
             text, failed = '', 'stt_failed'
-        del samples                                         # nothing of the capture outlives this call
+        del samples                                         # the capture does not outlive this call
         with self.lock:
-            if turn != self.turn or self.state != 'transcribing':
-                return                                      # cancelled meanwhile
+            if turn != self.capture_turn or self.state != 'transcribing':
+                return                                      # cancelled or replaced meanwhile
             self._set_state('ready', failed)
             if not failed:
                 self._emit({'type': 'transcript', 'text': text[:2000]})
 
     # speaking
     def speak(self, text, final=False):
-        """Queue reply text; complete sentences start playing as soon as each is synthesized."""
+        """Queue reply text. Each complete sentence plays as soon as it is synthesized; final=True ends the reply.
+        Returns False when the service is not in a state to speak (for example the user is talking)."""
         if not isinstance(text, str) or len(text) > MAX_TEXT:
             raise VoiceError('bad_text')
         with self.lock:
@@ -446,23 +472,23 @@ class VoiceService:
             if len(self.pending_text) + len(text) > MAX_PENDING_TEXT:
                 raise VoiceError('too_much_text')
             sentences, self.pending_text = split_sentences(self.pending_text + speakable(text), final)
+            self.reply_open = not final
             for sentence in sentences:
-                self.sentences.put((self.turn, sentence))
-            if sentences and self.state != 'speaking':
+                self.sentences.put((self.speech_turn, sentence))
+            if sentences:
                 self._set_state('speaking')
-            elif final and not sentences and self.state == 'speaking':
-                self._maybe_done_locked()
+            self._maybe_done_locked()
             return True
 
     def hush(self):
-        """Stop speaking now (Esc or a new question); queued sentences are dropped."""
+        """Stop speaking now (Esc or a new question); queued sentences are dropped. A transcript in progress stays."""
         with self.lock:
             self._silence_locked()
 
     def cancel(self):
-        """Esc: stop listening without transcribing, and stop speaking."""
+        """Esc: stop listening without transcribing, drop a transcript in progress, and stop speaking."""
         with self.lock:
-            self.turn += 1
+            self.capture_turn += 1
             if self.state in ('listening', 'transcribing'):
                 self._close_mic_locked()
                 self.captured, self.captured_count = [], 0
@@ -470,8 +496,8 @@ class VoiceService:
             self._silence_locked()
 
     def _silence_locked(self):
-        self.turn += 1
-        self.pending_text = ''
+        self.speech_turn += 1
+        self.pending_text, self.reply_open = '', False
         while True:
             try:
                 self.sentences.get_nowait()
@@ -480,7 +506,7 @@ class VoiceService:
         speaker, self.speaker, self.playback = self.speaker, None, None
         if speaker is not None:
             try:
-                speaker.abort() if hasattr(speaker, 'abort') else speaker.stop()
+                speaker.abort()
                 speaker.close()
             except Exception:
                 pass
@@ -494,11 +520,12 @@ class VoiceService:
                 return
             turn, sentence = item
             with self.lock:
-                if turn != self.turn:
+                if turn != self.speech_turn:
                     continue
                 self.synthesizing = True
+                synthesizer = self.synthesizer
             try:
-                samples, rate = self.synthesizer.synthesize(sentence)
+                samples, rate = synthesizer.synthesize(sentence)
                 failed = None
             except VoiceError as exc:
                 samples, rate, failed = None, None, exc.code
@@ -506,29 +533,28 @@ class VoiceService:
                 samples, rate, failed = None, None, 'tts_failed'
             with self.lock:
                 self.synthesizing = False
-                if turn != self.turn:
+                if turn != self.speech_turn:
                     continue
                 if failed:
                     self._silence_locked()
                     self._emit({'type': 'error', 'code': failed})
-                    continue
-                if self.playback is not None and self.playback.rate != rate:
-                    self.playback.add(np.zeros(0, dtype=np.float32))   # rates never mix within one engine
-                if self.playback is None:
+                elif self.playback is not None:
+                    self.playback.add(samples, rate)
+                else:
                     self.playback = _Playback(self, rate)
-                    self.playback.add(samples)
+                    self.playback.add(samples, rate)
                     try:
                         self.speaker = self.audio.open_output(self.playback, rate, max(64, rate // FRAME_HZ))
                     except Exception:
-                        self.playback = None
                         self._silence_locked()
                         self._emit({'type': 'error', 'code': 'speaker_unavailable'})
-                else:
-                    self.playback.add(samples)
+                self._maybe_done_locked()
 
-    def _synthesis_idle(self):
+    def _reply_complete(self, playback):
+        """No more audio will be added to this playback: the reply ended and nothing is queued or being made."""
         with self.lock:
-            return not self.synthesizing and self.sentences.empty() and not self.pending_text
+            return (playback is not self.playback or
+                    (not self.reply_open and not self.pending_text and not self.synthesizing and self.sentences.empty()))
 
     def _playback_done(self, playback):
         with self.lock:
@@ -543,14 +569,15 @@ class VoiceService:
             self._maybe_done_locked()
 
     def _maybe_done_locked(self):
-        if self.state == 'speaking' and self.playback is None and self._synthesis_idle():
+        """Speaking ends when nothing is playing and the reply is complete (final text with no sentences left)."""
+        if self.state == 'speaking' and self.playback is None and self._reply_complete(None):
             self._set_state('ready')
 
     # frames
     def _frame(self, block, rate):
         level, bins = frame_features(block, rate)
         now = self.clock()
-        if now - self.last_frame >= 1 / FRAME_HZ * 0.9:
+        if now - self.last_frame >= 0.9 / FRAME_HZ:
             self.last_frame = now
             self._emit({'type': 'frame', 'level': level, 'bins': bins})
         return level, bins
@@ -558,11 +585,17 @@ class VoiceService:
     def close(self):
         with self.lock:
             self.closed = True
-            self.turn += 1
+            self.capture_turn += 1
             self._close_mic_locked()
             self._silence_locked()
             self.listeners.clear()
         self.sentences.put(None)
+        closer = getattr(self.synthesizer, 'close', None)
+        if closer is not None:
+            try:
+                closer()
+            except Exception:
+                pass
 
 
 def build_default_service(model_root=DEFAULT_MODEL_ROOT, *, prefer_gpu=True, voice='Heami'):
