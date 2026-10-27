@@ -30,6 +30,7 @@ All audio is synthetic TTS, one voice per engine, no noise or room. 3 sentences 
 | Kyutai TTS 1.6B | CC-BY 4.0 | no (en/fr) | - | - | - | excluded |
 
 *Gapless start = earliest playback start such that every 80 ms frame is ready before it is played, assuming a streaming wrapper (qwen-tts 0.1.1 has none): max over frames of (ready time - frame offset) plus one 4-frame decode. Frame j counts as ready at the end of talker call j+1, because the code predictor fills frame j's remaining codebooks in the next call (modeling_qwen3_tts.py 1665-1692). Time to the first 4 frames alone is ~0.44 s, but with RTF > 1 the buffer then runs dry, so that number is not a usable start time.
+- Gapless start is still a lower bound (heejun-e8 re-review): decode runs once per 4-frame chunk, not once, and on the same GPU it raises effective RTF; a frame plays only after its chunk completes (up to +3 steps, ~0.3 s); only the first chunk's standalone decode was checked. The conclusion (1.1 s or more of buffer, decision deferred) stands.
 - Decoding the first 4 frames alone matches the same span of the full decode (max sample diff 0.0001-0.009), so chunked decoding looks safe.
 - 0.6B clips are longer than 1.7B mainly because of 0.8-1.1 s leading and 0.4-1.2 s trailing silence (1.7B: under 0.1 s).
 - Step time ~98 ms per 80 ms frame for both sizes: eager HF loop is overhead bound. CUDA graphs or torch.compile are untested.

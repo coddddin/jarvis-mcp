@@ -12,7 +12,7 @@ refs = (W / "sentences.txt").read_text(encoding="utf-8").splitlines()
 NUMS = [("십오", "15"), ("세 시", "3시"), ("세시", "3시"), ("두 건", "2건"), ("두건", "2건"), ("한 건", "1건"), ("한건", "1건"),
         ("두 권", "2권"), ("한 권", "1권"), ("팔십오", "85"), ("퍼센트", "%")]
 def numnorm(s):
-    for a, b in NUMS: s = s.replace(a, b)
+    for a, b in sorted(NUMS, key=lambda x: -len(x[0])): s = s.replace(a, b)  # longest first: 팔십오 before 십오
     return s.replace("시 15분", "시15분")
 def cer(ref, hyp, nn=False):
     if nn: ref, hyp = numnorm(ref), numnorm(hyp)
