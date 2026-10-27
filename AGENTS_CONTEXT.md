@@ -10,6 +10,7 @@
 - jarvis/features/<feature>/service.py + tools/: co-located service and one-file-per-tool adapters.
 - Features: system(3), knowledge(3), obsidian(2), google(2), snapshots(4), files(6), workflows(6), development(1), web(4), integrations(2), board(9); 42 tools (27 original contracts preserved).
 - jarvis/workers/: standalone subprocess implementations; jarvis/cli/: OAuth, GitHub inbox preview/apply, task control/runner.
+- desktop/: Tauri v2 Windows app (Rust) that runs `hud --shell` as a job-object child; not Python, not under jarvis/ ([guide](docs/guides/desktop-app.md)).
 - config/: trusted workflow/web source registrations; agents.json is the AI employee roster ([guide](docs/guides/agents-roster.md)).
 - .venv/ / requirements*.txt: environment and dependency versions.
 - docs/: PLAN.md, DEVELOPMENT.md, guides/, archive/ (history and reports), V5 reference.

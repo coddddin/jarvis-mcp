@@ -9,8 +9,10 @@
 mod server;
 mod win;
 
+use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Mutex;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
@@ -184,7 +186,24 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
     Ok(())
 }
 
+/// One line per start in %LOCALAPPDATA%/dev.jarvis.desktop/startup.log, so start time right after a cold boot can be
+/// read later (uptime_s small = just booted). It never contains the server URL or code. Kept under 64 KB.
+fn record_start(app: &AppHandle, ready: Duration, hidden: bool) {
+    let Ok(dir) = app.path().app_local_data_dir() else { return };
+    let path = dir.join("startup.log");
+    let _ = std::fs::create_dir_all(&dir);
+    let full = std::fs::metadata(&path).map(|m| m.len() > 64 * 1024).unwrap_or(false);
+    let uptime_s = unsafe { windows_sys::Win32::System::SystemInformation::GetTickCount64() } / 1000;
+    let unix = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let line = format!("unix={unix} uptime_s={uptime_s} ready_ms={} hidden={hidden}\n", ready.as_millis());
+    let file = std::fs::OpenOptions::new().create(true).write(true).append(!full).truncate(full).open(path);
+    if let Ok(mut file) = file {
+        let _ = file.write_all(line.as_bytes());
+    }
+}
+
 fn main() {
+    let started = Instant::now();
     let hidden = std::env::args().any(|arg| arg == HIDDEN_ARG);
     let port = port();
     let hotkey = Shortcut::new(Some(HOTKEY.0), HOTKEY.1);
@@ -256,6 +275,7 @@ fn main() {
             let handle = app.handle().clone();
             std::thread::spawn(move || match server::start(&root, &python, port) {
                 Ok(running) => {
+                    record_start(&handle, started.elapsed(), hidden);
                     let url = Url::parse(&running.url).expect("validated READY url");
                     *handle.state::<Running>().0.lock().unwrap() = Some(running);
                     if let Some(window) = handle.get_webview_window("main") {
