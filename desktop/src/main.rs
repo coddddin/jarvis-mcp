@@ -1,21 +1,26 @@
 // J.A.R.V.I.S. desktop app (Tauri v2, Windows).
 // Starts the HUD server from this repository as a child in a kill-on-close job object, opens /assistant with the
-// server's one-time connect code, and adds a tray, close-to-tray, a single instance, a global show/hide hotkey and
-// an opt-in start at login, plus a transparent mini ring that follows the assistant's state.
-// IPC is narrow: the server page may only call `presence` (capabilities/server-page.json), the bundled mini ring only
-// `expand` and `drag` (capabilities/mini.json). Navigation in the main window is held to the local server.
+// server's one-time connect code, and restarts the server if it stops on its own (watch.rs). Adds a tray,
+// close-to-tray, a single instance, a global show/hide hotkey, an opt-in start at login, and a transparent mini ring
+// that follows the assistant's state.
+// IPC is narrow: the server page may only call `presence` (a capability added at startup for the exact server port),
+// the bundled mini ring only `expand` and `drag` (capabilities/mini.json). Navigation in the main window is held to
+// the local server.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod server;
+mod watch;
 mod win;
 
 use std::io::Write;
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+use tauri::ipc::CapabilityBuilder;
 use tauri::webview::NewWindowResponse;
 use tauri::{AppHandle, Manager, PhysicalPosition, RunEvent, Url, WebviewUrl, WebviewWindow, WebviewWindowBuilder, WindowEvent};
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
@@ -30,7 +35,157 @@ const HOTKEY: (Modifiers, Code, &str) = (Modifiers::CONTROL.union(Modifiers::ALT
 const STATES: [&str; 7] = ["offline", "connecting", "idle", "listening", "thinking", "speaking", "error"];
 const MINI_SIZE: f64 = 128.0;
 
-struct Running(Mutex<Option<server::Server>>);
+/// The running server, and whether the user is quitting (then nothing restarts it).
+struct Supervisor {
+    server: Mutex<Option<server::Server>>,
+    quitting: AtomicBool,
+    /// The tray's "서버 다시 시작" item: enabled only after the app gave up restarting.
+    restart_item: Mutex<Option<MenuItem<tauri::Wry>>>,
+    /// The normal tray tooltip (it names a hotkey registration failure, if any).
+    tooltip: Mutex<String>,
+}
+
+impl Supervisor {
+    fn quitting(&self) -> bool {
+        self.quitting.load(Ordering::SeqCst)
+    }
+
+    fn quit(&self) {
+        self.quitting.store(true, Ordering::SeqCst);
+        if let Some(mut running) = self.server.lock().unwrap().take() {
+            running.stop();
+        }
+    }
+}
+
+/// What the main window and the tray say while the server is not running normally.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Status {
+    Running,
+    Restarting(usize),
+    Stopped,
+}
+
+/// The bundled loading page shows the status from its fragment (dist/loading.js).
+fn status_page(status: Status) -> Option<Url> {
+    let fragment = match status {
+        Status::Running => return None,
+        Status::Restarting(attempt) => format!("restart-{attempt}"),
+        Status::Stopped => "stopped".to_string(),
+    };
+    Url::parse(&format!("http://tauri.localhost/loading.html#{fragment}")).ok()
+}
+
+fn tray_text(base: &str, status: Status) -> String {
+    match status {
+        Status::Running => base.to_string(),
+        Status::Restarting(0) => "J.A.R.V.I.S. (서버 다시 시작 중)".to_string(),
+        Status::Restarting(attempt) => format!("J.A.R.V.I.S. (서버 다시 시작 중 {attempt}/{})", watch::DELAYS.len()),
+        Status::Stopped => "J.A.R.V.I.S. (서버 멈춤: 트레이 메뉴에서 서버 다시 시작)".to_string(),
+    }
+}
+
+fn show_status(app: &AppHandle, status: Status) {
+    let supervisor = app.state::<Supervisor>();
+    if let Some(tray) = app.tray_by_id("tray") {
+        let _ = tray.set_tooltip(Some(tray_text(&supervisor.tooltip.lock().unwrap(), status)));
+    }
+    if let Some(item) = supervisor.restart_item.lock().unwrap().as_ref() {
+        let _ = item.set_enabled(status == Status::Stopped);
+    }
+    if status != Status::Running {
+        // The page that reported presence is gone; the mini ring shows offline, or error once the app gave up.
+        let state = if status == Status::Stopped { "error" } else { "offline" };
+        *app.state::<Presence>().0.lock().unwrap() = state;
+        send_to_mini(app, state);
+    }
+    if let (Some(url), Some(window)) = (status_page(status), app.get_webview_window("main")) {
+        let _ = window.navigate(url);
+    }
+}
+
+/// Sleep in short steps so quitting is not held up by a long backoff.
+fn pause(supervisor: &Supervisor, total: Duration) -> bool {
+    let until = Instant::now() + total;
+    while Instant::now() < until {
+        if supervisor.quitting() {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    !supervisor.quitting()
+}
+
+/// Start the server, show it, and restart it when it stops on its own. A failed first start ends the app (for
+/// example: the port is in use); later failures back off and finally wait for the tray's restart item.
+fn supervise(app: AppHandle, root: PathBuf, python: PathBuf, port: u16, started: Instant, hidden: bool,
+             retry: mpsc::Receiver<()>) {
+    let supervisor = app.state::<Supervisor>();
+    let mut restarts = watch::Restarts::default();
+    let mut first = true;
+    loop {
+        if supervisor.quitting() {
+            return;
+        }
+        let next = match server::start(&root, &python, port) {
+            Ok(running) => {
+                if first {
+                    record_start(&app, started.elapsed(), hidden);
+                }
+                first = false;
+                let url = Url::parse(&running.url).expect("validated READY url");
+                let up = Instant::now();
+                *supervisor.server.lock().unwrap() = Some(running);
+                show_status(&app, Status::Running);
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.navigate(url);
+                }
+                loop {
+                    std::thread::sleep(Duration::from_millis(500));
+                    let guard = supervisor.server.lock().unwrap();
+                    match guard.as_ref() {
+                        None => return, // taken by quit
+                        Some(running) if running.exited().is_some() => break,
+                        Some(_) => {}
+                    }
+                }
+                // Dropping the server closes its job, which ends anything it left running.
+                drop(supervisor.server.lock().unwrap().take());
+                if supervisor.quitting() {
+                    return;
+                }
+                restarts.after_exit(up.elapsed())
+            }
+            Err(text) if first => {
+                fail(&app, &text);
+                return;
+            }
+            Err(_) => restarts.after_start_failure(),
+        };
+        match next {
+            watch::Next::Retry { attempt, delay } => {
+                show_status(&app, Status::Restarting(attempt));
+                if !pause(&supervisor, delay) {
+                    return;
+                }
+            }
+            watch::Next::GiveUp => {
+                show_status(&app, Status::Stopped);
+                while retry.try_recv().is_ok() {}
+                if retry.recv().is_err() || supervisor.quitting() {
+                    return;
+                }
+                restarts.reset();
+                show_status(&app, Status::Restarting(0));
+            }
+        }
+    }
+}
+
+/// The server page may call `presence` only from the exact local server origin, and never from bundled pages.
+fn server_page_url(port: u16) -> String {
+    format!("http://127.0.0.1:{port}/*")
+}
 /// The last state the main window reported, so a mini ring shown later starts right.
 struct Presence(Mutex<&'static str>);
 
@@ -48,6 +203,9 @@ fn send_to_mini(app: &AppHandle, state: &'static str) {
 #[tauri::command]
 fn presence(app: AppHandle, window: WebviewWindow, state: String) -> Result<(), String> {
     let state = known_state(&state).filter(|_| window.label() == "main").ok_or("rejected")?;
+    if cfg!(debug_assertions) {
+        println!("PRESENCE {state}"); // read by scripts/desktop_smoke.py; release builds have no console
+    }
     *app.state::<Presence>().0.lock().unwrap() = state;
     send_to_mini(&app, state);
     Ok(())
@@ -137,15 +295,17 @@ fn locate() -> Result<(PathBuf, PathBuf), String> {
     Ok((root, python))
 }
 
-fn build_tray(app: &tauri::App) -> tauri::Result<()> {
+fn build_tray(app: &tauri::App, retry: mpsc::Sender<()>) -> tauri::Result<()> {
     let autostart_on = app.autolaunch().is_enabled().unwrap_or(false);
     let open = MenuItem::with_id(app, "open", "열기", true, None::<&str>)?;
     let hide = MenuItem::with_id(app, "hide", "숨기기", true, None::<&str>)?;
     let mini = CheckMenuItem::with_id(app, "mini", "미니 고리", true, false, None::<&str>)?;
     let login = CheckMenuItem::with_id(app, "login", "로그인 시 자동 실행", true, autostart_on, None::<&str>)?;
+    let restart = MenuItem::with_id(app, "restart", "서버 다시 시작", false, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "종료", true, None::<&str>)?;
     let separator = PredefinedMenuItem::separator(app)?;
-    let menu = Menu::with_items(app, &[&open, &hide, &mini, &separator, &login, &separator, &quit])?;
+    let menu = Menu::with_items(app, &[&open, &hide, &mini, &separator, &login, &restart, &separator, &quit])?;
+    *app.state::<Supervisor>().restart_item.lock().unwrap() = Some(restart);
     let toggle = login.clone();
     let mini_toggle = mini.clone();
     TrayIconBuilder::with_id("tray")
@@ -174,7 +334,13 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
                 // Show what Windows actually has, whatever the click did to the check mark.
                 let _ = toggle.set_checked(manager.is_enabled().unwrap_or(false));
             }
-            "quit" => app.exit(0),
+            "restart" => {
+                let _ = retry.send(());
+            }
+            "quit" => {
+                app.state::<Supervisor>().quit();
+                app.exit(0);
+            }
             _ => {}
         })
         .on_tray_icon_event(|tray, event| {
@@ -223,7 +389,12 @@ fn main() {
         )
         .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, Some(vec![HIDDEN_ARG])))
         .setup(move |app| {
-            app.manage(Running(Mutex::new(None)));
+            app.manage(Supervisor {
+                server: Mutex::new(None),
+                quitting: AtomicBool::new(false),
+                restart_item: Mutex::new(None),
+                tooltip: Mutex::new(format!("J.A.R.V.I.S. ({} 보이기/숨기기)", HOTKEY.2)),
+            });
             app.manage(Presence(Mutex::new("offline")));
             let (root, python) = match locate() {
                 Ok(found) => found,
@@ -262,28 +433,28 @@ fn main() {
                 .on_navigation(|url| url.host_str() == Some("tauri.localhost") || url.scheme() == "tauri")
                 .build()?;
             place_mini(app, &mini);
-            build_tray(app)?;
+            app.add_capability(
+                CapabilityBuilder::new("server-page")
+                    .window("main")
+                    .remote(server_page_url(port))
+                    .local(false)
+                    .permission("allow-presence"),
+            )?;
+            let (retry_send, retry) = mpsc::channel();
+            build_tray(app, retry_send)?;
             // Debug builds only: lets scripts/desktop_smoke.py check the mini ring without clicking the tray.
             if cfg!(debug_assertions) && std::env::var_os("JARVIS_DESKTOP_SHOW_MINI").is_some() {
                 set_mini(app.handle(), true);
             }
             if let Err(e) = app.global_shortcut().register(hotkey) {
+                let text = format!("J.A.R.V.I.S. (단축키 {} 등록 실패: {e})", HOTKEY.2);
+                *app.state::<Supervisor>().tooltip.lock().unwrap() = text.clone();
                 if let Some(tray) = app.tray_by_id("tray") {
-                    let _ = tray.set_tooltip(Some(format!("J.A.R.V.I.S. (단축키 {} 등록 실패: {e})", HOTKEY.2)));
+                    let _ = tray.set_tooltip(Some(text));
                 }
             }
             let handle = app.handle().clone();
-            std::thread::spawn(move || match server::start(&root, &python, port) {
-                Ok(running) => {
-                    record_start(&handle, started.elapsed(), hidden);
-                    let url = Url::parse(&running.url).expect("validated READY url");
-                    *handle.state::<Running>().0.lock().unwrap() = Some(running);
-                    if let Some(window) = handle.get_webview_window("main") {
-                        let _ = window.navigate(url);
-                    }
-                }
-                Err(text) => fail(&handle, &text),
-            });
+            std::thread::spawn(move || supervise(handle, root, python, port, started, hidden, retry));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![presence, expand, drag])
@@ -299,9 +470,7 @@ fn main() {
         .expect("build the desktop app")
         .run(|app, event| {
             if let RunEvent::Exit = event {
-                if let Some(mut running) = app.state::<Running>().0.lock().unwrap().take() {
-                    running.stop();
-                }
+                app.state::<Supervisor>().quit();
             }
         });
 }
@@ -309,6 +478,31 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_presence_capability_names_the_exact_server_origin() {
+        assert_eq!(server_page_url(8787), "http://127.0.0.1:8787/*");
+        assert_eq!(server_page_url(8797), "http://127.0.0.1:8797/*");
+    }
+
+    #[test]
+    fn status_pages_stay_in_the_app_and_running_shows_the_server() {
+        assert_eq!(status_page(Status::Running), None);
+        for status in [Status::Restarting(1), Status::Restarting(5), Status::Stopped] {
+            let url = status_page(status).unwrap();
+            assert!(stays_in_app(&url, 8787), "{url}");
+            assert_eq!(url.path(), "/loading.html");
+        }
+        assert_eq!(status_page(Status::Restarting(3)).unwrap().fragment(), Some("restart-3"));
+        assert_eq!(status_page(Status::Stopped).unwrap().fragment(), Some("stopped"));
+    }
+
+    #[test]
+    fn the_tray_says_when_the_server_is_restarting_or_stopped() {
+        assert_eq!(tray_text("base", Status::Running), "base");
+        assert!(tray_text("base", Status::Restarting(2)).contains("2/5"));
+        assert!(tray_text("base", Status::Stopped).contains("서버 다시 시작"));
+    }
 
     #[test]
     fn only_known_presence_states_reach_the_mini_ring() {

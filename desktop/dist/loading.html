@@ -1,9 +1,11 @@
 <!doctype html>
 <html lang="ko"><head><meta charset="utf-8"><title>J.A.R.V.I.S.</title><style>
 html, body { margin: 0; height: 100%; background: #05070d; color: #9fdcff; font: 15px "Segoe UI", sans-serif; }
-body { display: grid; place-items: center; }
+body { display: grid; place-items: center; text-align: center; }
 .ring { width: 120px; height: 120px; border-radius: 50%; border: 3px solid #3fb8ff; box-shadow: 0 0 24px #1f7ad8;
   margin: 0 auto 18px; animation: pulse 1.6s ease-in-out infinite; }
+body[data-state="stopped"] .ring { border-color: #ff8a5c; box-shadow: 0 0 18px #a8442a; animation: none; }
 @keyframes pulse { 50% { opacity: .45; } }
 @media (prefers-reduced-motion: reduce) { .ring { animation: none; } }
-</style></head><body><div><div class="ring"></div><p>서버를 시작하는 중...</p></div></body></html>
+</style></head><body><div><div class="ring"></div><p id="status" role="status">서버를 시작하는 중...</p></div>
+<script src="loading.js"></script></body></html>

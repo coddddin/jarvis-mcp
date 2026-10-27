@@ -1,14 +1,24 @@
-//! The HUD server as a child process: found in the repository, started with `--shell`, tied to a job object.
+//! The HUD server as a child process: found in the repository, started with `--shell`, created inside a job object.
 //!
-//! The job object has KILL_ON_JOB_CLOSE, so when this app exits for any reason (including a crash or
-//! Task Manager), Windows closes the job handle and ends the server and anything it started.
+//! The job has KILL_ON_JOB_CLOSE, so when this app exits for any reason (including a crash or Task Manager),
+//! Windows closes the job handle and ends the server and anything it started.
+//! The child is created already in the job (PROC_THREAD_ATTRIBUTE_JOB_LIST, Windows 10+), so it never runs outside
+//! it, and it inherits only its three pipe ends (PROC_THREAD_ATTRIBUTE_HANDLE_LIST). std::process::Command cannot do
+//! either on stable Rust, hence CreateProcessW here.
 //! The server hands over its one-time connect URL on the stdout pipe; this module never logs it.
 use std::collections::VecDeque;
+use std::fs::File;
 use std::io::{self, BufRead, BufReader, Read};
+use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::Duration;
+
+use windows_sys::Win32::Foundation::{CloseHandle, SetHandleInformation, HANDLE, HANDLE_FLAG_INHERIT, WAIT_OBJECT_0};
+use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
+use windows_sys::Win32::System::JobObjects::*;
+use windows_sys::Win32::System::Pipes::CreatePipe;
+use windows_sys::Win32::System::Threading::*;
 
 pub const DEFAULT_PORT: u16 = 8787;
 const READY_TIMEOUT: Duration = Duration::from_secs(120);
@@ -41,19 +51,58 @@ pub fn parse_ready(line: &str, port: u16) -> Option<String> {
     valid.then(|| url.to_string())
 }
 
-#[cfg(windows)]
-pub struct Job(windows_sys::Win32::Foundation::HANDLE);
+/// One argument for a Windows command line, quoted so the C runtime's parser gives it back unchanged.
+fn quote_arg(arg: &str, out: &mut String) {
+    if !arg.is_empty() && !arg.contains([' ', '\t', '"']) {
+        out.push_str(arg);
+        return;
+    }
+    out.push('"');
+    let mut backslashes = 0;
+    for c in arg.chars() {
+        if c == '\\' {
+            backslashes += 1;
+            continue;
+        }
+        let count = if c == '"' { backslashes * 2 + 1 } else { backslashes };
+        out.extend(std::iter::repeat_n('\\', count));
+        out.push(c);
+        backslashes = 0;
+    }
+    out.extend(std::iter::repeat_n('\\', backslashes * 2));
+    out.push('"');
+}
+
+/// The program path is always quoted and never escaped (paths cannot contain quotes); then each argument.
+fn command_line(program: &Path, args: &[&str]) -> String {
+    let mut line = format!("\"{}\"", program.display());
+    for arg in args {
+        line.push(' ');
+        quote_arg(arg, &mut line);
+    }
+    line
+}
+
+fn wide(text: &str) -> Vec<u16> {
+    text.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+fn check(ok: i32) -> io::Result<()> {
+    if ok == 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+pub struct Job(HANDLE);
 
 // The handle is only closed once, in Drop; Windows job handles may be used from any thread.
-#[cfg(windows)]
 unsafe impl Send for Job {}
-#[cfg(windows)]
 unsafe impl Sync for Job {}
 
-#[cfg(windows)]
 impl Job {
     pub fn kill_on_close() -> io::Result<Self> {
-        use windows_sys::Win32::System::JobObjects::*;
         let handle = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
         if handle.is_null() {
             return Err(io::Error::last_os_error());
@@ -61,50 +110,178 @@ impl Job {
         let job = Job(handle);
         let mut info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
         info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-        let ok = unsafe {
+        check(unsafe {
             SetInformationJobObject(
                 job.0,
                 JobObjectExtendedLimitInformation,
                 &info as *const _ as *const core::ffi::c_void,
                 std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
             )
-        };
-        if ok == 0 {
-            return Err(io::Error::last_os_error());
-        }
+        })?;
         Ok(job)
     }
 
-    pub fn assign(&self, child: &Child) -> io::Result<()> {
-        use std::os::windows::io::AsRawHandle;
-        let ok = unsafe {
-            windows_sys::Win32::System::JobObjects::AssignProcessToJobObject(self.0, child.as_raw_handle() as _)
-        };
-        if ok == 0 {
-            return Err(io::Error::last_os_error());
-        }
-        Ok(())
+    #[cfg(test)]
+    pub fn contains(&self, process: &Process) -> bool {
+        let mut inside = 0;
+        let ok = unsafe { IsProcessInJob(process.handle.as_raw_handle() as HANDLE, self.0, &mut inside) };
+        ok != 0 && inside != 0
     }
 }
 
-#[cfg(windows)]
 impl Drop for Job {
     fn drop(&mut self) {
-        unsafe { windows_sys::Win32::Foundation::CloseHandle(self.0) };
+        unsafe { CloseHandle(self.0) };
     }
+}
+
+/// A child process handle (std::process::Child cannot be built from one).
+pub struct Process {
+    handle: OwnedHandle,
+}
+
+impl Process {
+    /// The exit code once the process has ended, without waiting.
+    pub fn try_wait(&self) -> Option<u32> {
+        self.wait(Duration::ZERO)
+    }
+
+    pub fn wait(&self, limit: Duration) -> Option<u32> {
+        let handle = self.handle.as_raw_handle() as HANDLE;
+        if unsafe { WaitForSingleObject(handle, limit.as_millis().min(u32::MAX as u128 - 1) as u32) } != WAIT_OBJECT_0 {
+            return None;
+        }
+        let mut code = 0;
+        (unsafe { GetExitCodeProcess(handle, &mut code) } != 0).then_some(code)
+    }
+
+    pub fn kill(&self) {
+        unsafe { TerminateProcess(self.handle.as_raw_handle() as HANDLE, 1) };
+    }
+}
+
+pub struct Spawned {
+    pub process: Process,
+    pub stdout: File,
+    pub stderr: File,
+}
+
+/// An anonymous pipe: (read, write). Both ends start inheritable; the caller clears the parent's end.
+fn pipe() -> io::Result<(OwnedHandle, OwnedHandle)> {
+    let attributes = SECURITY_ATTRIBUTES {
+        nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+        lpSecurityDescriptor: std::ptr::null_mut(),
+        bInheritHandle: 1,
+    };
+    let (mut read, mut write) = (std::ptr::null_mut(), std::ptr::null_mut());
+    check(unsafe { CreatePipe(&mut read, &mut write, &attributes, 0) })?;
+    Ok(unsafe { (OwnedHandle::from_raw_handle(read as _), OwnedHandle::from_raw_handle(write as _)) })
+}
+
+fn keep_private(handle: &OwnedHandle) -> io::Result<()> {
+    check(unsafe { SetHandleInformation(handle.as_raw_handle() as HANDLE, HANDLE_FLAG_INHERIT, 0) })
+}
+
+/// Start `program args` with no console window, inside `job` from its first instruction, with piped stdout and
+/// stderr and an empty stdin. Only the three child pipe ends are inherited.
+pub fn spawn_in_job(job: &Job, program: &Path, args: &[&str], dir: &Path) -> io::Result<Spawned> {
+    let (stdin_child, stdin_parent) = pipe()?;
+    let (stdout_parent, stdout_child) = pipe()?;
+    let (stderr_parent, stderr_child) = pipe()?;
+    for parent_end in [&stdin_parent, &stdout_parent, &stderr_parent] {
+        keep_private(parent_end)?;
+    }
+    let inherited: [HANDLE; 3] =
+        [stdin_child.as_raw_handle() as _, stdout_child.as_raw_handle() as _, stderr_child.as_raw_handle() as _];
+    let jobs: [HANDLE; 1] = [job.0];
+
+    // The attribute list is an opaque buffer; usize elements keep it pointer aligned.
+    let mut size = 0;
+    unsafe { InitializeProcThreadAttributeList(std::ptr::null_mut(), 2, 0, &mut size) };
+    let mut buffer = vec![0usize; size.div_ceil(std::mem::size_of::<usize>())];
+    let list = buffer.as_mut_ptr() as LPPROC_THREAD_ATTRIBUTE_LIST;
+    check(unsafe { InitializeProcThreadAttributeList(list, 2, 0, &mut size) })?;
+    struct ListGuard(LPPROC_THREAD_ATTRIBUTE_LIST);
+    impl Drop for ListGuard {
+        fn drop(&mut self) {
+            unsafe { DeleteProcThreadAttributeList(self.0) };
+        }
+    }
+    let _guard = ListGuard(list);
+    // `inherited` and `jobs` outlive the list: both are dropped after `_guard`.
+    check(unsafe {
+        UpdateProcThreadAttribute(
+            list,
+            0,
+            PROC_THREAD_ATTRIBUTE_HANDLE_LIST as usize,
+            inherited.as_ptr() as *const core::ffi::c_void,
+            std::mem::size_of_val(&inherited),
+            std::ptr::null_mut(),
+            std::ptr::null(),
+        )
+    })?;
+    check(unsafe {
+        UpdateProcThreadAttribute(
+            list,
+            0,
+            PROC_THREAD_ATTRIBUTE_JOB_LIST as usize,
+            jobs.as_ptr() as *const core::ffi::c_void,
+            std::mem::size_of_val(&jobs),
+            std::ptr::null_mut(),
+            std::ptr::null(),
+        )
+    })?;
+
+    let mut info = STARTUPINFOEXW::default();
+    info.StartupInfo.cb = std::mem::size_of::<STARTUPINFOEXW>() as u32;
+    info.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+    info.StartupInfo.hStdInput = inherited[0];
+    info.StartupInfo.hStdOutput = inherited[1];
+    info.StartupInfo.hStdError = inherited[2];
+    info.lpAttributeList = list;
+    let mut line = wide(&command_line(program, args));
+    let dir = wide(&dir.display().to_string());
+    let mut created = PROCESS_INFORMATION::default();
+    check(unsafe {
+        CreateProcessW(
+            std::ptr::null(),
+            line.as_mut_ptr(),
+            std::ptr::null(),
+            std::ptr::null(),
+            1, // required with PROC_THREAD_ATTRIBUTE_HANDLE_LIST; only the listed handles are inherited
+            EXTENDED_STARTUPINFO_PRESENT | CREATE_NO_WINDOW,
+            std::ptr::null(),
+            dir.as_ptr(),
+            &info as *const STARTUPINFOEXW as *const STARTUPINFOW,
+            &mut created,
+        )
+    })?;
+    unsafe { CloseHandle(created.hThread) };
+    // The child has its own copies; closing ours lets reads end when the child exits, and gives it an empty stdin.
+    drop((stdin_child, stdout_child, stderr_child, stdin_parent));
+    Ok(Spawned {
+        process: Process { handle: unsafe { OwnedHandle::from_raw_handle(created.hProcess as _) } },
+        stdout: File::from(stdout_parent),
+        stderr: File::from(stderr_parent),
+    })
 }
 
 /// A running server. Dropping it closes the job, which ends the server process tree.
 pub struct Server {
-    pub child: Child,
+    pub child: Process,
     pub url: String,
     _job: Job,
 }
 
 impl Server {
+    /// The exit code if the server has ended.
+    pub fn exited(&self) -> Option<u32> {
+        self.child.try_wait()
+    }
+
     pub fn stop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        self.child.kill();
+        let _ = self.child.wait(Duration::from_secs(5));
     }
 }
 
@@ -122,32 +299,17 @@ fn drain<R: Read + Send + 'static>(stream: R, mut each: impl FnMut(String) + Sen
     });
 }
 
-/// Start `python -m jarvis.cli.hud --shell` in a new kill-on-close job and wait for its READY line.
+/// Start `python -X utf8 -m jarvis.cli.hud --shell` in a new kill-on-close job and wait for its READY line.
 /// The error text is for the user: it names the cause and the last server error lines, never the code.
 pub fn start(root: &Path, python: &Path, port: u16) -> Result<Server, String> {
     let job = Job::kill_on_close().map_err(|e| format!("작업 개체를 만들지 못했습니다: {e}"))?;
-    let mut command = Command::new(python);
-    command
-        .args(["-m", "jarvis.cli.hud", "--shell", "--port", &port.to_string()])
-        .current_dir(root)
-        .env("PYTHONIOENCODING", "utf-8")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-    }
-    let mut child = command.spawn().map_err(|e| format!("Python을 시작하지 못했습니다 ({}): {e}", python.display()))?;
-    // Assigned right after spawn, before the server has started anything; its later children inherit the job.
-    if let Err(e) = job.assign(&child) {
-        let _ = child.kill();
-        return Err(format!("서버를 작업 개체에 넣지 못했습니다: {e}"));
-    }
+    let port_text = port.to_string();
+    let args = ["-X", "utf8", "-m", "jarvis.cli.hud", "--shell", "--port", port_text.as_str()];
+    let spawned = spawn_in_job(&job, python, &args, root)
+        .map_err(|e| format!("Python을 시작하지 못했습니다 ({}): {e}", python.display()))?;
     let errors: Arc<Mutex<VecDeque<String>>> = Arc::default();
     let kept = errors.clone();
-    drain(child.stderr.take().expect("piped stderr"), move |line| {
+    drain(spawned.stderr, move |line| {
         let mut kept = kept.lock().unwrap();
         if kept.len() == STDERR_KEEP {
             kept.pop_front();
@@ -155,16 +317,17 @@ pub fn start(root: &Path, python: &Path, port: u16) -> Result<Server, String> {
         kept.push_back(line.trim_end().to_string());
     });
     let (ready, wait) = mpsc::channel();
-    drain(child.stdout.take().expect("piped stdout"), move |line| {
+    drain(spawned.stdout, move |line| {
         if let Some(url) = parse_ready(&line, port) {
             let _ = ready.send(url);
         }
     });
+    let child = spawned.process;
     match wait.recv_timeout(READY_TIMEOUT) {
         Ok(url) => Ok(Server { child, url, _job: job }),
         Err(timeout) => {
-            let _ = child.kill();
-            let _ = child.wait();
+            child.kill();
+            let _ = child.wait(Duration::from_secs(5));
             let tail = errors.lock().unwrap().iter().cloned().collect::<Vec<_>>().join("\n");
             let cause = match timeout {
                 mpsc::RecvTimeoutError::Timeout => "서버가 제한 시간 안에 준비되지 않았습니다.".to_string(),
@@ -182,6 +345,10 @@ mod tests {
     use super::*;
 
     const CODE: &str = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJ0123-_Z";
+
+    fn cmd() -> PathBuf {
+        PathBuf::from(std::env::var("SystemRoot").unwrap()).join("System32").join("cmd.exe")
+    }
 
     #[test]
     fn ready_line_must_be_exact_loopback_assistant_url_with_a_valid_code() {
@@ -219,22 +386,48 @@ mod tests {
         let _ = std::fs::remove_dir_all(base);
     }
 
-    #[cfg(windows)]
     #[test]
-    fn closing_the_job_ends_the_child_process() {
-        let job = Job::kill_on_close().unwrap();
-        let mut child = Command::new("cmd")
-            .args(["/c", "ping", "-n", "30", "127.0.0.1"])
-            .stdout(Stdio::null())
-            .spawn()
-            .unwrap();
-        job.assign(&child).unwrap();
-        assert!(child.try_wait().unwrap().is_none());
-        drop(job);
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        while child.try_wait().unwrap().is_none() {
-            assert!(std::time::Instant::now() < deadline, "child survived the job handle");
-            std::thread::sleep(Duration::from_millis(50));
+    fn command_line_quotes_like_the_c_runtime_parser() {
+        let program = Path::new(r"C:\Program Files\Python\python.exe");
+        assert_eq!(
+            command_line(program, &["-m", "jarvis.cli.hud", "--port", "8787"]),
+            r#""C:\Program Files\Python\python.exe" -m jarvis.cli.hud --port 8787"#
+        );
+        let mut out = String::new();
+        for arg in ["", "a b", r#"say "hi""#, r"dir\", r"dir\ x", r#"a\"b"#] {
+            out.clear();
+            quote_arg(arg, &mut out);
+            let expected = match arg {
+                "" => r#""""#,
+                "a b" => r#""a b""#,
+                r#"say "hi""# => r#""say \"hi\"""#,
+                r"dir\" => r"dir\",
+                r"dir\ x" => r#""dir\ x""#,
+                _ => r#""a\\\"b""#,
+            };
+            assert_eq!(out, expected, "{arg}");
         }
+    }
+
+    #[test]
+    fn the_child_is_in_the_job_from_the_start_and_its_output_is_piped() {
+        let job = Job::kill_on_close().unwrap();
+        let mut spawned = spawn_in_job(&job, &cmd(), &["/c", "echo", "ready"], &std::env::temp_dir()).unwrap();
+        assert!(job.contains(&spawned.process), "created inside the job");
+        let mut text = String::new();
+        spawned.stdout.read_to_string(&mut text).unwrap();
+        assert_eq!(text.trim(), "ready");
+        assert_eq!(spawned.process.wait(Duration::from_secs(5)), Some(0));
+        let other = Job::kill_on_close().unwrap();
+        assert!(!other.contains(&spawned.process));
+    }
+
+    #[test]
+    fn closing_the_job_ends_the_child_and_its_children() {
+        let job = Job::kill_on_close().unwrap();
+        let spawned = spawn_in_job(&job, &cmd(), &["/c", "ping", "-n", "30", "127.0.0.1"], &std::env::temp_dir()).unwrap();
+        assert_eq!(spawned.process.try_wait(), None);
+        drop(job);
+        assert!(spawned.process.wait(Duration::from_secs(5)).is_some(), "child survived the job handle");
     }
 }

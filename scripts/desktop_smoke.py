@@ -4,8 +4,11 @@
 
 Launches the app on a spare port, then checks: server child started, window shown, hotkey hide/show, close goes
 to tray, second launch exits and shows the first window, and killing the app ends the server (job object).
-With a debug build it also shows the mini ring, checks that it follows the page state (idle, then thinking after a
-typed question) and that a click on it opens the hidden main window.
+With a debug build it also shows the mini ring and checks that a click on it opens the hidden main window, and
+records the presence states the page reports over IPC (debug builds print them), before and after a restart.
+Server watch: it kills the server once and checks the app restarts it and reconnects. Then, in a second launch, it
+keeps killing each new server until the app gives up (5 restarts in a row) and checks no server is left. The whole
+run takes about a minute and a half.
 Writes result.json and screenshots to out-dir. The server uses the workspace of the repository the exe is in.
 """
 import ctypes
@@ -13,6 +16,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
 from ctypes import wintypes
 from pathlib import Path
@@ -65,24 +69,20 @@ def grab(title, path):
     return image, rect
 
 
-def warmth(image):
-    """Red minus blue over the bright pixels: the thinking look is orange, idle is blue."""
-    bright = [px for px in image.convert('RGB').get_flattened_data() if max(px) > 120]
-    return round(sum(r - b for r, _, b in bright) / max(1, len(bright)), 1)
-
-
-def keys(*codes):
-    for code in codes:
-        user32.keybd_event(code, 0, 0, 0)
-        user32.keybd_event(code, 0, 2, 0)
-        time.sleep(.03)
-
-
 def click(x, y):
     user32.SetCursorPos(x, y)
     user32.mouse_event(2, 0, 0, 0, 0)
     time.sleep(.05)
     user32.mouse_event(4, 0, 0, 0, 0)
+
+
+def front():
+    """Hide and show with the hotkey: the window comes to the front for a screenshot."""
+    hotkey()
+    wait(lambda: not window()[1], 2)
+    hotkey()
+    wait(lambda: window()[1], 2)
+    time.sleep(.8)
 
 
 def servers(app):
@@ -124,8 +124,12 @@ def main():
     result = {}
     started = time.time()
     global APP_PID
-    app = psutil.Process(subprocess.Popen([str(exe)], env=env).pid)
+    launched = subprocess.Popen([str(exe)], env=env, stdout=subprocess.PIPE, text=True, encoding='utf-8')
+    app = psutil.Process(launched.pid)
     APP_PID = app.pid
+    reported = []
+    threading.Thread(target=lambda: [reported.append(line.split()[1]) for line in launched.stdout
+                                     if line.startswith('PRESENCE ')], daemon=True).start()
     result['window_s'] = round(time.time() - started, 2) if wait(lambda: window()[1], 30) else None
     listening = lambda: any(c.laddr and c.laddr[1] == int(PORT) and c.status == 'LISTEN'
                             for c in psutil.net_connections('tcp'))
@@ -138,22 +142,29 @@ def main():
     hotkey()  # shows and focuses the window, so the screenshot is not covered by other windows
     result['hotkey_toggle'] = hidden and wait(lambda: window()[1], 2)
     time.sleep(.8)
-    _, main_rect = grab(TITLE, out / 'window.png')
+    grab(TITLE, out / 'window.png')
     if window(MINI)[1]:
-        idle, _ = grab(MINI, out / 'mini-idle.png')
-        # The composer sits at about 89% of the window height; click it, then type "hi" and Enter.
-        click(main_rect.left + (main_rect.right - main_rect.left) * 2 // 5, main_rect.top + (main_rect.bottom - main_rect.top) * 89 // 100)
-        time.sleep(.3)
-        keys(0x48, 0x49, 0x0D)
-        time.sleep(.6)
-        thinking, rect = grab(MINI, out / 'mini-thinking.png')
-        result['mini_follows_state'] = {'idle_warmth': warmth(idle), 'thinking_warmth': warmth(thinking)}
+        _, rect = grab(MINI, out / 'mini.png')
         hotkey()
         wait(lambda: not window()[1], 2)
         click((rect.left + rect.right) // 2, (rect.top + rect.bottom) // 2)
         result['mini_click_opens_main'] = wait(lambda: window()[1], 3)
     user32.PostMessageW(window()[0], WM_CLOSE, 0, 0)
     result['close_to_tray'] = wait(lambda: not window()[1], 2) and app.is_running()
+    # Watch: one crash is restarted and the page reconnects.
+    old = {proc.pid for proc in servers(app)}
+    for proc in servers(app):
+        proc.kill()
+    fresh = lambda: listening() and servers(app) and not old & {proc.pid for proc in servers(app)}
+    before_crash = len(reported)
+    crash = time.time()
+    result['restart_after_crash_s'] = round(time.time() - crash, 2) if wait(fresh, 30) else None
+    reconnected = wait(lambda: 'idle' in reported[before_crash:], 20)
+    result['presence_reported'] = {'first_start': reported[:before_crash], 'after_restart': reported[before_crash:],
+                                   'reconnected_after_restart': reconnected}
+    time.sleep(2)
+    front()
+    grab(TITLE, out / 'window-after-restart.png')
     second_start = time.time()
     second = subprocess.run([str(exe)], env=env, timeout=60)
     result['second_instance'] = {'exit_code': second.returncode, 'exit_s': round(time.time() - second_start, 2),
@@ -164,6 +175,22 @@ def main():
     result['server_ended_with_app'] = bool(children) and not alive
     for proc in alive:
         proc.kill()
+    # Watch, second launch: crashes in a row end in giving up, with no server left behind.
+    app = psutil.Process(subprocess.Popen([str(exe)], env=env).pid)
+    APP_PID = app.pid
+    restarts = 0
+    for _ in range(8):
+        if not wait(lambda: listening() and servers(app), 40):
+            break
+        restarts += 1
+        for proc in servers(app):
+            proc.kill()
+        wait(lambda: not listening(), 5)
+    time.sleep(3)
+    result['gave_up_after_restarts'] = restarts - 1 if not servers(app) and not listening() else None
+    front()
+    grab(TITLE, out / 'window-stopped.png')
+    app.kill()
     (out / 'result.json').write_text(json.dumps(result, indent=2), encoding='utf-8')
     print(json.dumps(result))
 
