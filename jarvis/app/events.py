@@ -89,7 +89,8 @@ def create_event_app(tasks, *, token, task_ids, origins, chat=None, processes=No
                     '/assistant': 'assistant/index.html', '/assets/assistant/assistant.css': 'assistant/assistant.css',
                     '/assets/assistant/assistant.js': 'assistant/assistant.js', '/assets/assistant/orb.js': 'assistant/orb.js',
                     '/assets/assistant/connection.js': 'assistant/connection.js',
-                    '/assets/assistant/presence.js': 'assistant/presence.js'}[request.url.path]
+                    '/assets/assistant/presence.js': 'assistant/presence.js',
+                    '/assets/assistant/voice.js': 'assistant/voice.js'}[request.url.path]
         return FileResponse(PROJECT_ROOT / 'frontend' / filename, headers=response_headers)
 
     def summaries():
@@ -356,7 +357,7 @@ def create_event_app(tasks, *, token, task_ids, origins, chat=None, processes=No
         Route('/assets/task-stream.js', asset), Route('/assets/chat.js', asset), Route('/assets/sources.js', asset),
         Route('/assistant', asset), Route('/assets/assistant/assistant.css', asset), Route('/assets/assistant/assistant.js', asset),
         Route('/assets/assistant/orb.js', asset), Route('/assets/assistant/connection.js', asset),
-        Route('/assets/assistant/presence.js', asset),
+        Route('/assets/assistant/presence.js', asset), Route('/assets/assistant/voice.js', asset),
         Route('/api/chat/conversations', chat_api, methods=['GET', 'POST']),
         Route('/api/chat/conversations/{conversation_id}', chat_api, methods=['GET']),
         Route('/api/chat/conversations/{conversation_id}/messages', chat_api, methods=['POST']),

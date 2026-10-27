@@ -9,7 +9,7 @@ from jarvis.app.events import create_event_app
 from jarvis.core.guardrails import Guardrails
 
 ASSETS = ('/assets/assistant/assistant.css', '/assets/assistant/assistant.js', '/assets/assistant/orb.js',
-          '/assets/assistant/connection.js', '/assets/assistant/presence.js')
+          '/assets/assistant/connection.js', '/assets/assistant/presence.js', '/assets/assistant/voice.js')
 
 
 def client(tmp_path):

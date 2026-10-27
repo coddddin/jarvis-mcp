@@ -1,13 +1,15 @@
 'use strict';
 // Assistant view: one orb, one caption, one composer, connected to the local chat API.
 // State lives in presence.js: this file sends events (connect, listen, ask, speak, fail) and the orb, caption and
-// status line follow. The mic only moves the orb for now; speech recognition is wired in after PA1-VOICE (#51) lands.
+// status line follow. With the local voice service (hud --voice, voice.js) the mic, speech to text and spoken replies
+// are native and its frames move the orb; without it the browser mic only moves the orb.
 (() => {
   const $ = id => document.getElementById(id);
   const presenceState = window.JarvisPresence.create();
   window.JarvisOrb.create($('orb'), presenceState);
   const caption = $('caption'), reply = $('reply'), sources = $('sources'), input = $('input'), mic = $('mic');
   const send = $('send'), presence = $('presenceText'), dot = $('presenceDot'), connectLink = $('connectLink');
+  const hint = $('hint');
   const CAPTIONS = {connecting: '연결하고 있어요', idle: '무엇을 도와드릴까요?', listening: '듣고 있어요',
     thinking: '생각하고 있어요', speaking: ''};
   const POLL_MS = 400;  // only while a reply is pending: it carries the streamed draft
@@ -63,6 +65,8 @@
 
   function disconnect() {
     window.JarvisConnection.forget();
+    voice?.close(); voice = null; voiceReady = false; voiceListening = false;
+    hint.textContent = HINTS.off;
     token = null; conversation = null; generation++;
     setBusy(false);
     go('disconnected', DISCONNECTED);
@@ -74,6 +78,7 @@
     if (presenceState.state === 'listening' || pending) return;
     if (!presenceState.dispatch('listen')) return;
     caption.textContent = CAPTIONS.listening;
+    if (voiceOn()) {voiceListening = true; voice.listen(); return;}  // the service stops speaking first
     let stream = null, context = null;
     try {
       stream = await navigator.mediaDevices.getUserMedia({audio: true});
@@ -105,14 +110,78 @@
       go('fail', '마이크를 쓸 수 없어요. 입력창에 적어 주세요.');
     }
   }
+  // Without a transcript: Esc, a hidden tab, a new question. finishListening() is the push-to-talk release.
   function stopListening(text) {
+    if (voiceListening) {voiceListening = false; voice?.cancel();}
     if (audio) {
       if (audio.frame && cancelRaf) cancelRaf(audio.frame);
       audio.stream.getTracks().forEach(track => track.stop()); audio.context.close(); audio = null;
     }
     if (presenceState.state === 'listening') go('listenEnd', text);
   }
+  function finishListening() {
+    if (!voiceListening) {stopListening(NOT_YET); return;}
+    voiceListening = false;
+    voice.stop();                                       // a transcript follows and is asked
+    go('listenEnd', HEARING);
+  }
   const NOT_YET = '음성 입력은 준비 중이에요. 입력창에 적어 주세요.';
+
+  // --- local voice service: native mic, transcript into ask(), replies spoken sentence by sentence ---
+  const HINTS = {off: 'Space를 길게 누르면 마이크 반응을 보여 줘요. 음성 입력은 준비 중이에요.',
+    loading: '음성 엔진을 준비하고 있어요. 그동안은 입력창에 적어 주세요.',
+    on: 'Space를 누른 채 말하고 놓으면 보내요. Esc는 듣기와 말하기를 멈춰요.'};
+  const VOICE_ERRORS = {mic_unavailable: '마이크를 쓸 수 없어요. 입력창에 적어 주세요.',
+    stt_failed: '잘 알아듣지 못했어요. 다시 말해 주세요.', not_ready: '음성 엔진을 준비하고 있어요. 잠시 뒤 다시 해 주세요.',
+    unavailable: '음성 엔진을 쓸 수 없어요. 입력창에 적어 주세요.', tts_failed: '답변을 소리로 읽지 못했어요.',
+    tts_unavailable: '답변을 소리로 읽지 못했어요.', speaker_unavailable: '스피커를 쓸 수 없어요.'};
+  const HEARING = '알아듣고 있어요';
+  let voice = null, voiceReady = false, voiceListening = false, voiceTurn = 0, voiceSpoke = false;
+  const voiceOn = () => Boolean(voice && voiceReady);
+  function startVoice() {
+    if (!window.JarvisVoice) return;
+    voice?.close();
+    const version = generation;
+    const client = window.JarvisVoice.connect(token, {
+      hello: status => voiceState(status.state, status.error),
+      state: voiceState,
+      transcript: text => {
+        if (version !== generation) return;
+        if (text.trim()) ask(text);
+        else if (presenceState.state === 'idle') caption.textContent = '말소리를 듣지 못했어요. 다시 말해 주세요.';
+      },
+      frame: (level, bins) => {presenceState.setLevel(level); presenceState.setSpectrum(bins);},
+      error: code => {
+        const text = VOICE_ERRORS[code] || '음성 처리에 실패했어요.';
+        if (presenceState.state === 'speaking' && !pending) go('spoken', text); else caption.textContent = text;
+      },
+      closed: () => {
+        if (voice !== client) return;
+        voice = null; voiceReady = false;
+        if (voiceListening) {voiceListening = false; go('listenEnd');}
+        hint.textContent = HINTS.off;
+      },
+    });
+    voice = client;
+  }
+  function voiceState(state, error) {
+    voiceReady = ['ready', 'listening', 'transcribing', 'speaking'].includes(state);
+    hint.textContent = voiceReady ? HINTS.on : state === 'loading' ? HINTS.loading : HINTS.off;
+    if (state === 'speaking') voiceSpoke = true;
+    if (voiceListening && state !== 'listening') {
+      // The service stopped by itself (a pause after speech, the time limit, or a mic failure).
+      voiceListening = false;
+      if (presenceState.state === 'listening') go('listenEnd', error ? VOICE_ERRORS[error] || HEARING : HEARING);
+    }
+    if (state === 'ready' && voiceSpoke && voiceTurn === asked && presenceState.state === 'speaking' && !pending) {
+      go('spoken', '');
+    }
+  }
+  // Reply text goes to the voice service when it is on; otherwise the orb plays pseudo speech for it.
+  function speakText(text, final) {
+    if (voiceOn()) {voice.speak(text, final); return 0;}
+    return presenceState.speechText(text);
+  }
 
   // --- replies ---
   function showText(text, draft) {
@@ -146,6 +215,7 @@
     let polling = true, timer = null, drafted = '';
     const turnNumber = ++asked;
     clearTimeout(spokenTimer);
+    if (voiceOn()) {voice.hush(); voiceSpoke = false; voiceTurn = turnNumber;}
     input.value = '';
     showText('', false); sources.hidden = true;
     setBusy(true);
@@ -157,7 +227,8 @@
         const snapshot = await api('/api/chat/conversations/' + identity);
         const turn = snapshot.turns.find(item => item.id === requestId);
         if (polling && turn?.status === 'pending' && turn.draft && turn.draft !== drafted) {
-          presenceState.speechText(turn.draft.startsWith(drafted) ? turn.draft.slice(drafted.length) : turn.draft);
+          if (!turn.draft.startsWith(drafted) && voiceOn()) voice.hush();   // the draft was rewritten
+          speakText(turn.draft.startsWith(drafted) ? turn.draft.slice(drafted.length) : turn.draft, false);
           drafted = turn.draft;
           if (presenceState.state !== 'speaking') go('speak');
           showText(drafted, true);
@@ -174,18 +245,23 @@
       if (turn?.status === 'completed' && turn.assistant) {
         showTurn(turn);
         const rest = turn.assistant.startsWith(drafted) ? turn.assistant.slice(drafted.length) : turn.assistant;
-        const ms = presenceState.speechText(rest);
+        const spoken = voiceOn();
+        const ms = speakText(rest, true);
         go('speak');
+        // With voice the service says when it is done; this only ends a reply it had nothing to say for.
         spokenTimer = setTimeout(() => {
-          if (turnNumber === asked && presenceState.state === 'speaking' && version === generation && !pending) go('spoken', '');
-        }, Math.min(SPOKEN_MS[1], Math.max(SPOKEN_MS[0], ms)));
+          if (turnNumber === asked && presenceState.state === 'speaking' && version === generation && !pending
+              && !(spoken && voiceSpoke)) go('spoken', '');
+        }, spoken ? 2500 : Math.min(SPOKEN_MS[1], Math.max(SPOKEN_MS[0], ms)));
       } else {
+        if (voiceOn()) voice.hush();
         showText('', false);
         go('fail', '답변을 완료하지 못했어요. 자동으로 다시 실행하지 않아요.');
       }
     } catch (error) {
       polling = false; clearTimeout(timer);
       if (!input.value) input.value = text;  // first, so a disconnect (401) never loses the question
+      if (voiceOn()) voice.hush();
       if (version !== generation) return;
       showText('', false);
       if (token) go('fail', error.message);
@@ -213,6 +289,7 @@
       conversation = chosen;
       setBusy(false);
       go('connected', undefined, {model: listing.model});
+      startVoice();
     } catch (error) {
       if (version !== generation) return;
       if (token) {presenceState.setLinked(false); go('fail', error.message);}
@@ -220,26 +297,32 @@
   }
 
   $('composer').addEventListener('submit', event => {event.preventDefault(); ask(input.value);});
-  mic.addEventListener('click', () => (presenceState.state === 'listening' ? stopListening(NOT_YET) : startListening()));
+  mic.addEventListener('click', () => (presenceState.state === 'listening' ? finishListening() : startListening()));
   $('suggestions').addEventListener('click', event => {
     const prompt = event.target.closest('button')?.dataset.prompt;
     if (prompt) ask(prompt);
   });
-  // Hold Space to see the mic level, only when nothing is focused: on a button, link or field Space keeps its own
-  // meaning. Esc stops the mic. Neither cancels a server reply.
+  // Hold Space to talk (or, without the voice service, to see the mic level), only when nothing is focused: on a
+  // button, link or field Space keeps its own meaning. Esc stops the mic and the spoken reply; a server reply that is
+  // still being written continues on screen.
   const spaceIsFree = () => !document.activeElement || document.activeElement === document.body;
   document.addEventListener('keydown', event => {
-    if (event.key === 'Escape') stopListening();
+    if (event.key === 'Escape') {
+      stopListening();
+      if (voiceOn()) {voice.cancel(); if (presenceState.state === 'speaking' && !pending) go('spoken', '');}
+    }
     if (event.code === 'Space' && spaceIsFree() && !event.repeat) {
       event.preventDefault();
       startListening();
     }
   });
   document.addEventListener('keyup', event => {
-    if (event.code === 'Space' && presenceState.state === 'listening' && spaceIsFree()) stopListening(NOT_YET);
+    if (event.code === 'Space' && presenceState.state === 'listening' && spaceIsFree()) finishListening();
   });
   document.addEventListener('visibilitychange', () => {if (document.hidden) stopListening(); else if (resumePoll) resumePoll();});
-  window.addEventListener('pagehide', () => {stopListening(); generation++; token = null; resumePoll = null;});
+  window.addEventListener('pagehide', () => {
+    stopListening(); voice?.close(); voice = null; generation++; token = null; resumePoll = null;
+  });
   setBusy(false);
   connect();
 })();

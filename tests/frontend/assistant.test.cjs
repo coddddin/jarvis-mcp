@@ -18,14 +18,15 @@ const flush = async () => { for (let i = 0; i < 20; i++) await new Promise(resol
 const deferred = () => { let resolve; const promise = new Promise(r => resolve = r); return {promise, resolve}; };
 const source = (changes = {}) => ({note_id: 'm', title: '프로젝트 회의록', path: 'JARVIS-Vault/m.md', line_start: 1, line_end: 13, cited: true, ...changes});
 
-async function harness({hash = '', stored = null, handler, mic = false, audioFails = false} = {}) {
+async function harness({hash = '', stored = null, handler, mic = false, audioFails = false, voice = false} = {}) {
   const track = {stopped: false, stop() {this.stopped = true;}};
   const ids = [...fs.readFileSync('frontend/assistant/index.html', 'utf8').matchAll(/id="([^"]+)"/g)].map(m => m[1]);
   const elements = Object.fromEntries(ids.map(id => [id, new Element()]));
   elements.suggestions.buttons = [new Element('button')];
   const storage = new Map(stored ? [['jarvis-hud-connection', stored]] : []);
   const docEvents = {}, winEvents = {}, requests = [], timers = [], orbCalls = [];
-  const location = {hash, pathname: '/assistant'};
+  const location = {hash, pathname: '/assistant', host: '127.0.0.1:8787', protocol: 'http:'};
+  const sockets = [];
   const body = new Element('body');
   const document = {getElementById: id => elements[id], hidden: false, activeElement: body, body,
     addEventListener: (name, fn) => docEvents[name] = fn};
@@ -36,7 +37,15 @@ async function harness({hash = '', stored = null, handler, mic = false, audioFai
     setTimeout: (fn, ms) => {const timer = {fn, ms}; timers.push(timer); return timer;}, clearTimeout: timer => {if (timer) timer.cancelled = true;},
     navigator: {mediaDevices: {getUserMedia: async () => {if (!mic) throw new Error('no mic in tests'); return {getTracks: () => [track]};}}},
     AudioContext: class {constructor() {if (audioFails) throw new Error('audio setup failed');} createAnalyser() {return {getByteFrequencyData() {}, frequencyBinCount: 8};} createMediaStreamSource() {return {connect() {}};} close() {}},
-    Uint8Array, Float32Array, performance: {now: () => 0},
+    Uint8Array, Float32Array, performance: {now: () => 0}, queueMicrotask,
+    WebSocket: class {
+      constructor(url) {this.url = url; this.sent = []; sockets.push(this);}
+      send(data) {this.sent.push(JSON.parse(data));}
+      close() {if (!this.closed) {this.closed = true; this.onclose?.();}}
+      open() {this.onopen();}
+      receive(message) {this.onmessage({data: JSON.stringify(message)});}
+      ops() {return this.sent.filter(item => item.op).map(item => item.op);}
+    },
     fetch: async (path, options = {}) => {
       requests.push({path, options});
       if (handler === 'down') throw new TypeError('Failed to fetch');
@@ -50,10 +59,11 @@ async function harness({hash = '', stored = null, handler, mic = false, audioFai
   vm.runInContext(fs.readFileSync('frontend/assistant/presence.js', 'utf8'), context);
   vm.runInContext(fs.readFileSync('frontend/assistant/connection.js', 'utf8'), context);
   context.window.JarvisConnection = context.window.JarvisConnection || context.JarvisConnection;
+  if (voice) vm.runInContext(fs.readFileSync('frontend/assistant/voice.js', 'utf8'), context);
   vm.runInContext(fs.readFileSync('frontend/assistant/assistant.js', 'utf8'), context);
   await flush();
   const run = async () => { const due = timers.filter(timer => !timer.cancelled && !timer.done); due.forEach(timer => {timer.done = true; timer.fn();}); await flush(); };
-  return {elements, storage, requests, timers, docEvents, winEvents, document, location, run, orbCalls, track};
+  return {elements, storage, requests, timers, docEvents, winEvents, document, location, run, orbCalls, track, sockets};
 }
 const listing = [200, {model: 'qwen2.5-coder:7b', conversations: [{id: 'c'.repeat(32), title: 't'}]}];
 const REQUEST = 'aaaaaaaabbbbccccddddeeeeeeeeeeee';
@@ -313,4 +323,111 @@ test('the mic interrupts speaking and starts listening', async () => {
   assert.equal(h.orbCalls.at(-1), 'listening');
   assert.equal(h.elements.mic.attributes['aria-pressed'], 'true');
   assert.equal(h.elements.caption.textContent, '듣고 있어요');
+});
+
+
+// --- local voice service (hud --voice) ---
+async function voiced(handler) {
+  const h = await harness({stored: 's'.repeat(43), voice: true, handler});
+  const socket = h.sockets[0];
+  socket.open();
+  socket.receive({type: 'hello', state: 'ready', error: null, device: 'cuda', model: 'large-v3-turbo', voice: 'cosyvoice3'});
+  return {...h, socket};
+}
+const talkKey = h => ({
+  down() {h.docEvents.keydown({code: 'Space', key: ' ', repeat: false, preventDefault() {}});},
+  up() {h.docEvents.keyup({code: 'Space'});},
+});
+
+test('the voice socket sends the token first and the hint says how to talk', async () => {
+  const h = await voiced(async () => listing);
+  assert.equal(h.socket.url, 'ws://127.0.0.1:8787/voice');
+  assert.deepEqual(h.socket.sent[0], {token: 's'.repeat(43)});
+  assert.match(h.elements.hint.textContent, /Space를 누른 채 말하고/);
+  assert.ok(fs.readFileSync('frontend/assistant/index.html', 'utf8').includes('/assets/assistant/voice.js'));
+});
+
+test('push-to-talk: Space opens the native mic, release transcribes, the transcript is asked and the reply spoken', async () => {
+  const h = await voiced(async (path, options) => options.method === 'POST'
+    ? [200, {turns: [{id: REQUEST, status: 'completed', assistant: '오후 3시에 회의가 있어요.', sources: []}]}] : listing);
+  talkKey(h).down(); await flush();
+  assert.deepEqual(h.socket.ops(), ['listen']);
+  assert.equal(h.elements.caption.textContent, '듣고 있어요');
+  h.socket.receive({type: 'state', state: 'listening'});
+  talkKey(h).up(); await flush();
+  assert.deepEqual(h.socket.ops(), ['listen', 'stop']);
+  assert.equal(h.elements.caption.textContent, '알아듣고 있어요');
+  assert.equal(h.requests.filter(request => request.options.method === 'POST').length, 0, 'nothing asked before the transcript');
+  h.socket.receive({type: 'state', state: 'transcribing'});
+  h.socket.receive({type: 'state', state: 'ready'});
+  h.socket.receive({type: 'transcript', text: '오늘 일정 알려줘'}); await flush();
+  const post = h.requests.find(request => request.options.method === 'POST');
+  assert.equal(JSON.parse(post.options.body).message, '오늘 일정 알려줘');
+  const speak = h.socket.sent.filter(item => item.op === 'speak');
+  assert.deepEqual(speak, [{op: 'speak', text: '오후 3시에 회의가 있어요.', final: true}]);
+  assert.equal(h.socket.ops()[2], 'hush', 'an old reply stops before the new one is spoken');
+  assert.equal(h.orbCalls.at(-1), 'speaking');
+  h.socket.receive({type: 'state', state: 'speaking'});        // the service says so as soon as text is queued
+  await h.run();
+  assert.equal(h.orbCalls.at(-1), 'speaking', 'the fallback timer leaves a reply that is being spoken alone');
+  h.socket.receive({type: 'state', state: 'ready'}); await flush();
+  assert.equal(h.orbCalls.at(-1), 'idle', 'the service says when speaking ended');
+});
+
+test('a pause ends listening by itself and an empty transcript asks nothing', async () => {
+  const h = await voiced(async () => listing);
+  talkKey(h).down(); await flush();
+  h.socket.receive({type: 'state', state: 'listening'});
+  h.socket.receive({type: 'state', state: 'transcribing'}); await flush();
+  assert.equal(h.elements.caption.textContent, '알아듣고 있어요');
+  talkKey(h).up(); await flush();
+  assert.deepEqual(h.socket.ops(), ['listen'], 'releasing after the auto stop sends nothing more');
+  h.socket.receive({type: 'state', state: 'ready'});
+  h.socket.receive({type: 'transcript', text: ''}); await flush();
+  assert.equal(h.requests.filter(request => request.options.method === 'POST').length, 0);
+  assert.match(h.elements.caption.textContent, /말소리를 듣지 못했어요/);
+});
+
+test('Esc cancels listening without a transcript and stops a spoken reply', async () => {
+  const h = await voiced(async (path, options) => options.method === 'POST'
+    ? [200, {turns: [{id: REQUEST, status: 'completed', assistant: '긴 답변입니다.', sources: []}]}] : listing);
+  talkKey(h).down(); await flush();
+  h.docEvents.keydown({key: 'Escape', code: 'Escape'}); await flush();
+  assert.deepEqual(h.socket.ops(), ['listen', 'cancel', 'cancel']);
+  assert.equal(h.orbCalls.at(-1), 'idle');
+  h.elements.input.value = '질문'; h.elements.composer.events.submit({preventDefault() {}}); await flush();
+  h.socket.receive({type: 'state', state: 'speaking'});
+  h.docEvents.keydown({key: 'Escape', code: 'Escape'}); await flush();
+  assert.equal(h.socket.ops().at(-1), 'cancel');
+  assert.equal(h.orbCalls.at(-1), 'idle');
+});
+
+test('long replies go out in chunks small enough for the socket, without control characters', async () => {
+  const text = '가'.repeat(600) + '\u0001끝.';
+  const h = await voiced(async (path, options) => options.method === 'POST'
+    ? [200, {turns: [{id: REQUEST, status: 'completed', assistant: text, sources: []}]}] : listing);
+  h.elements.input.value = '질문'; h.elements.composer.events.submit({preventDefault() {}}); await flush();
+  const speak = h.socket.sent.filter(item => item.op === 'speak');
+  assert.ok(speak.length >= 3 && speak.every(item => item.text.length <= 250));
+  assert.deepEqual(speak.map(item => item.final), [...speak.slice(1).map(() => false), true]);
+  assert.equal(speak.map(item => item.text).join(''), '가'.repeat(600) + ' 끝.');
+  assert.ok(speak.every(item => Buffer.byteLength(JSON.stringify(item)) < 1024));
+});
+
+test('without the voice service the page keeps the browser-only behaviour', async () => {
+  const h = await harness({stored: 's'.repeat(43), voice: true, handler: async () => listing});
+  h.sockets[0].close();                                    // hud started without --voice: no /voice route
+  talkKey(h).down(); talkKey(h).up(); await flush();
+  assert.deepEqual(h.sockets[0].sent, []);
+  assert.match(h.elements.caption.textContent, /마이크를 쓸 수 없어요|음성 입력은 준비 중이에요/);
+  assert.match(h.elements.hint.textContent, /음성 입력은 준비 중이에요/);
+});
+
+test('a voice service that is still loading keeps typing as the way in', async () => {
+  const h = await harness({stored: 's'.repeat(43), voice: true, handler: async () => listing});
+  h.sockets[0].open();
+  h.sockets[0].receive({type: 'hello', state: 'loading', error: null, device: null, model: null, voice: 'cosyvoice3'});
+  assert.match(h.elements.hint.textContent, /음성 엔진을 준비하고 있어요/);
+  talkKey(h).down(); await flush();
+  assert.deepEqual(h.sockets[0].ops(), []);
 });
