@@ -10,14 +10,15 @@ hands reply text back here to be spoken. This module only moves audio.
 - Speech to text: faster-whisper. GPU (large-v3-turbo, float16) when CUDA works, otherwise CPU (small, int8).
   Models live in one fixed folder; after the first download they load with local_files_only, so an offline
   restart never downloads again.
-- Text to speech: a Synthesizer. SapiSynthesizer (Windows voice, Heami by default) is the default; another engine,
-  such as a local VoiceStudio API, can be added later behind the same interface.
+- Text to speech: a Synthesizer. CosyVoice 3 in its own Python 3.10 process (cosyvoice_worker.py) when JARVIS's copy
+  exists (scripts/voice/link_cosyvoice.py); the Windows voice Heami only if it is missing or fails to load.
 - Barge-in: listening while speaking stops playback at once and drops queued sentences.
 
 Optional dependencies (requirements-voice.txt) are imported only when a real backend is built, so the HUD and
 the tests run without them.
 """
 import importlib.util
+import json
 import math
 import os
 from pathlib import Path
@@ -154,6 +155,179 @@ class SapiSynthesizer:
         self._voice.Speak(text, self._lib.SVSFIsNotXML | self._lib.SVSFPurgeBeforeSpeak)
         samples = np.frombuffer(bytes(stream.GetData()), dtype=np.int16).astype(np.float32) / 32768
         return samples, self.RATE
+
+
+# Numbers read aloud. CosyVoice has no Korean text frontend, so "12통" must arrive as "열두 통".
+_SINO = '영일이삼사오육칠팔구'
+_NATIVE_TENS = ['', '열', '스물', '서른', '마흔', '쉰', '예순', '일흔', '여든', '아흔']
+_NATIVE_ONES = ['', '한', '두', '세', '네', '다섯', '여섯', '일곱', '여덟', '아홉']
+_NATIVE_COUNTERS = ('시간', '마리', '가지', '군데', '사람', '번째', '개', '명', '통', '시', '살', '잔', '권', '장', '달',
+                    '병', '켤레', '그릇')
+_NUMBER = re.compile(r'(\d{1,3}(?:,\d{3})+|\d+)(\.\d+)?(\s?)(%|개월|' + '|'.join(_NATIVE_COUNTERS) + r'|월)?')
+
+
+def _sino(number):
+    """Sino-Korean reading: 2026 -> 이천이십육, 10000 -> 만. Very long numbers are read digit by digit."""
+    if number == 0:
+        return '영'
+    if number >= 10 ** 16:
+        return ''.join(_SINO[int(d)] for d in str(number))
+    words = []
+    for unit, size in (('조', 10 ** 12), ('억', 10 ** 8), ('만', 10 ** 4), ('', 1)):
+        group, number = divmod(number, size)
+        if not group:
+            continue
+        part = ''
+        for name, place in (('천', 1000), ('백', 100), ('십', 10), ('', 1)):
+            digit, group = divmod(group, place)
+            if digit:
+                part += ('' if digit == 1 and name else _SINO[digit]) + name
+        words.append('' if part == '일' and unit == '만' and not words else part)   # 10000 is 만, not 일만
+        words[-1] += unit
+    return ''.join(words)
+
+
+def _native(number):
+    """Native Korean counting form before a counter, 1..99: 12 -> 열두, 20 -> 스무."""
+    if number == 20:
+        return '스무'
+    tens, ones = divmod(number, 10)
+    return _NATIVE_TENS[tens] + _NATIVE_ONES[ones]
+
+
+def korean_numbers(text):
+    """Digits as Korean words: native numbers before counters (12통 -> 열두 통, 3시 -> 세 시), Sino-Korean
+    otherwise (2026년 -> 이천이십육년, 3.5% -> 삼 점 오 퍼센트, 6월 -> 유월)."""
+    def read(match):
+        whole, fraction, space, suffix = match.group(1), match.group(2), match.group(3), match.group(4) or ''
+        number = int(whole.replace(',', ''))
+        if suffix in _NATIVE_COUNTERS and not fraction and 1 <= number <= 99:
+            return '첫 번째' if (number, suffix) == (1, '번째') else f'{_native(number)} {suffix}'
+        if suffix == '월' and not fraction:
+            return {6: '유월', 10: '시월'}.get(number, _sino(number) + '월')
+        words = _sino(number)
+        if fraction:
+            words += ' 점 ' + ' '.join(_SINO[int(d)] for d in fraction[1:])
+        if suffix == '%':
+            return words + ' 퍼센트'
+        return words + space + suffix
+    return _NUMBER.sub(read, text)
+
+
+DEFAULT_COSYVOICE_ROOT = Path(os.environ.get('LOCALAPPDATA') or Path.home()) / 'Jarvis' / 'voice' / 'cosyvoice'
+DEFAULT_VOICE_REF = DEFAULT_COSYVOICE_ROOT.parent / 'jarvis-ref-en.wav'
+COSYVOICE_LOAD_SECONDS = 240                               # model load plus one warm-up sentence
+COSYVOICE_SENTENCE_SECONDS = 60
+
+
+class CosyVoiceSynthesizer:
+    """CosyVoice 3 in a separate Python 3.10 process (cosyvoice_worker.py) that JARVIS owns.
+
+    The worker is started by warm_up() and ends when its stdin closes (close() or this process exiting). One
+    sentence is in flight at a time. A worker that dies or stalls is stopped and reported as tts_unavailable."""
+
+    def __init__(self, root=DEFAULT_COSYVOICE_ROOT, ref=DEFAULT_VOICE_REF, *, python=None, worker=None):
+        self.root, self.ref = Path(root), Path(ref)
+        self.python = Path(python) if python else self.root / 'venv' / 'Scripts' / 'python.exe'
+        self.worker = Path(worker) if worker else Path(__file__).with_name('cosyvoice_worker.py')
+        self.name = 'cosyvoice3'
+        self.process = self.rate = None
+        self.lock = threading.Lock()
+
+    def available(self):
+        return self.python.is_file() and self.ref.is_file()
+
+    def _read(self, size, timeout):
+        """Exactly size bytes from the worker, or None on EOF or timeout (the worker is then stopped)."""
+        result = {}
+
+        def reader():
+            data = b''
+            while len(data) < size:
+                chunk = self.process.stdout.read(size - len(data))
+                if not chunk:
+                    break
+                data += chunk
+            result['data'] = data
+        thread = threading.Thread(target=reader, daemon=True, name='cosyvoice-read')
+        thread.start()
+        thread.join(timeout)
+        data = result.get('data')
+        if data is None or len(data) < size:
+            self._stop()
+            return None
+        return data
+
+    def _header(self, timeout):
+        result = {}
+
+        def reader():
+            result['line'] = self.process.stdout.readline()
+        thread = threading.Thread(target=reader, daemon=True, name='cosyvoice-read')
+        thread.start()
+        thread.join(timeout)
+        line = result.get('line')
+        try:
+            header = json.loads(line) if line else None
+        except ValueError:
+            header = None
+        if not isinstance(header, dict):
+            self._stop()
+            raise VoiceError('tts_unavailable')
+        return header
+
+    def warm_up(self):
+        import subprocess
+        if not self.available():
+            raise VoiceError('tts_unavailable')
+        with self.lock:
+            self.process = subprocess.Popen(
+                [str(self.python), '-I', '-X', 'utf8', str(self.worker),
+                 '--root', str(self.root), '--ref', str(self.ref)],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+            header = self._header(COSYVOICE_LOAD_SECONDS)
+            if header.get('ready') is not True or not isinstance(header.get('rate'), int):
+                self._stop()
+                raise VoiceError('tts_unavailable')
+            self.rate = header['rate']
+
+    def synthesize(self, text):
+        text = korean_numbers(text)
+        with self.lock:
+            if self.process is None or self.process.poll() is not None:
+                raise VoiceError('tts_unavailable')
+            try:
+                self.process.stdin.write(json.dumps({'text': text}).encode() + b'\n')
+                self.process.stdin.flush()
+            except OSError:
+                self._stop()
+                raise VoiceError('tts_unavailable')
+            header = self._header(COSYVOICE_SENTENCE_SECONDS)
+            if header.get('ok') is not True:
+                raise VoiceError(header.get('error') if header.get('error') in ('bad_text', 'tts_failed')
+                                 else 'tts_failed')
+            count = header.get('samples')
+            if not isinstance(count, int) or count < 0:
+                self._stop()
+                raise VoiceError('tts_unavailable')
+            data = self._read(count * 2, COSYVOICE_SENTENCE_SECONDS)
+            if data is None:
+                raise VoiceError('tts_unavailable')
+        return np.frombuffer(data, dtype='<i2').astype(np.float32) / 32768, self.rate
+
+    def _stop(self):
+        process, self.process = self.process, None
+        if process is None:
+            return
+        try:
+            process.stdin.close()
+            process.wait(5)
+        except Exception:
+            process.kill()
+
+    def close(self):
+        self._stop()                                        # not under the lock: a sentence may be in flight
 
 
 # --- speech to text --------------------------------------------------------------------------------------------
@@ -603,5 +777,8 @@ def build_default_service(model_root=DEFAULT_MODEL_ROOT, *, prefer_gpu=True, voi
     for module in ('faster_whisper', 'sounddevice', 'comtypes'):
         if importlib.util.find_spec(module) is None:
             raise ImportError(module)
-    return VoiceService(transcriber=WhisperTranscriber(model_root, prefer_gpu=prefer_gpu),
-                        synthesizer=SapiSynthesizer(voice))
+    transcriber = WhisperTranscriber(model_root, prefer_gpu=prefer_gpu)
+    cosyvoice = CosyVoiceSynthesizer()
+    if not cosyvoice.available():                           # scripts/voice/link_cosyvoice.py was not run
+        return VoiceService(transcriber=transcriber, synthesizer=SapiSynthesizer(voice))
+    return VoiceService(transcriber=transcriber, synthesizer=cosyvoice, fallback=SapiSynthesizer(voice))

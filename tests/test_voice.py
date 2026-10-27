@@ -263,3 +263,63 @@ def test_close_releases_the_mic_and_stops_events():
     assert audio.inputs[-1].closed
     voice._emit({'type': 'state', 'state': 'ready'})
     assert len(events) == count
+
+
+# --- numbers and the CosyVoice worker client -------------------------------------------------------------------
+
+def test_numbers_are_read_as_korean_words():
+    from jarvis.features.voice.service import korean_numbers
+    assert korean_numbers('읽지 않은 메일 12통, 오후 3시') == '읽지 않은 메일 열두 통, 오후 세 시'
+    assert korean_numbers('2026년 6월 10월 3개월') == '이천이십육년 유월 시월 삼개월'
+    assert korean_numbers('3.5% 1,234원 10000명 20개 1번째') == '삼 점 오 퍼센트 천이백삼십사원 만명 스무 개 첫 번째'
+    assert korean_numbers('0 110000 100000000') == '영 십일만 일억'
+    assert korean_numbers('숫자 없음') == '숫자 없음'
+
+
+FAKE_WORKER = r'''
+import json, sys
+out = sys.stdout.buffer
+mode = sys.argv[sys.argv.index('--root') + 1].rsplit('-', 1)[-1]
+if mode == 'broken':
+    out.write(b'{"ready": false, "error": "tts_unavailable"}\n'); out.flush(); sys.exit(1)
+out.write(b'{"ready": true, "rate": 24000}\n'); out.flush()
+for line in sys.stdin.buffer:
+    text = json.loads(line)['text']
+    if mode == 'dies':
+        sys.exit(1)
+    pcm = (1000).to_bytes(2, 'little', signed=True) * len(text)
+    out.write(json.dumps({'ok': True, 'samples': len(text)}).encode() + b'\n' + pcm); out.flush()
+'''
+
+
+def cosyvoice(tmp_path, mode):
+    import sys
+    from jarvis.features.voice.service import CosyVoiceSynthesizer
+    worker = tmp_path / 'fake_worker.py'
+    worker.write_text(FAKE_WORKER, encoding='utf-8')
+    ref = tmp_path / 'ref.wav'
+    ref.write_bytes(b'')
+    return CosyVoiceSynthesizer(tmp_path / f'root-{mode}', ref, python=sys.executable, worker=worker)
+
+
+def test_cosyvoice_client_speaks_through_the_worker_and_stops_it(tmp_path):
+    synth = cosyvoice(tmp_path, 'ok')
+    synth.warm_up()
+    samples, rate = synth.synthesize('12통')                  # sent as 열두 통: four characters
+    assert rate == 24000 and samples.size == 4 and abs(samples[0] - 1000 / 32768) < 1e-6
+    process = synth.process
+    synth.close()
+    assert synth.process is None and process.poll() is not None
+
+
+def test_cosyvoice_that_cannot_load_or_dies_reports_unavailable(tmp_path):
+    with pytest.raises(VoiceError) as error:
+        cosyvoice(tmp_path, 'broken').warm_up()
+    assert error.value.code == 'tts_unavailable'
+    synth = cosyvoice(tmp_path, 'dies')
+    synth.warm_up()
+    with pytest.raises(VoiceError) as error:
+        synth.synthesize('안녕하세요.')
+    assert error.value.code == 'tts_unavailable' and synth.process is None
+    with pytest.raises(VoiceError):
+        synth.synthesize('다시요.')
