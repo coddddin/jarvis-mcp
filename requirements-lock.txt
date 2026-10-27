@@ -18,6 +18,7 @@ iniconfig==2.3.1
 jsonschema==4.26.0
 jsonschema-specifications==2025.9.1
 mcp==1.30.0
+numpy==2.5.4
 oauthlib==4.0.0
 packaging==26.3
 pillow==12.3.0
