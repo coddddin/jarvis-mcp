@@ -188,12 +188,12 @@ def test_unsupported_live_facts_require_matching_successful_retrieval(service, m
     monkeypatch.setattr(service, '_worker', lambda *args: reply('1위: 검색어1, 2위: 검색어2'))
     result = service.send(service.store.create()['id'], uuid4().hex, '네이버 실시간 순위 top5 알려줘')
     assert '검색어1' not in result['turns'][0]['assistant']
-    assert '확인하지 못했어요' in result['turns'][0]['assistant']
+    assert '확인하지 못했습니다' in result['turns'][0]['assistant']
     sources = [{'name': 'list_web_sources', 'status': 'ok', 'detail': 'list only'}]
-    assert '확인하지 못했어요' in service._ground_reply('오늘 뉴스', 'unverified', sources)
+    assert '확인하지 못했습니다' in service._ground_reply('오늘 뉴스', 'unverified', sources)
     actual = [{'name': 'read_registered_feed_with_agent_reach', 'status': 'ok', 'detail': 'https://www.bbc.co.uk/news'}]
     assert service._ground_reply('오늘 BBC 뉴스', 'verified feed summary', actual) == 'verified feed summary'
-    assert '확인하지 못했어요' in service._ground_reply('네이버 실시간 순위', 'unverified', actual)
+    assert '확인하지 못했습니다' in service._ground_reply('네이버 실시간 순위', 'unverified', actual)
 
 
 def test_incomplete_capability_introduction_uses_actual_enabled_tool_list(service):
