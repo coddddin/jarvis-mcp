@@ -282,3 +282,35 @@ test('the mic needs a connection and its failure dims the orb', async () => {
   h.docEvents.keydown(space(h)); await flush();
   assert.equal(h.orbCalls.at(-1), 'error');
 });
+
+test('a question asked while the last answer is still speaking shows thinking, and the old timer cannot end the new answer', async () => {
+  const second = deferred();
+  let posts = 0;
+  const h = await harness({stored: 's'.repeat(43), handler: async (path, options) => {
+    if (options.method === 'POST' && path.endsWith('/messages'))
+      return ++posts === 1 ? [200, {turns: [{id: REQUEST, status: 'completed', assistant: '첫 번째 답이에요. 조금 길게 말해요.', sources: []}]}] : second.promise;
+    return path.endsWith('c'.repeat(32)) ? [200, {turns: []}] : listing;
+  }});
+  h.elements.input.value = '첫 질문'; h.elements.composer.events.submit({preventDefault() {}}); await flush();
+  assert.equal(h.orbCalls.at(-1), 'speaking');
+  const oldTimer = h.timers.find(timer => !timer.done && !timer.cancelled && timer.ms >= 900);
+  h.elements.input.value = '두 번째 질문'; h.elements.composer.events.submit({preventDefault() {}}); await flush();
+  assert.equal(h.orbCalls.at(-1), 'thinking');
+  assert.equal(h.elements.caption.textContent, '생각하고 있어요');
+  assert.equal(h.elements.caption.dataset.mode, 'thinking');
+  second.resolve([200, {turns: [{id: REQUEST, status: 'completed', assistant: '두 번째 답이에요. 이것도 길게 말해요.', sources: []}]}]); await flush();
+  assert.equal(h.orbCalls.at(-1), 'speaking');
+  oldTimer.fn();  // even if it fired late, it belongs to the first answer
+  assert.equal(h.orbCalls.at(-1), 'speaking', 'the first answer timer does not end the second answer');
+});
+
+test('the mic interrupts speaking and starts listening', async () => {
+  const h = await harness({stored: 's'.repeat(43), mic: true, handler: async (path, options) =>
+    options.method === 'POST' && path.endsWith('/messages') ? [200, {turns: [{id: REQUEST, status: 'completed', assistant: '답이에요.', sources: []}]}] : listing});
+  h.elements.input.value = '질문'; h.elements.composer.events.submit({preventDefault() {}}); await flush();
+  assert.equal(h.orbCalls.at(-1), 'speaking');
+  h.elements.mic.events.click(); await flush();
+  assert.equal(h.orbCalls.at(-1), 'listening');
+  assert.equal(h.elements.mic.attributes['aria-pressed'], 'true');
+  assert.equal(h.elements.caption.textContent, '듣고 있어요');
+});

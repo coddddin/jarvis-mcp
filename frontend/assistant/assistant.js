@@ -15,6 +15,7 @@
   const DISCONNECTED = '연결이 필요해요.';
   let audio = null, token = null, conversation = null, pending = false, generation = 0;
   let resumePoll = null;  // set while a reply is pending; polling pauses while the tab is hidden
+  let asked = 0, spokenTimer = null;  // the speaking look ends only for the answer that started it
 
   // Send an event; the caption shows text, or the state's own caption when text is undefined.
   function go(event, text, detail) {
@@ -143,6 +144,8 @@
     stopListening();
     const identity = conversation, version = generation, requestId = crypto.randomUUID().replaceAll('-', '');
     let polling = true, timer = null, drafted = '';
+    const turnNumber = ++asked;
+    clearTimeout(spokenTimer);
     input.value = '';
     showText('', false); sources.hidden = true;
     setBusy(true);
@@ -173,8 +176,8 @@
         const rest = turn.assistant.startsWith(drafted) ? turn.assistant.slice(drafted.length) : turn.assistant;
         const ms = presenceState.speechText(rest);
         go('speak');
-        setTimeout(() => {
-          if (presenceState.state === 'speaking' && version === generation && !pending) go('spoken', '');
+        spokenTimer = setTimeout(() => {
+          if (turnNumber === asked && presenceState.state === 'speaking' && version === generation && !pending) go('spoken', '');
         }, Math.min(SPOKEN_MS[1], Math.max(SPOKEN_MS[0], ms)));
       } else {
         showText('', false);

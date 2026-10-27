@@ -86,3 +86,16 @@ test('the queue keeps only the latest text', () => {
   run(presence, ['connecting', 'connected', 'ask', 'speak']);
   assert.equal(presence.speechText('가'.repeat(500)), Math.round(80 / 14 * 1000));
 });
+
+test('a new question or the mic during speaking drops the queued pseudo speech', () => {
+  const {presence, clock} = make();
+  run(presence, ['connecting', 'connected', 'ask', 'speak']);
+  presence.speechText('아주 긴 답이 계속 나오는 중이에요');
+  assert.equal(presence.dispatch('ask'), true);
+  assert.equal(presence.state, 'thinking');
+  for (let i = 0; i < 30; i++) {clock.t += 1000 / 60; presence.sample();}
+  assert.ok(presence.sample().level < .01, 'no leftover bursts while thinking');
+  run(presence, ['speak']);
+  assert.equal(presence.dispatch('listen'), true);
+  assert.equal(presence.state, 'listening');
+});

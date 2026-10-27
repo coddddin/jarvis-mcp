@@ -11,9 +11,10 @@
     connecting: {offline: 'connecting', error: 'connecting'},
     connected: {connecting: 'idle', error: 'idle'},
     disconnected: null,  // from any state
-    listen: {idle: 'listening', error: 'listening'},
+    // Speaking can be cut off by the mic or a new question; leaving speaking drops the queued pseudo speech.
+    listen: {idle: 'listening', error: 'listening', speaking: 'listening'},
     listenEnd: {listening: 'idle'},
-    ask: {idle: 'thinking', listening: 'thinking', error: 'thinking'},
+    ask: {idle: 'thinking', listening: 'thinking', error: 'thinking', speaking: 'thinking'},
     speak: {thinking: 'speaking', speaking: 'speaking'},
     spoken: {speaking: 'idle'},
     fail: {connecting: 'error', idle: 'error', listening: 'error', thinking: 'error', speaking: 'error', error: 'error'},
