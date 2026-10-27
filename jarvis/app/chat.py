@@ -94,7 +94,7 @@ class DraftWriter:
 
 
 class ChatService:
-    def __init__(self, guard, *, model='qwen2.5-coder:7b', provider_candidates=(), provider_executors=None):
+    def __init__(self, guard, *, model='qwen3.5:9b', provider_candidates=(), provider_executors=None):
         self.guard = guard
         self.model = LocalConfig(model=model).model
         self.store = ChatStore(guard)
@@ -405,12 +405,23 @@ class ChatService:
     _NOTE_START = r'(?<![가-힣A-Za-z0-9])'
     _NOTE_MODIFIER = r'\s*(?:[가-힣A-Za-z]{1,10}\s+)?'
     _NOTE_END = r'(?=들|에서|에는|에|의|를|을|로|속|은|는|이|가|도|만|[^가-힣]|$)'  # a whole word, not 노트북/자료구조
-    _NOTE_NOUN = r'(?:노트|메모|볼트|옵시디언|자료|vault|obsidian)' + _NOTE_END
+    # 볼트 is left out: "제 볼트" is more often a bolt than an Obsidian vault; "vault" and 옵시디언 cover the Vault.
+    _NOTE_NOUN = r'(?:노트|메모|옵시디언|자료|vault|obsidian)' + _NOTE_END
     _NOTE_OWNER = _NOTE_START + r'(?:내|제|나의|저의)' + _NOTE_MODIFIER
     _NOTE_THAT = _NOTE_START + r'(?:그|이)' + _NOTE_MODIFIER + r'(?:노트|메모)' + _NOTE_END
     _NOTE_KEPT = r'(?:정리|적어|기록|메모|저장|써)\s*(?:해\s*)?(?:둔|놓은|놨던|뒀던|두었던)'
     NOTE_REQUEST = re.compile(_NOTE_OWNER + _NOTE_NOUN + '|' + _NOTE_THAT + '|' + _NOTE_KEPT
                               + r'|(?<![a-z])my\s+(?:[a-z]+\s+)?(?:notes?|vault|obsidian)(?![a-z])', re.I)
+    # Strong signals: a "kept" verb or looking inside the notes ("내 노트에서", "그 메모에", "in my notes").
+    _NOTE_INSIDE = r'(?:들)?(?:에서|에는|에|속|안에서|안에|중에|\s*(?:내용\s*)?중(?![가-힣])|\s*보면)'
+    NOTE_STRONG = re.compile(_NOTE_KEPT + '|' + _NOTE_OWNER + _NOTE_NOUN + _NOTE_INSIDE + '|' + _NOTE_THAT + _NOTE_INSIDE
+                             + r'|(?<![a-z])in\s+my\s+(?:[a-z]+\s+)?(?:notes?|vault|obsidian)(?![a-z])', re.I)
+    # With only an owner marker, a question about using notes ("내 메모 정리하는 방법", "내 옵시디언 동기화") is an
+    # ordinary question, not a search of their content.
+    # "어떻게" alone is often the note's topic ("출시 어떻게 하기로 했지"), so it counts only with a using verb.
+    NOTE_HOW_TO = re.compile(r'방법|어떻게\s*(?:정리|써|쓰|사용|관리|설정|옮기|동기화|백업|만들)|사용법|쓰는\s*법|앱|어플|프로그램'
+                             r'|플러그인|설정|동기화|백업|설치|추천|단축키|템플릿'
+                             r'|(?<![a-z])(?:how|app|plugin|sync|backup|setting|install|recommend)', re.I)
     # Words that only say "look in my notes" are removed before scoring, so they do not dilute the topic words.
     _NOTE_FILLER = re.compile(r'(?:' + _NOTE_START + r'(?:내|제|나의|저의|그|이)' + _NOTE_MODIFIER + r')?' + _NOTE_NOUN
         + r'(?:들)?(?:에서|에는|에|의|를|을|로|속)?(?![가-힣])|'
@@ -440,7 +451,9 @@ class ChatService:
 
     @classmethod
     def _is_note_request(cls, message):
-        return cls.NOTE_REQUEST.search(message) is not None
+        if cls.NOTE_STRONG.search(message):
+            return True
+        return cls.NOTE_REQUEST.search(message) is not None and cls.NOTE_HOW_TO.search(message) is None
 
     @classmethod
     def _note_query(cls, message):

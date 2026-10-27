@@ -160,7 +160,12 @@ def test_missing_index_is_reported_without_model_call(tmp_path, vault, monkeypat
 @pytest.mark.parametrize('message', ['내 노트에서 회의 찾아줘', '메모해 둔 레시피 알려줘', '정리해 둔 자료 있어?',
                                      '옵시디언에 적어 둔 거', 'search my notes for the plan', '내 vault에서 찾아줘',
                                      '그 노트에 다음 할 일은 뭐라고 적혀 있었어?', '내 회의 노트 보여줘', '제 메모에 뭐 있어?',
-                                     '제 자료에서 견적 찾아줘', '내 노트들 중에 여행 계획', '이 메모 다시 보여줘'])
+                                     '제 자료에서 견적 찾아줘', '내 노트들 중에 여행 계획', '이 메모 다시 보여줘',
+                                     # Looking inside the notes or a kept verb wins over how-to words.
+                                     '내 노트에 적어 둔 앱 추천 목록 보여줘', '내 노트에서 백업 방법 찾아줘',
+                                     '내 노트에 이사 설정 적어 둔 거 있어?', 'what is in my notes about moving',
+                                     # How-to words used as the note's topic (review of #58).
+                                     '내 노트 보면 출시 어떻게 하기로 했지?', '내 메모 중 백업 서버 주소', '내 노트 내용 중 앱 이름'])
 def test_note_questions_are_detected(message):
     assert ChatService._is_note_request(message)
 
@@ -170,7 +175,10 @@ def test_note_questions_are_detected(message):
     '파이썬 3.14 릴리스 노트 요약해줘', '애플 키노트 언제야?', 'M8 볼트 규격', '220볼트 콘센트', '우사인 볼트 기록',
     '갤럭시 노트 20 가격', 'HashiCorp Vault 설정법', '메모장 단축키', '메모해줘: 내일 9시 회의', '내 노트북이 느려',
     '안내 자료 만들어줘', '옵시디언 플러그인 추천해줘', '그 자료 웹에서 찾아줘', '이 자료 출처가 어디야?',
-    '이 볼트 몇 mm야?', '제 자료구조 숙제 도와줘', '내 자료형 변환 코드 봐줘'])
+    '이 볼트 몇 mm야?', '제 자료구조 숙제 도와줘', '내 자료형 변환 코드 봐줘',
+    # Owner marker but a question about using notes or apps (review P3 after #55).
+    '내 노트 정리 앱 추천해줘', '제 볼트 규격 문서', '내 메모 정리하는 좋은 방법 알려줘', '제 자료 백업 어떻게 해?',
+    '내 옵시디언 동기화가 안 돼', '내 노트 앱 추천해줘', '내 노트 템플릿 만들어줘', 'how do I sync my obsidian vault'])
 def test_other_questions_are_not_note_questions(message):
     assert not ChatService._is_note_request(message)
 

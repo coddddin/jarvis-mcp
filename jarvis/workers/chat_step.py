@@ -121,7 +121,7 @@ def main():
             emit({'ok': True, 'result': {}})
             return 0
         body = {'model': payload['model'], 'stream': payload.get('stream') is True,
-                'format': payload['schema'], 'messages': payload['messages'],
+                'think': False, 'format': payload['schema'], 'messages': payload['messages'],
                 'options': OPTIONS, 'keep_alive': KEEP_ALIVE}
         if not body['stream']:
             data = support.request('/api/chat', body)

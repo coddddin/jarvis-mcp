@@ -15,7 +15,7 @@ def main():
     parser.add_argument('--conversation-id')
     parser.add_argument('--request-id')
     parser.add_argument('--local-only', action='store_true')
-    parser.add_argument('--model', default='qwen2.5-coder:7b')
+    parser.add_argument('--model', default='qwen3.5:9b')
     args = parser.parse_args()
     if args.action == 'run' and not args.summary:
         parser.error('run requires --summary')
