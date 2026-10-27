@@ -60,3 +60,9 @@ Input A = Heami clips, input B = Qwen 1.7B Sohee clips (24 kHz resampled to 16 k
 - Korean TTS (Heami) "헤이 자비스" only 0.16-0.28: Korean pronunciation may not trigger at all.
 - 84 s of Korean speech (Heami, Sohee): max 0.008, no false trigger. Too short for a per-hour rate.
 - Pretrained model license is CC BY-NC-SA 4.0 (non-commercial).
+
+## Recommendation (rev 2)
+1. STT: faster-whisper on GPU. large-v3-turbo fp16 (~2.3 GB VRAM) is the best accuracy/latency mix seen here. small int8 on CPU is the fallback. Zipformer is not needed now (its speed edge mostly disappears once end-of-speech detection is counted, and it is weak on English).
+2. TTS: no measured engine plays Korean in real time with a natural voice yet. Heami is the only real-time option (robotic). Qwen3-TTS has a natural voice, but with RTF ~1.25 even an ideal streaming wrapper needs 1.1-2.5 s of buffer before gapless playback. Do not decide yet. First (a) have the user listen to the samples, (b) test a faster Qwen loop (CUDA graphs, torch.compile), (c) run CosyVoice / OpenVoice once the source-install permission is resolved.
+3. Wake word: the pretrained hey_jarvis is not usable (non-commercial license, English near-misses fire, Korean pronunciation scores only 0.16-0.28). Start with a hotkey or push-to-talk.
+4. Before any final decision, re-measure STT and the wake word with the real user's voice on the real mic: 20-30 sentences, quiet and with fan noise.
