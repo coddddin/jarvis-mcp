@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "mini",
+  "description": "The bundled mini ring may open the main window and be dragged.",
+  "windows": ["mini"],
+  "permissions": ["allow-expand", "allow-drag"]
+}

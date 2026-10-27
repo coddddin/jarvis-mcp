@@ -32,6 +32,11 @@
     dot.dataset.state = line[1];
     connectLink.hidden = line[1] === 'online' || line[1] === 'connecting';
   });
+  // Desktop app only: its mini ring follows this page's state. The app allows this page one command, 'presence'.
+  const desktop = window.__TAURI_INTERNALS__;
+  if (desktop && typeof desktop.invoke === 'function') {
+    presenceState.subscribe(state => {Promise.resolve(desktop.invoke('presence', {state})).catch(() => {});});
+  }
   function setBusy(value) {
     pending = value;
     send.disabled = value || !conversation;

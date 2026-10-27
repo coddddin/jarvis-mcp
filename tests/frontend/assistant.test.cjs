@@ -18,7 +18,7 @@ const flush = async () => { for (let i = 0; i < 20; i++) await new Promise(resol
 const deferred = () => { let resolve; const promise = new Promise(r => resolve = r); return {promise, resolve}; };
 const source = (changes = {}) => ({note_id: 'm', title: '프로젝트 회의록', path: 'JARVIS-Vault/m.md', line_start: 1, line_end: 13, cited: true, ...changes});
 
-async function harness({hash = '', stored = null, handler, mic = false, audioFails = false} = {}) {
+async function harness({hash = '', stored = null, handler, mic = false, audioFails = false, desktop = null} = {}) {
   const track = {stopped: false, stop() {this.stopped = true;}};
   const ids = [...fs.readFileSync('frontend/assistant/index.html', 'utf8').matchAll(/id="([^"]+)"/g)].map(m => m[1]);
   const elements = Object.fromEntries(ids.map(id => [id, new Element()]));
@@ -46,6 +46,7 @@ async function harness({hash = '', stored = null, handler, mic = false, audioFai
   };
   context.window = {addEventListener: (name, fn) => winEvents[name] = fn,
     JarvisOrb: {create: (canvas, presence) => {presence.subscribe(state => orbCalls.push(state)); return {ok: true};}}};
+  if (desktop) context.window.__TAURI_INTERNALS__ = desktop;
   vm.createContext(context);
   vm.runInContext(fs.readFileSync('frontend/assistant/presence.js', 'utf8'), context);
   vm.runInContext(fs.readFileSync('frontend/assistant/connection.js', 'utf8'), context);
@@ -57,6 +58,18 @@ async function harness({hash = '', stored = null, handler, mic = false, audioFai
 }
 const listing = [200, {model: 'qwen2.5-coder:7b', conversations: [{id: 'c'.repeat(32), title: 't'}]}];
 const REQUEST = 'aaaaaaaabbbbccccddddeeeeeeeeeeee';
+
+test('in the desktop app each presence state goes to the app; a failing bridge is ignored; a browser sends nothing', async () => {
+  const sent = [];
+  const desktop = {invoke: async (command, args) => {sent.push([command, args.state]); throw new Error('app closed');}};
+  const h = await harness({desktop, hash: '#connect=' + 'k'.repeat(43), handler: async path =>
+    path === '/api/connect' ? [200, {token: 't'.repeat(43)}] : listing});
+  assert.deepEqual(sent, [['presence', 'offline'], ['presence', 'connecting'], ['presence', 'idle']]);
+  assert.equal(h.elements.presenceText.textContent, '연결됨 · qwen2.5-coder:7b');
+  const plain = await harness({hash: '#connect=' + 'k'.repeat(43), handler: async path =>
+    path === '/api/connect' ? [200, {token: 't'.repeat(43)}] : listing});
+  assert.equal(plain.elements.presenceText.textContent, '연결됨 · qwen2.5-coder:7b');
+});
 
 test('connection key and #connect protocol match the HUD', () => {
   const hud = fs.readFileSync('frontend/hud.js', 'utf8'), own = fs.readFileSync('frontend/assistant/connection.js', 'utf8');

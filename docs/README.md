@@ -35,6 +35,7 @@
 - [에이전트 작업 상태·재시도 제어](guides/agent-tasks.md): Phase 2.5 영속 상태 API, 역할 순서·수정 상한·재시작과 제한.
 - [에이전트 QA·예산·기억·이벤트](guides/agent-controls.md): 제한 수식/컨테이너 QA, 예약 예산, 재개·보존, 기억 관리와 인증된 WebSocket.
 - [로컬 작업 HUD](guides/local-hud.md): 실행·연결 파일 선택·작업/QA/예산/이벤트 표시와 읽기 전용 범위.
+- [데스크톱 앱](guides/desktop-app.md): Tauri 창·트레이·Ctrl+Alt+J·미니 고리, 서버 자식 프로세스와 작업 개체, IPC 경계·측정.
 - [REA · Agent Reach](guides/rea-agent-reach.md): 전용 설치, 단일 프로그램 정적 분석과 등록 RSS 읽기.
 
 ## 보관 자료 (평소에는 읽지 않음)
