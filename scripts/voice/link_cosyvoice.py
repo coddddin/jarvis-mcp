@@ -7,8 +7,9 @@ Source: the CosyVoice checkout that VoiceStudio installs (%APPDATA%\\OmniVoice\\
     models/Fun-CosyVoice3-0.5B/              the weights
 Hard links survive deleting or updating VoiceStudio. Python replaces files rather than editing them in place, so
 the two installs never change each other. This script only links and creates the venv; it runs no CosyVoice code.
-Afterwards pin the transformers that upstream CosyVoice requires (see docs/guides/voice.md):
-    uv pip install --python <target>/venv/Scripts/python.exe transformers==4.51.3
+Afterwards pin the transformers that upstream CosyVoice requires, in the copy only (see docs/guides/voice.md):
+    <target>/venv/Scripts/python.exe -I -m ensurepip
+    <target>/venv/Scripts/python.exe -I -m pip install transformers==4.51.3
 
 Usage: python scripts/voice/link_cosyvoice.py [--source DIR] [--target DIR]
 """
