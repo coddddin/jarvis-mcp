@@ -10,7 +10,7 @@ from jarvis.core.guardrails import Guardrails
 
 ASSETS = ('/assets/assistant/assistant.css', '/assets/assistant/assistant.js', '/assets/assistant/orb.js',
           '/assets/assistant/connection.js', '/assets/assistant/presence.js', '/assets/assistant/knowledge.js',
-          '/assets/wiki/wiki.css', '/assets/wiki/wiki.js')
+          '/assets/assistant/voice.js', '/assets/wiki/wiki.css', '/assets/wiki/wiki.js')
 
 
 def client(tmp_path):

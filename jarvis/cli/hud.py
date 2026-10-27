@@ -49,6 +49,8 @@ def main():
     mode.add_argument('--shell', action='store_true',
                       help='Started by the desktop app: print one READY line with the connect URL instead of opening a browser.')
     parser.add_argument('--model', default='qwen3.5:9b', help='Installed local Ollama model tag; no automatic downloads.')
+    parser.add_argument('--voice', action='store_true',
+                        help='Local push-to-talk and spoken replies (needs requirements-voice.txt; see docs/guides/voice.md).')
     args = parser.parse_args()
     if not 1024 <= args.port <= 65535:
         parser.error('Choose an unprivileged local port.')
@@ -65,10 +67,18 @@ def main():
     chat.team.activity_store = activity
     processes = ProcessRegistry(store.guard)
     processes.register_current(kind='hud', label='JARVIS HUD', max_runtime_seconds=604800)
+    voice = None
+    if args.voice:
+        try:
+            from jarvis.features.voice.service import build_default_service
+            voice = build_default_service()
+        except ImportError as exc:
+            print(f'Voice is off: missing package {exc}. Install requirements-voice.txt (docs/guides/voice.md).',
+                  flush=True)
     app = create_event_app(store, token=load_event_token(), task_ids=ids, origins=[url], chat=chat,
         processes=processes, board=BoardStore(store.guard), activity=activity, sessions=sessions,
         dispatcher=(store.guard, CONFIG_ROOT / 'dispatcher.json'), briefing=GoogleBriefing(),
-        connect_code=code)
+        connect_code=code, voice=voice)
     print(f'J.A.R.V.I.S. local workspace: {url}', flush=True)
     print('Local chat enabled; task HUD read-only. Close this process to stop. Connection file: .jarvis-auth/agent-events-token.txt', flush=True)
     config = uvicorn.Config(app, host='127.0.0.1', port=args.port, ws='websockets-sansio',
@@ -77,8 +87,17 @@ def main():
     # Load the chat model in the background once the port is bound, so the first reply does not wait for it.
     # `--open` lands on the assistant view; its "개발자 화면" link goes to the HUD at / in the same tab and connection.
     target = f'{url}/assistant#connect={code}' if code else None
-    HUDServer(config, open_url=target if args.open else None, on_start=chat.warm_up,
-              shell_url=target if args.shell else None).run()
+
+    def on_start():
+        chat.warm_up()
+        if voice is not None:
+            voice.start()                                   # speech models load in the background
+    try:
+        HUDServer(config, open_url=target if args.open else None, on_start=on_start,
+                  shell_url=target if args.shell else None).run()
+    finally:
+        if voice is not None:
+            voice.close()                                   # closes the mic and ends the speech worker
 
 
 if __name__ == '__main__':

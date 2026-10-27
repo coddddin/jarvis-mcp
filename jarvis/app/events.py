@@ -54,7 +54,7 @@ CONNECT_FAILURES = 5
 
 
 def create_event_app(tasks, *, token, task_ids, origins, chat=None, processes=None, board=None, activity=None,
-                     sessions=None, dispatcher=None, briefing=None, connect_code=None):
+                     sessions=None, dispatcher=None, briefing=None, connect_code=None, voice=None):
     if not isinstance(token, str) or not re.fullmatch(r'[A-Za-z0-9_-]{43}', token):
         raise ValueError('A strong local event token is required.')
     if connect_code is not None and (not isinstance(connect_code, str)
@@ -92,7 +92,8 @@ def create_event_app(tasks, *, token, task_ids, origins, chat=None, processes=No
                     '/assets/assistant/assistant.js': 'assistant/assistant.js', '/assets/assistant/orb.js': 'assistant/orb.js',
                     '/assets/assistant/connection.js': 'assistant/connection.js',
                     '/assets/assistant/knowledge.js': 'assistant/knowledge.js',
-                    '/assets/assistant/presence.js': 'assistant/presence.js'}[request.url.path]
+                    '/assets/assistant/presence.js': 'assistant/presence.js',
+                    '/assets/assistant/voice.js': 'assistant/voice.js'}[request.url.path]
         return FileResponse(PROJECT_ROOT / 'frontend' / filename, headers=response_headers)
 
     def summaries():
@@ -351,6 +352,10 @@ def create_event_app(tasks, *, token, task_ids, origins, chat=None, processes=No
         extra += briefing_routes(briefing, valid=valid, origins=origins, headers=response_headers)
     # Ollama card: last /api/tags observation for the configured chat model (same gate; no chat => 503).
     extra += model_status_routes(observer_for(chat), valid=valid, origins=origins, headers=response_headers)
+    # Local voice (hud --voice): push-to-talk and spoken replies over one WebSocket (same token, Origin and Host).
+    if voice is not None:
+        from jarvis.app.voice_routes import voice_routes
+        extra += voice_routes(voice, valid=valid, origins=origins)
     if chat is not None:
         extra += wiki_routes(WikiStore(tasks.guard), guard=tasks.guard, infer=getattr(chat, '_infer', None), valid=valid, origins=origins, headers=response_headers)
     return Starlette(routes=extra + [Route('/wiki', asset), Route('/assets/wiki/wiki.css', asset), Route('/assets/wiki/wiki.js', asset), Route('/', asset), Route('/assets/dispatcher.js', asset), Route('/assets/briefing.js', asset), Route('/assets/hud.css', asset), Route('/assets/hud.js', asset),
@@ -358,7 +363,7 @@ def create_event_app(tasks, *, token, task_ids, origins, chat=None, processes=No
         Route('/assistant', asset), Route('/assets/assistant/assistant.css', asset), Route('/assets/assistant/assistant.js', asset),
         Route('/assets/assistant/orb.js', asset), Route('/assets/assistant/connection.js', asset),
         Route('/assets/assistant/knowledge.js', asset),
-        Route('/assets/assistant/presence.js', asset),
+        Route('/assets/assistant/presence.js', asset), Route('/assets/assistant/voice.js', asset),
         Route('/api/chat/conversations', chat_api, methods=['GET', 'POST']),
         Route('/api/chat/conversations/{conversation_id}', chat_api, methods=['GET']),
         Route('/api/chat/conversations/{conversation_id}/messages', chat_api, methods=['POST']),
