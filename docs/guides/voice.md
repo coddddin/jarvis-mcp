@@ -39,7 +39,7 @@
 ## 구성과 경계
 
 - 받아쓰기: faster-whisper. GPU에서 large-v3-turbo(float16), 아니면 CPU small(int8). 모델은 `%LOCALAPPDATA%\Jarvis\voice-models` 한 곳에 두고, 처음 한 번만 내려받습니다(약 1.6GB). 이후에는 `local_files_only`로 먼저 불러와 오프라인 재시작에서도 내려받지 않습니다.
-- 음성 합성: CosyVoice 3(Fun-CosyVoice3-0.5B)을 프로젝트 venv가 아닌 사본의 Python 3.10에서 별도 프로세스(`jarvis/workers/cosyvoice_tts.py`)로 실행합니다. 표준 입출력으로 문장(JSON)을 보내고 PCM을 받습니다. HUD가 끝나면 입력이 닫혀 함께 끝납니다. 시작과 예열에 약 15초, 이후 한 문장에 약 2초입니다. 시작에 실패하면 Heami로 바꿉니다. 도중에 멈추면 그 답변은 읽지 않고 화면에 알립니다.
+- 음성 합성: CosyVoice 3(Fun-CosyVoice3-0.5B)을 프로젝트 venv가 아닌 사본의 Python 3.10에서 별도 프로세스(`jarvis/workers/cosyvoice_tts.py`)로 실행합니다. 표준 입출력으로 문장(JSON)을 보내고 PCM을 받습니다. HUD가 끝나면 입력이 닫혀 함께 끝납니다. 시작과 예열에 약 15초, 이후 한 문장에 약 2초입니다. 시작에 실패하거나 도중에 멈추면(한 문장 60초 초과 등) Heami로 바꿔 같은 문장부터 이어 읽고, HUD를 다시 켤 때까지 Heami를 씁니다.
 - 연결: `/voice` WebSocket 하나. 작업 이벤트와 같은 검사(정확한 로컬 Origin, Host, 쿼리 없음, 첫 메시지의 HUD 토큰)를 거치며 한 번에 한 화면만 연결됩니다. 메시지는 1KB 이하이고 답변은 250자씩 나눠 보냅니다.
 - GPU 메모리: 받아쓰기 약 1.6GB, CosyVoice 약 3.3GB가 채팅 모델과 함께 올라갑니다. 16GB GPU에서 확인했습니다.
 

@@ -689,6 +689,32 @@ class VoiceService:
         if self.state == 'speaking':
             self._set_state('ready')
 
+    @staticmethod
+    def _synthesize(synthesizer, sentence):
+        try:
+            samples, rate = synthesizer.synthesize(sentence)
+            return samples, rate, None
+        except VoiceError as exc:
+            return None, None, exc.code
+        except Exception:
+            return None, None, 'tts_failed'
+
+    def _fall_back(self, broken):
+        """An engine that died after loading (for example a stalled CosyVoice worker) is replaced by the fallback for
+        the rest of this run, instead of failing every later reply. Returns True when the fallback is now in use."""
+        with self.lock:
+            if self.fallback is None or broken is self.fallback or self.closed:
+                return False
+            if self.synthesizer is broken:
+                self.synthesizer = self.fallback
+        closer = getattr(broken, 'close', None)
+        if closer is not None:
+            try:
+                closer()
+            except Exception:
+                pass
+        return True
+
     def _synthesis_loop(self):
         while True:
             item = self.sentences.get()
@@ -700,13 +726,9 @@ class VoiceService:
                     continue
                 self.synthesizing = True
                 synthesizer = self.synthesizer
-            try:
-                samples, rate = synthesizer.synthesize(sentence)
-                failed = None
-            except VoiceError as exc:
-                samples, rate, failed = None, None, exc.code
-            except Exception:
-                samples, rate, failed = None, None, 'tts_failed'
+            samples, rate, failed = self._synthesize(synthesizer, sentence)
+            if failed == 'tts_unavailable' and self._fall_back(synthesizer):
+                samples, rate, failed = self._synthesize(self.fallback, sentence)   # the same sentence, new voice
             with self.lock:
                 self.synthesizing = False
                 if turn != self.speech_turn:

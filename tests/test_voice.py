@@ -323,3 +323,33 @@ def test_cosyvoice_that_cannot_load_or_dies_reports_unavailable(tmp_path):
     assert error.value.code == 'tts_unavailable' and synth.process is None
     with pytest.raises(VoiceError):
         synth.synthesize('다시요.')
+
+
+def test_an_engine_that_dies_after_loading_hands_over_to_the_fallback():
+    class Dead(FakeSynth):
+        closed = False
+
+        def synthesize(self, text):
+            raise VoiceError('tts_unavailable')            # e.g. a CosyVoice worker that stalled and was stopped
+
+        def close(self):
+            self.closed = True
+    dead, fallback = Dead('cosyvoice3'), FakeSynth('heami')
+    voice, events, audio = service(synthesizer=dead, fallback=fallback)
+    voice.speak('첫 답변입니다.', final=True)
+    wait(lambda: audio.outputs)
+    drain(audio.outputs[0])
+    assert fallback.spoken == ['첫 답변입니다.'] and dead.closed      # the same sentence, in the fallback voice
+    assert voice.status()['voice'] == 'heami' and not any(e['type'] == 'error' for e in events)
+    voice.speak('다음 답변입니다.', final=True)
+    wait(lambda: len(fallback.spoken) == 2)
+
+
+def test_a_failing_fallback_is_reported_and_not_swapped_again():
+    class Dead(FakeSynth):
+        def synthesize(self, text):
+            raise VoiceError('tts_unavailable')
+    voice, events, audio = service(synthesizer=Dead('cosyvoice3'), fallback=Dead('heami'))
+    voice.speak('말해 볼게요.', final=True)
+    wait(lambda: any(event['type'] == 'error' for event in events))
+    assert [e['code'] for e in events if e['type'] == 'error'] == ['tts_unavailable'] and voice.state == 'ready'
