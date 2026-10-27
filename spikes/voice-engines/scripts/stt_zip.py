@@ -7,8 +7,14 @@ M = B / "cache/zipformer-ko/sherpa-onnx-streaming-zipformer-korean-2024-06-16"
 W = B / "work"
 refs = (W / "sentences.txt").read_text(encoding="utf-8").splitlines()
 
-def cer(ref, hyp):
-    norm = lambda s: "".join(c for c in s if c.isalnum())
+NUMS = [("십오", "15"), ("세 시", "3시"), ("세시", "3시"), ("두 건", "2건"), ("두건", "2건"), ("한 건", "1건"), ("한건", "1건"),
+        ("두 권", "2권"), ("한 권", "1권"), ("팔십오", "85"), ("퍼센트", "%")]
+def numnorm(s):
+    for a, b in NUMS: s = s.replace(a, b)
+    return s.replace("시 15분", "시15분")
+def cer(ref, hyp, nn=False):
+    if nn: ref, hyp = numnorm(ref), numnorm(hyp)
+    norm = lambda s: "".join(c for c in s if c.isalnum() or c == "%")
     r, h = norm(ref), norm(hyp)
     d = list(range(len(h) + 1))
     for i in range(1, len(r) + 1):
@@ -42,6 +48,6 @@ for i, ref in enumerate(refs, 1):
     final_lat = time.perf_counter() - t
     hyp = rec.get_result(s).strip(); dur = len(a) / sr
     out["rows"].append({"i": i, "audio_s": round(dur, 2), "first_partial_at_audio_s": first_partial,
-        "lat_s": round(final_lat, 3), "rtf": round((compute + final_lat) / dur, 3), "cer": round(cer(ref, hyp), 3), "hyp": hyp})
+        "lat_s": round(final_lat, 3), "rtf": round((compute + final_lat) / dur, 3), "cer": round(cer(ref, hyp), 3), "cer_num": round(cer(ref, hyp, True), 3), "hyp": hyp})
 out["rss_mb"] = round(psutil.Process().memory_info().rss / 2**20)
 print(json.dumps(out, ensure_ascii=False))

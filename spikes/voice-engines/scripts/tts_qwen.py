@@ -32,16 +32,25 @@ for i, text in enumerate(texts, 1):
     steps.clear(); torch.cuda.synchronize(); t0 = time.perf_counter()
     wavs, sr = tts.generate_custom_voice(text=text, speaker="Sohee", language="Korean")
     torch.cuda.synchronize(); total = time.perf_counter() - t0
-    codes = captured["codes"]
-    torch.cuda.synchronize(); t1 = time.perf_counter()
-    orig_dec([{"audio_codes": codes[:K]}]); torch.cuda.synchronize()
-    dec_k = time.perf_counter() - t1
-    # steps[0] = prefill + first frame; steps[K-1] = Kth frame
-    ttfa = (steps[K - 1] - t0) + dec_k if len(steps) >= K else None
+    codes = captured["codes"]; n = int(codes.shape[0]); fdur = 1 / 12.5
     w = wavs[0]; dur = len(w) / sr
+    # frame j (1-based) is complete at the end of talker call j+1 (code predictor fills it next call)
+    done = [steps[min(j, len(steps) - 1)] - t0 for j in range(1, n + 1)]
+    torch.cuda.synchronize(); t1 = time.perf_counter()
+    part = orig_dec([{"audio_codes": codes[:K]}])[0][0]; torch.cuda.synchronize()
+    dec_k = time.perf_counter() - t1
+    ttfa = done[K - 1] + dec_k
+    # gapless: start playback at T so that frame j is ready by T + (j-1)*fdur; decode cost added once
+    gapless = max(d - (j * fdur) for j, d in enumerate(done)) + dec_k
+    full = w[:len(part)]
+    mismatch = float(np.abs(np.asarray(part, dtype=np.float32) - np.asarray(full, dtype=np.float32)).max())
+    a = np.abs(np.asarray(w, dtype=np.float32)); thr = 0.01 * a.max()
+    nz = np.nonzero(a > thr)[0]
+    lead_sil = nz[0] / sr if len(nz) else dur; tail_sil = (len(a) - 1 - nz[-1]) / sr if len(nz) else dur
     sf.write(str(B / f"samples/qwen3-{size}-sohee-{i}.wav"), w, sr)
     out["rows"].append({"i": i, "audio_s": round(dur, 2), "total_s": round(total, 3), "rtf": round(total / dur, 3),
-                        "ttfa_est_s": round(ttfa, 3) if ttfa else None, "frames": int(codes.shape[0]),
+                        "ttfa_naive_s": round(ttfa, 3), "gapless_start_s": round(gapless, 3), "frames": n,
+                        "chunk_vs_full_maxdiff": round(mismatch, 4), "lead_sil_s": round(lead_sil, 2), "tail_sil_s": round(tail_sil, 2),
                         "step_ms_avg": round(1000 * (steps[-1] - steps[0]) / max(1, len(steps) - 1), 1)})
 out["vram_peak_gb"] = round(torch.cuda.max_memory_reserved() / 2**30, 2)
 out["rss_mb"] = round(psutil.Process().memory_info().rss / 2**20)
