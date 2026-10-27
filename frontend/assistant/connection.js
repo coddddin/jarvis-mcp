@@ -8,7 +8,16 @@
   const TOKEN = /^[A-Za-z0-9_-]{43}$/;
   const saved = () => {try {return sessionStorage.getItem(KEY);} catch (_) {return null;}};
   const remember = token => {try {sessionStorage.setItem(KEY, token);} catch (_) { /* storage blocked: this load only */ }};
-  const forget = () => {try {sessionStorage.removeItem(KEY);} catch (_) { /* nothing stored */ }};
+  let current = null;
+  const listeners = new Set();
+  const publish = value => {
+    const next = typeof value === 'string' && TOKEN.test(value) ? value : null;
+    if (next === current) return;
+    current = next;
+    for (const listener of listeners) listener(current);
+  };
+  const subscribe = listener => {listeners.add(listener); listener(current); return () => listeners.delete(listener);};
+  const forget = () => {try {sessionStorage.removeItem(KEY);} catch (_) { /* nothing stored */ } publish(null);};
 
   async function exchange(code) {
     try {
@@ -35,5 +44,5 @@
     return {token: null, codeFailed: Boolean(match)};
   }
 
-  window.JarvisConnection = {start, forget};
+  window.JarvisConnection = {start, forget, publish, subscribe};
 })();

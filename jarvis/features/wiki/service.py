@@ -413,6 +413,15 @@ class WikiStore:
             raise WikiError('Existing wiki note exceeds the size limit; refusing to touch it.')
         return data
 
+    @staticmethod
+    def _install_no_replace(temp, target, *, windows):
+        if windows:
+            os.rename(temp, target)  # Windows rename refuses an existing destination.
+        else:
+            # link is an atomic create-if-absent; never replace a newly appeared user note.
+            os.link(temp, target)
+            os.unlink(temp)
+
     def _write_atomic(self, target, data: bytes):
         """Exclusive hidden temp in the same folder, fsync, then move without replacing anything."""
         temp = self.guard.validate_path(str(target.parent / f'.{target.stem}.{uuid4().hex}.tmp'), must_exist=False)
@@ -427,10 +436,8 @@ class WikiStore:
             self.guard.check_running()
             if os.path.lexists(target):
                 raise FileExistsError('wiki note path appeared during export')
-            if os.name == 'nt':
-                os.rename(temp, target)  # Windows refuses to replace an existing destination
-            else:
-                os.replace(temp, target)  # checked just above; see module limits
+            self._install_no_replace(temp, target, windows=os.name == 'nt')
+            if os.name != 'nt':
                 folder = os.open(target.parent, os.O_RDONLY)
                 try:
                     os.fsync(folder)

@@ -437,3 +437,25 @@ def test_stop_marker_blocks_every_operation(tmp_path):
         with pytest.raises(GuardrailError):
             call()
     assert not (tmp_path / 'JARVIS-Vault').exists()
+
+
+def test_posix_install_is_atomic_no_replace_when_target_appears(tmp_path, monkeypatch):
+    temp, target = tmp_path / 'own.tmp', tmp_path / 'note.md'
+    temp.write_bytes(b'new generated note')
+    original = os.link
+    def competing_write(source, destination):
+        target.write_bytes(b'user note appeared concurrently')
+        return original(source, destination)
+    monkeypatch.setattr(wiki_service.os, 'link', competing_write)
+    with pytest.raises(FileExistsError):
+        WikiStore._install_no_replace(temp, target, windows=False)
+    assert target.read_bytes() == b'user note appeared concurrently'
+    assert temp.read_bytes() == b'new generated note'
+
+
+def test_posix_install_success_has_one_link_and_no_temp(tmp_path):
+    temp, target = tmp_path / 'own.tmp', tmp_path / 'note.md'
+    temp.write_bytes(b'new generated note')
+    WikiStore._install_no_replace(temp, target, windows=False)
+    assert target.read_bytes() == b'new generated note'
+    assert target.stat().st_nlink == 1 and not temp.exists()
