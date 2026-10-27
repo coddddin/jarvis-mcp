@@ -1,0 +1,32 @@
+const {test}=require('node:test');const assert=require('node:assert/strict');const fs=require('node:fs');const vm=require('node:vm');
+class Element{constructor(){this.value='';this.events={};this.children=[];}addEventListener(k,fn){this.events[k]=fn;}replaceChildren(...v){this.children=v;}append(...v){this.children.push(...v);}}
+const defer=()=>{let resolve;const promise=new Promise(r=>resolve=r);return {resolve,promise};};
+const candidate={id:'b'.repeat(32),digest:'d'.repeat(64),status:'proposed',summary:'<script>not HTML</script>',facts:[{text:'로컬 모델',quote:'로컬 Ollama',line:1}],source:{id:'a'.repeat(32),title:'자료',sha256:'e'.repeat(64)}};
+const tick=async()=>{for(let i=0;i<12;i++)await Promise.resolve();};
+async function harness({embedded=false}={}){const ids=[...fs.readFileSync('frontend/wiki/index.html','utf8').matchAll(/id="([^"]+)"/g)].map(m=>m[1]);const nodes=Object.fromEntries(ids.map(id=>[id,new Element()]));const requests=[],events={};let handler,subscriber;let shared=null;if(embedded)nodes.knowledgeSpace=new Element();const storage=new Map([['jarvis-hud-connection','x'.repeat(43)]]);const context={URLSearchParams,document:{getElementById:id=>nodes[id],createElement:()=>new Element()},window:{JarvisConnection:{subscribe:fn=>{subscriber=fn;fn(shared);},forget:()=>{shared=null;subscriber?.(null);}},location:{hash:'',pathname:'/wiki',search:''},addEventListener:(name,fn)=>events[name]=fn},history:{replaceState(){}},sessionStorage:{getItem:k=>storage.get(k),setItem:(k,v)=>storage.set(k,v),removeItem:k=>storage.delete(k)},crypto:{randomUUID:()=> 'a'.repeat(32)},fetch:async(path,opts)=>{requests.push({path,opts});const v=handler?await handler(path,opts):{};return typeof v?.status==='number'?{ok:false,status:v.status,json:async()=>({error:v.error})}:{ok:true,status:200,json:async()=>v};}};vm.runInNewContext(fs.readFileSync('frontend/wiki/wiki.js','utf8'),context);await tick();return {nodes,requests,events,storage,publish:value=>{shared=value;subscriber?.(value);},set:fn=>handler=fn};}
+test('prepare is only a proposal, explicit approval and safe text rendering',async()=>{const h=await harness();h.nodes.wikiSourceTitle.value='資料';h.nodes.wikiSourceText.value='로컬 Ollama';h.set((p)=>p.endsWith('/prepare')?candidate:{indexed:true});await h.nodes.wikiPrepare.events.click();assert.equal(h.nodes.wikiCandidate.hidden,false);assert.equal(h.nodes.wikiSummary.textContent,candidate.summary);assert.equal(h.requests.filter(x=>x.path.endsWith('/approve')).length,0);assert.equal(h.nodes.wikiApprove.disabled,false);await h.nodes.wikiApprove.events.click();assert.equal(h.nodes.wikiApprove.disabled,true);assert.match(h.nodes.wikiNotice.textContent,/저장/);assert.equal(h.nodes.wikiNotice.hidden,false);});
+test('editing after proposal invalidates approval',async()=>{const h=await harness();h.nodes.wikiSourceTitle.value='자료';h.nodes.wikiSourceText.value='로컬';h.set(()=>candidate);await h.nodes.wikiPrepare.events.click();assert.equal(h.nodes.wikiCandidate.hidden,false);h.nodes.wikiSourceText.events.input();assert.equal(h.nodes.wikiApprove.disabled,true);assert.equal(h.nodes.wikiCandidate.hidden,true);});
+test('late prepare result after disconnect never restores private proposal',async()=>{const h=await harness(),p=defer();h.nodes.wikiSourceTitle.value='자료';h.nodes.wikiSourceText.value='로컬';h.set(()=>p.promise);const running=h.nodes.wikiPrepare.events.click();await tick();h.nodes.wikiDisconnect.events.click();p.resolve(candidate);await running;assert.equal(h.nodes.wikiCandidate.hidden,true);assert.equal(h.nodes.wikiPrepare.disabled,true);assert.equal(h.storage.size,0);});
+test('missing or failed search is not replaced with a fake answer',async()=>{const h=await harness();h.nodes.wikiSearchInput.value='모르는 내용';h.set(()=>({results:[]}));await h.nodes.wikiSearchButton.events.click();assert.equal(h.nodes.wikiResults.hidden,true);assert.match(h.nodes.wikiNotice.textContent,/찾지 못/);h.set(()=>({status:503,error:'private-exception'}));await h.nodes.wikiSearchButton.events.click();assert.doesNotMatch(h.nodes.wikiNotice.textContent,/private-exception/);});
+test('markup includes required safe asset references and script never assigns HTML',()=>{const html=fs.readFileSync('frontend/wiki/index.html','utf8');assert.match(html,/\/assets\/wiki\/wiki.js/);assert.doesNotMatch(html,/<script(?![^>]*src=)[^>]*>/);assert.doesNotMatch(fs.readFileSync('frontend/wiki/wiki.js','utf8'),/\.innerHTML\s*=/);});
+
+
+test('embedded knowledge uses the validated main connection without exchanging a second code',async()=>{
+  const h=await harness({embedded:true});
+  assert.equal(h.requests.length,0);assert.equal(h.nodes.wikiPrepare.disabled,true);
+  h.publish('x'.repeat(43));assert.equal(h.nodes.wikiPrepare.disabled,false);
+  h.nodes.wikiSourceTitle.value='자료';h.nodes.wikiSourceText.value='원문';h.set(()=>candidate);
+  await h.nodes.wikiPrepare.events.click();
+  assert.equal(h.requests.length,1);assert.equal(h.requests[0].path,'/api/wiki/prepare');
+  h.publish(null);assert.equal(h.nodes.wikiPrepare.disabled,true);assert.equal(h.nodes.wikiCandidate.hidden,true);
+  assert.equal(h.nodes.wikiSourceText.value,'원문');
+});
+
+test('embedded disconnect forgets shared connection and rejects an in-flight old proposal',async()=>{
+  const h=await harness({embedded:true}),pending=defer();h.publish('x'.repeat(43));
+  h.nodes.wikiSourceTitle.value='자료';h.nodes.wikiSourceText.value='원문';h.set(()=>pending.promise);
+  const running=h.nodes.wikiPrepare.events.click();await tick();h.nodes.wikiDisconnect.events.click();
+  pending.resolve(candidate);await running;
+  assert.equal(h.nodes.wikiCandidate.hidden,true);assert.equal(h.nodes.wikiPrepare.disabled,true);
+  assert.equal(h.nodes.wikiSourceText.value,'원문');
+});

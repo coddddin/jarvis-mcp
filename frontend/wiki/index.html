@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <title>자비스 · 나의 위키</title>
+  <link rel="stylesheet" href="/assets/wiki/wiki.css">
+  <script src="/assets/wiki/wiki.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#wikiMain">본문으로 이동</a>
+  <div class="wiki-shell">
+    <header class="topbar">
+      <a class="brand" href="/" aria-label="자비스 작업 화면으로"><span class="brand-mark" aria-hidden="true">J</span><span>JARVIS <span class="brand-detail">/ 나의 위키</span></span></a>
+      <a class="back-link" href="/">작업 화면</a>
+    </header>
+
+    <main id="wikiMain">
+      <div class="intro">
+        <p class="eyebrow">기억하고, 다시 이어 쓰기</p>
+        <h1>다음에도 쓸 지식으로 남기세요.</h1>
+        <p class="intro-copy">자료를 맡기면 자비스가 초안을 만듭니다. 출처를 확인하고 저장한 내용은 나중에 다시 찾을 수 있어요.</p>
+        <ol class="workflow" aria-label="위키를 만드는 순서">
+          <li><span aria-hidden="true">1</span>자료 추가</li>
+          <li><span aria-hidden="true">2</span>초안 확인</li>
+          <li><span aria-hidden="true">3</span>검토 후 저장</li>
+          <li><span aria-hidden="true">4</span>다시 찾기</li>
+        </ol>
+      </div>
+
+      <section class="connection" aria-labelledby="connectionTitle">
+        <div class="connection-heading">
+          <div><h2 id="connectionTitle">자비스 연결</h2><p id="wikiConnection" class="connection-state" role="status" aria-live="polite">연결 대기</p></div>
+          <button id="wikiDisconnect" type="button" class="button button-quiet" disabled>연결 해제</button>
+        </div>
+        <p class="help">실행 링크로 열면 자동으로 연결합니다. 연결이 안 됐다면 자비스가 발급한 일회성 코드를 입력하세요. 파일을 선택할 필요는 없어요.</p>
+        <div class="connection-controls">
+          <div class="field"><label for="wikiConnectCode">일회성 연결 코드</label><input id="wikiConnectCode" type="password" maxlength="43" autocomplete="off" spellcheck="false" aria-describedby="connectionHelp"></div>
+          <button id="wikiConnectButton" type="button" class="button button-secondary">연결하기</button>
+        </div>
+        <p id="connectionHelp" class="fine-print">코드는 한 번만 사용할 수 있어요. 만료됐으면 새 실행 링크나 코드를 받아주세요.</p>
+      </section>
+
+      <p id="wikiNotice" class="notice" role="status" aria-live="polite" aria-atomic="true" hidden></p>
+
+      <div class="workspace-grid">
+        <section class="panel source-panel" aria-labelledby="sourceTitle">
+          <div class="section-heading"><span class="step-number" aria-hidden="true">01</span><div><p class="eyebrow">자료 추가</p><h2 id="sourceTitle">무엇을 기억할까요?</h2></div></div>
+          <p class="section-copy">작업 결과, 조사한 내용, 결정한 이유처럼 다시 쓸 자료를 붙여 넣으세요. 이번에는 텍스트 한 건부터 정리합니다.</p>
+          <div class="field"><label for="wikiSourceTitle">자료 제목</label><input id="wikiSourceTitle" type="text" maxlength="160" autocomplete="off" aria-describedby="titleHelp"><p id="titleHelp" class="help">나중에 알아볼 수 있는 짧은 제목을 붙여주세요.</p></div>
+          <div class="field"><label for="wikiSourceText">원문</label><textarea id="wikiSourceText" rows="12" maxlength="16000" spellcheck="false" aria-describedby="sourceHelp"></textarea><p id="sourceHelp" class="help">최대 16,000자. 비밀번호나 인증 코드는 넣지 마세요. 원문은 초안과 구분해 보관합니다.</p></div>
+          <div class="action-row"><button id="wikiPrepare" type="button" class="button button-primary" disabled>위키 초안 만들기</button><span class="action-note">로컬 AI가 정리합니다.</span></div>
+          <p class="fine-print">초안 생성만으로 검색에 공개되거나 자동 저장 승인되지는 않아요.</p>
+        </section>
+
+        <div class="review-column">
+          <section class="review-intro" aria-labelledby="reviewTitle"><div class="section-heading"><span class="step-number" aria-hidden="true">02</span><div><p class="eyebrow">초안 확인</p><h2 id="reviewTitle">근거를 보고 저장하세요.</h2></div></div><p class="section-copy">초안을 만들면 이곳에 요약과 원문 인용이 나타납니다. 원문이 실제로 뒷받침하는지 확인한 뒤 저장해주세요.</p></section>
+          <section id="wikiCandidate" class="panel candidate-panel" aria-label="검토할 위키 초안" hidden>
+            <div class="candidate-heading"><h3>검토할 초안</h3><span id="wikiReviewState" class="draft-label">아직 검색되지 않음</span></div>
+            <h4>요약</h4><p id="wikiSummary" class="summary-text"></p>
+            <h4>핵심 사실과 원문 인용</h4><div id="wikiFacts" class="facts-list"></div>
+            <div class="source-reference"><h4>원본 근거</h4><p id="wikiSourceRef"></p></div>
+            <div class="approval-area"><p class="help">인용이 있다는 것만으로 내용이 정확한 것은 아니에요. 검토한 초안만 저장해주세요.</p><button id="wikiApprove" type="button" class="button button-primary" disabled>검토한 내용 저장</button><p class="fine-print">저장 결과와 검색 반영 여부는 따로 알려드립니다.</p></div>
+          </section>
+        </div>
+      </div>
+
+      <section class="panel search-panel" aria-labelledby="searchTitle">
+        <div class="section-heading"><span class="step-number" aria-hidden="true">03</span><div><p class="eyebrow">다시 찾기</p><h2 id="searchTitle">저장한 지식에서 찾아보세요.</h2></div></div>
+        <p class="section-copy">검토해 저장하고 검색에 반영된 노트에서 관련 내용과 출처를 찾습니다. 지금은 검색 결과를 확인하는 단계예요.</p>
+        <div class="search-controls"><div class="field"><label for="wikiSearchInput">찾고 싶은 내용</label><input id="wikiSearchInput" type="search" maxlength="300" autocomplete="off" aria-describedby="searchHelp"></div><button id="wikiSearchButton" type="button" class="button button-secondary" disabled>지식 찾기</button></div>
+        <p id="searchHelp" class="help">프로젝트 이름이나 주제를 함께 적으면 찾기 쉬워요. 결과가 없다고 자료가 없다고 단정하지 마세요.</p>
+        <div id="wikiResults" class="search-results" aria-live="polite" aria-label="관련 지식과 출처" hidden></div>
+      </section>
+    </main>
+    <footer><p>초안은 제안이고, 저장은 검토한 지식입니다.</p><p>원문 · 출처 · 검토 상태를 함께 남깁니다.</p></footer>
+  </div>
+</body>
+</html>

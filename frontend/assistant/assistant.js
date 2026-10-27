@@ -62,8 +62,8 @@
   }
 
   function disconnect() {
-    window.JarvisConnection.forget();
     token = null; conversation = null; generation++;
+    window.JarvisConnection.forget();
     setBusy(false);
     go('disconnected', DISCONNECTED);
   }
@@ -213,6 +213,7 @@
       conversation = chosen;
       setBusy(false);
       go('connected', undefined, {model: listing.model});
+      window.JarvisConnection.publish?.(token);
     } catch (error) {
       if (version !== generation) return;
       if (token) {presenceState.setLinked(false); go('fail', error.message);}
@@ -239,7 +240,9 @@
     if (event.code === 'Space' && presenceState.state === 'listening' && spaceIsFree()) stopListening(NOT_YET);
   });
   document.addEventListener('visibilitychange', () => {if (document.hidden) stopListening(); else if (resumePoll) resumePoll();});
-  window.addEventListener('pagehide', () => {stopListening(); generation++; token = null; resumePoll = null;});
+  window.addEventListener('pagehide', () => {stopListening(); generation++; token = null; resumePoll = null; window.JarvisConnection.publish?.(null);});
+  window.JarvisConnection.subscribe?.(selected => {if (token && selected === null) disconnect();});
+  window.addEventListener('pageshow', event => {if (event.persisted) connect();});
   setBusy(false);
   connect();
 })();

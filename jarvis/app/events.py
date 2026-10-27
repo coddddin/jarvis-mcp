@@ -17,6 +17,8 @@ from jarvis.agents.events import AsyncEventBus, EventError
 from jarvis.agents.store import TaskNotFound
 from jarvis.agents.chat import ChatError, ChatBusy
 from jarvis.app.briefing_routes import briefing_routes
+from jarvis.app.wiki_routes import wiki_routes
+from jarvis.features.wiki.service import WikiStore
 from jarvis.app.dispatcher_routes import dispatcher_routes
 from jarvis.app.model_status import model_status_routes, observer_for
 from jarvis.core.paths import AUTH_ROOT, PROJECT_ROOT
@@ -81,7 +83,7 @@ def create_event_app(tasks, *, token, task_ids, origins, chat=None, processes=No
         'Referrer-Policy': 'no-referrer', 'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self' ws://127.0.0.1:* ws://localhost:*; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"}
 
     async def asset(request):
-        filename = {'/': 'index.html', '/assets/hud.css': 'hud.css', '/assets/hud.js': 'hud.js',
+        filename = {'/wiki': 'wiki/index.html', '/assets/wiki/wiki.css': 'wiki/wiki.css', '/assets/wiki/wiki.js': 'wiki/wiki.js', '/': 'index.html', '/assets/hud.css': 'hud.css', '/assets/hud.js': 'hud.js',
                     '/assets/task-stream.js': 'task-stream.js', '/assets/chat.js': 'chat.js', '/assets/sources.js': 'sources.js',
                     '/assets/collaboration.js': 'collaboration.js', '/assets/collaboration.css': 'collaboration.css',
                     '/assets/dispatcher.js': 'dispatcher.js', '/assets/briefing.js': 'briefing.js',
@@ -89,6 +91,7 @@ def create_event_app(tasks, *, token, task_ids, origins, chat=None, processes=No
                     '/assistant': 'assistant/index.html', '/assets/assistant/assistant.css': 'assistant/assistant.css',
                     '/assets/assistant/assistant.js': 'assistant/assistant.js', '/assets/assistant/orb.js': 'assistant/orb.js',
                     '/assets/assistant/connection.js': 'assistant/connection.js',
+                    '/assets/assistant/knowledge.js': 'assistant/knowledge.js',
                     '/assets/assistant/presence.js': 'assistant/presence.js'}[request.url.path]
         return FileResponse(PROJECT_ROOT / 'frontend' / filename, headers=response_headers)
 
@@ -348,10 +351,13 @@ def create_event_app(tasks, *, token, task_ids, origins, chat=None, processes=No
         extra += briefing_routes(briefing, valid=valid, origins=origins, headers=response_headers)
     # Ollama card: last /api/tags observation for the configured chat model (same gate; no chat => 503).
     extra += model_status_routes(observer_for(chat), valid=valid, origins=origins, headers=response_headers)
-    return Starlette(routes=extra + [Route('/', asset), Route('/assets/dispatcher.js', asset), Route('/assets/briefing.js', asset), Route('/assets/hud.css', asset), Route('/assets/hud.js', asset),
+    if chat is not None:
+        extra += wiki_routes(WikiStore(tasks.guard), guard=tasks.guard, infer=getattr(chat, '_infer', None), valid=valid, origins=origins, headers=response_headers)
+    return Starlette(routes=extra + [Route('/wiki', asset), Route('/assets/wiki/wiki.css', asset), Route('/assets/wiki/wiki.js', asset), Route('/', asset), Route('/assets/dispatcher.js', asset), Route('/assets/briefing.js', asset), Route('/assets/hud.css', asset), Route('/assets/hud.js', asset),
         Route('/assets/task-stream.js', asset), Route('/assets/chat.js', asset), Route('/assets/sources.js', asset),
         Route('/assistant', asset), Route('/assets/assistant/assistant.css', asset), Route('/assets/assistant/assistant.js', asset),
         Route('/assets/assistant/orb.js', asset), Route('/assets/assistant/connection.js', asset),
+        Route('/assets/assistant/knowledge.js', asset),
         Route('/assets/assistant/presence.js', asset),
         Route('/api/chat/conversations', chat_api, methods=['GET', 'POST']),
         Route('/api/chat/conversations/{conversation_id}', chat_api, methods=['GET']),
