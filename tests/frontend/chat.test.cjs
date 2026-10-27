@@ -170,9 +170,10 @@ test('a draft is never shown once the turn is no longer pending',async()=>{
 async function voiceHarness({mute=false, local=true} = {}) {
   const readers=[], spoken=[];let cancels=0;
   class Recognition {
-    constructor(){readers.push(this);}
+    constructor(){readers.push(this);this.stops=0;this.aborts=0;}
     start(){this.started=true;}
-    abort(){this.aborted=true;}
+    stop(){this.stops++;this.stopped=true;if(this.onStop)this.onStop(this);}
+    abort(){this.aborts++;this.aborted=true;}
   }
   const h=await harness({SpeechRecognition:Recognition, SpeechSynthesisUtterance:class {constructor(text){this.text=text;}},
     speechSynthesis:{getVoices:()=>[{localService:local,lang:'ko-KR'}],speak:u=>spoken.push(u),cancel:()=>cancels++},
@@ -191,7 +192,7 @@ test('voice requires opt-in, buffers all final phrases into draft and never subm
   h.result(r,['첫 문장']);h.result(r,['첫 문장','두 번째']);
   assert.equal(h.elements.chatInput.value,'메모 첫 문장 두 번째');
   assert.equal(h.requests.length,requests);assert.equal(h.elements.voiceListen.textContent,'입력 마치기');
-  h.click('voiceListen');assert.ok(r.aborted);h.result(r,['늦은 입력']);
+  h.click('voiceListen');assert.equal(r.stops,1);assert.ok(!r.aborted);r.onend();h.result(r,['늦은 입력']);
   assert.equal(h.elements.chatInput.value,'메모 첫 문장 두 번째');
 });
 
@@ -221,7 +222,7 @@ test('manual editing, hide, page exit and consent withdrawal abort recognition',
 test('recognition timeout, errors and natural end never restart the microphone',async()=>{
   for(const end of ['timeout','error','natural']){
     const h=await voiceHarness();h.consent();h.click('voiceListen');const r=h.readers[0];
-    if(end==='timeout'){assert.equal(h.timers.at(-1).ms,30000);h.timers.at(-1).fn();}
+    if(end==='timeout'){assert.equal(h.timers.at(-1).ms,30000);h.timers.at(-1).fn();assert.equal(r.stops,1);r.onend();}
     if(end==='error')r.onerror({error:'not-allowed'});
     if(end==='natural')r.onend();
     assert.equal(h.readers.length,1);assert.equal(h.elements.voiceStop.disabled,true);
@@ -302,4 +303,153 @@ test('synchronous recognition start is not overwritten by a pending notice',asyn
   h.elements.voiceConsent.checked=true;h.elements.voiceConsent.events.change();
   h.elements.voiceListen.events.click();
   assert.match(h.elements.voiceStatus.textContent,/듣고 있어요/);
+});
+
+test('manual finish drains the last final phrase until end without aborting, sending or restarting',async()=>{
+  const h=await voiceHarness();h.consent();h.elements.chatInput.value='메모';const requests=h.requests.length;
+  h.click('voiceListen');const r=h.readers[0];r.onstart();h.result(r,['첫 문장']);
+  const limit=h.timers.at(-1);assert.equal(limit.ms,30000);
+  h.click('voiceListen');
+  assert.equal(r.stops,1);assert.ok(!r.aborted);assert.ok(limit.cancelled);
+  const drain=h.timers.at(-1);assert.equal(drain.ms,3000);assert.ok(!drain.cancelled);
+  assert.match(h.elements.voiceStatus.textContent,/정리하는 중/);
+  assert.equal(h.elements.voiceListen.textContent,'마무리 중…');assert.equal(h.elements.voiceListen.disabled,true);
+  assert.equal(h.elements.voiceStop.disabled,false);
+  h.result(r,['첫 문장','마지막 문장']);
+  assert.equal(h.elements.chatInput.value,'메모 첫 문장 마지막 문장');
+  assert.match(h.elements.voiceStatus.textContent,/정리하는 중/);
+  r.onstart();assert.match(h.elements.voiceStatus.textContent,/정리하는 중/);
+  r.onend();
+  assert.match(h.elements.voiceStatus.textContent,/^입력을 마쳤어요/);
+  assert.ok(drain.cancelled);assert.ok(!r.aborted);
+  assert.equal(h.elements.voiceListen.textContent,'말로 입력');assert.equal(h.elements.voiceListen.disabled,false);
+  assert.equal(h.elements.voiceStop.disabled,true);
+  h.result(r,['늦은 입력']);assert.equal(h.elements.chatInput.value,'메모 첫 문장 마지막 문장');
+  assert.equal(h.readers.length,1);assert.equal(h.requests.length,requests);
+});
+
+test('30 second limit finishes gracefully and keeps the last final phrase',async()=>{
+  const h=await voiceHarness();h.consent();h.click('voiceListen');const r=h.readers[0];r.onstart();
+  const limit=h.timers.at(-1);assert.equal(limit.ms,30000);limit.fn();
+  assert.equal(r.stops,1);assert.ok(!r.aborted);
+  const drain=h.timers.at(-1);assert.equal(drain.ms,3000);
+  assert.match(h.elements.voiceStatus.textContent,/정리하는 중/);
+  h.result(r,['마지막']);assert.match(h.elements.voiceStatus.textContent,/정리하는 중/);
+  r.onend();
+  assert.equal(h.elements.chatInput.value,'마지막');
+  assert.match(h.elements.voiceStatus.textContent,/30초 입력을 마쳤어요/);
+  assert.ok(drain.cancelled);assert.equal(h.readers.length,1);
+  limit.fn();assert.equal(r.stops,1);assert.equal(h.readers.length,1);
+});
+
+test('synchronous end, error or throw from stop ends with a fixed reason and clears both timers',async()=>{
+  for(const kind of ['end','error','throw']){
+    const h=await voiceHarness();h.consent();h.elements.chatInput.value='보존';h.click('voiceListen');const r=h.readers[0];
+    r.onStop=reader=>{
+      if(kind==='end'){h.result(reader,['끝말']);reader.onend();}
+      if(kind==='error')reader.onerror({error:'network',message:'private-provider-message'});
+      if(kind==='throw')throw Error('private-stop-failure');
+    };
+    h.click('voiceListen');
+    const note=h.elements.voiceStatus.textContent;
+    assert.equal(h.timers.filter(t=>t.ms===3000).length,1,kind);
+    assert.ok(h.timers.filter(t=>t.ms===30000||t.ms===3000).every(t=>t.cancelled),kind);
+    assert.doesNotMatch(note,/private/,kind);
+    assert.equal(h.elements.voiceStop.disabled,true,kind);assert.equal(h.elements.voiceListen.disabled,false,kind);
+    assert.equal(h.elements.voiceListen.textContent,'말로 입력',kind);
+    if(kind==='end'){assert.match(note,/^입력을 마쳤어요/);assert.equal(h.elements.chatInput.value,'보존 끝말');assert.ok(!r.aborted);}
+    if(kind==='error'){assert.match(note,/서비스에 연결하지/);assert.equal(r.aborts,1);}
+    if(kind==='throw'){assert.match(note,/반영되지 않았을 수/);assert.equal(r.aborts,1);}
+    const value=h.elements.chatInput.value;
+    r.onend();r.onstart();h.result(r,['늦은 입력']);
+    assert.equal(h.elements.voiceStatus.textContent,note,kind);assert.equal(h.elements.chatInput.value,value,kind);
+    assert.equal(r.stops,1,kind);assert.equal(h.readers.length,1,kind);
+  }
+});
+
+test('a stuck engine is aborted after a short bounded drain and its late callbacks are ignored',async()=>{
+  const h=await voiceHarness();h.consent();h.click('voiceListen');const r=h.readers[0];r.onstart();h.result(r,['앞부분']);
+  h.click('voiceListen');const drain=h.timers.at(-1);assert.equal(drain.ms,3000);assert.ok(!r.aborted);
+  drain.fn();
+  assert.equal(r.aborts,1);assert.match(h.elements.voiceStatus.textContent,/반영되지 않았을 수/);
+  assert.equal(h.elements.voiceStop.disabled,true);assert.equal(h.elements.voiceListen.disabled,false);
+  const note=h.elements.voiceStatus.textContent;
+  h.result(r,['앞부분','늦은 입력']);r.onend();r.onerror({error:'network'});r.onstart();
+  assert.equal(h.elements.chatInput.value,'앞부분');assert.equal(h.elements.voiceStatus.textContent,note);
+  drain.fn();assert.equal(r.aborts,1);assert.equal(h.readers.length,1);
+});
+
+test('a finishing session is stopped once and cannot start a second capture while draining',async()=>{
+  const h=await voiceHarness();h.consent();h.click('voiceListen');const r=h.readers[0];r.onstart();
+  const limit=h.timers.at(-1);
+  h.click('voiceListen');h.click('voiceListen');limit.fn();
+  assert.equal(r.stops,1);assert.equal(r.aborts,0);assert.equal(h.readers.length,1);
+  assert.equal(h.timers.filter(t=>t.ms===3000).length,1);
+  assert.equal(h.elements.voiceListen.disabled,true);assert.match(h.elements.voiceStatus.textContent,/정리하는 중/);
+  r.onend();
+  h.click('voiceListen');assert.equal(h.readers.length,2);assert.equal(h.readers[1].started,true);
+  assert.match(h.elements.voiceStatus.textContent,/마이크를 여는 중/);
+});
+
+test('hard cancellation while draining aborts immediately and fences late callbacks',async()=>{
+  for(const stop of ['input','escape','voiceStop','consent','hidden','pagehide','tasks','pending','disconnect','reconnect','limit','error']){
+    const h=await voiceHarness();h.consent();h.click('voiceListen');const r=h.readers[0];r.onstart();
+    const limit=h.timers.at(-1);h.click('voiceListen');const drain=h.timers.at(-1);
+    assert.equal(r.stops,1,stop);assert.equal(drain.ms,3000,stop);
+    if(stop==='input'){h.elements.chatInput.value='수정';h.elements.chatInput.events.input();}
+    if(stop==='escape')h.events.keydown({key:'Escape'});
+    if(stop==='voiceStop')h.click('voiceStop');
+    if(stop==='consent'){h.elements.voiceConsent.checked=false;h.elements.voiceConsent.events.change();}
+    if(stop==='hidden'){h.context.document.hidden=true;h.documentEvents.visibilitychange();}
+    if(stop==='pagehide')h.events.pagehide();
+    if(stop==='tasks')h.elements.tasksTab.events.click();
+    if(stop==='pending'){h.elements.chatInput.value='질문';h.setHandler(()=>deferred().promise);h.elements.chatForm.events.submit({preventDefault(){}});}
+    if(stop==='disconnect')await h.events['jarvis-connection']({detail:{token:null}});
+    if(stop==='reconnect'){await h.events['jarvis-connection']({detail:{token:'new'}});h.click('voiceListen');}
+    if(stop==='limit')h.result(r,['가'.repeat(2001)]);
+    if(stop==='error')r.onerror({error:'no-speech',message:'private-provider-message'});
+    assert.equal(r.aborts,1,stop);assert.ok(drain.cancelled,stop);assert.ok(limit.cancelled,stop);
+    assert.doesNotMatch(h.elements.voiceStatus.textContent,/정리하는 중|private/,stop);
+    const value=h.elements.chatInput.value, note=h.elements.voiceStatus.textContent;
+    h.result(r,['늦은 입력']);r.onend();r.onstart();r.onerror({error:'network'});drain.fn();limit.fn();
+    assert.equal(h.elements.chatInput.value,value,stop);assert.equal(h.elements.voiceStatus.textContent,note,stop);
+    assert.equal(r.aborts,1,stop);assert.equal(r.stops,1,stop);
+    if(stop==='limit')assert.match(note,/2,000/);
+    if(stop==='error')assert.match(note,/말소리가 감지되지/);
+    if(stop==='reconnect'){
+      const next=h.readers[1];assert.equal(h.readers.length,2);assert.equal(next.stops+next.aborts,0);
+      h.result(next,['새 입력']);assert.equal(h.elements.chatInput.value,'새 입력');
+    } else assert.equal(h.readers.length,1,stop);
+  }
+});
+
+test('returning to a visible tab re-enables voice controls without restarting capture or speech',async()=>{
+  const h=await voiceHarness();h.consent();
+  h.conversation.turns=[{user:'q',assistant:'완성된 답',status:'completed'}];
+  h.click('voiceListen');const r=h.readers[0];r.onstart();
+  h.context.document.hidden=true;h.documentEvents.visibilitychange();
+  assert.ok(r.aborted);assert.equal(h.elements.voiceListen.disabled,true);assert.equal(h.elements.voiceRead.disabled,true);
+  h.context.document.hidden=false;h.documentEvents.visibilitychange();
+  assert.equal(h.elements.voiceListen.disabled,false);assert.equal(h.elements.voiceListen.textContent,'말로 입력');
+  assert.equal(h.elements.voiceRead.disabled,false);assert.equal(h.elements.voiceStop.disabled,true);
+  assert.equal(h.readers.length,1);assert.equal(r.stops,0);assert.equal(h.spoken.length,0);
+  assert.match(h.elements.voiceStatus.textContent,/화면을 벗어나/);
+  h.click('voiceRead');assert.equal(h.spoken.length,1);
+  h.context.document.hidden=true;h.documentEvents.visibilitychange();assert.equal(h.cancels(),1);
+  h.context.document.hidden=false;h.documentEvents.visibilitychange();
+  assert.equal(h.spoken.length,1);assert.equal(h.readers.length,1);assert.equal(h.elements.voiceRead.disabled,false);
+});
+
+test('visible return keeps voice disabled without consent, connection, readiness or chat mode',async()=>{
+  for(const guard of ['consent','disconnected','pending','tasks']){
+    const h=await voiceHarness();h.consent();
+    if(guard==='consent'){h.elements.voiceConsent.checked=false;h.elements.voiceConsent.events.change();}
+    if(guard==='disconnected')await h.events['jarvis-connection']({detail:{token:null}});
+    if(guard==='pending'){h.elements.chatInput.value='질문';h.setHandler(()=>deferred().promise);h.elements.chatForm.events.submit({preventDefault(){}});}
+    if(guard==='tasks')h.elements.tasksTab.events.click();
+    h.context.document.hidden=true;h.documentEvents.visibilitychange();
+    h.context.document.hidden=false;h.documentEvents.visibilitychange();
+    assert.equal(h.elements.voiceListen.disabled,true,guard);assert.equal(h.elements.voiceStop.disabled,true,guard);
+    h.click('voiceListen');assert.equal(h.readers.length,0,guard);
+  }
 });
