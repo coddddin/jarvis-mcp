@@ -67,7 +67,8 @@ def main():
                 ws_max_size=1024, ws_max_queue=16, limit_concurrency=32,
                 ws_per_message_deflate=False, access_log=False, log_level='warning', server_header=False)
     # Load the chat model in the background once the port is bound, so the first reply does not wait for it.
-    HUDServer(config, open_url=f'{url}/#connect={code}' if code else None, on_start=chat.warm_up).run()
+    # `--open` lands on the assistant view; its "개발자 화면" link goes to the HUD at / in the same tab and connection.
+    HUDServer(config, open_url=f'{url}/assistant#connect={code}' if code else None, on_start=chat.warm_up).run()
 
 
 if __name__ == '__main__':

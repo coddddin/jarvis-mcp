@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>J.A.R.V.I.S.</title>
+  <link rel="stylesheet" href="/assets/assistant/assistant.css">
+  <script src="/assets/assistant/orb.js" defer></script>
+  <script src="/assets/assistant/connection.js" defer></script>
+  <script src="/assets/assistant/assistant.js" defer></script>
+</head>
+<body>
+  <main class="stage" aria-label="자비스">
+    <header class="presence">
+      <span id="presenceDot" class="presence-dot" aria-hidden="true"></span>
+      <span id="presenceText">연결 전</span>
+    </header>
+
+    <section class="core" aria-live="polite">
+      <canvas id="orb" class="orb" role="img" aria-label="자비스 상태 표시"></canvas>
+      <p id="caption" class="caption">무엇을 도와드릴까요?</p>
+      <p id="reply" class="reply" hidden></p>
+      <p id="sources" class="sources" hidden></p>
+      <a id="connectLink" class="connect-link" href="/" hidden>개발자 화면에서 연결</a>
+    </section>
+
+    <section class="dock" aria-label="자비스에게 말하기">
+      <div id="suggestions" class="suggestions">
+        <button type="button" data-prompt="지금 내 PC 상태 알려줘">내 PC 상태</button>
+        <button type="button" data-prompt="내 노트에서 지난주 회의 결정 찾아줘">내 노트에서 찾기</button>
+        <button type="button" data-prompt="웹에서 오늘 IT 뉴스 검색해줘">웹 검색</button>
+      </div>
+      <form id="composer" class="composer">
+        <label class="sr-only" for="input">자비스에게 메시지</label>
+        <input id="input" type="text" maxlength="2000" autocomplete="off" placeholder="말하거나 입력하세요">
+        <button id="mic" class="mic" type="button" aria-pressed="false" aria-label="말로 입력">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15a3 3 0 0 0 3-3V6a3 3 0 1 0-6 0v6a3 3 0 0 0 3 3Zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.93V21h2v-2.07A7 7 0 0 0 19 12h-2Z"/></svg>
+        </button>
+        <button id="send" class="send" type="submit" aria-label="보내기">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 20.5 21 12 3 3.5 3 10l12 2-12 2z"/></svg>
+        </button>
+      </form>
+      <p class="hint">Space를 길게 누르면 마이크 반응을 보여 줘요. 음성 입력은 준비 중이에요.</p>
+    </section>
+
+    <a class="dev-link" href="/" title="연결, 직원, 실행 기록">개발자 화면</a>
+  </main>
+</body>
+</html>
