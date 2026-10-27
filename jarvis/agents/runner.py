@@ -25,7 +25,7 @@ class CoderReply(PlannerReply):
 
 
 class LocalConfig(Contract):
-    model: str = Field(default='qwen2.5-coder:7b', pattern=r'^[a-zA-Z0-9_.-]+:[a-zA-Z0-9_.-]+$')
+    model: str = Field(default='qwen3.5:9b', pattern=r'^[a-zA-Z0-9_.-]+:[a-zA-Z0-9_.-]+$')
     docker: DockerRuntimeConfig | None = None
 
     @model_validator(mode='after')
