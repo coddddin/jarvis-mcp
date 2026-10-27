@@ -1,4 +1,4 @@
-# pip freeze of %LOCALAPPDATA%Jarvisoicesyvoiceenv (Python 3.10) after link_cosyvoice.py and transformers==4.51.3.
+# pip freeze of %LOCALAPPDATA%/Jarvis/voice/cosyvoice/venv (Python 3.10) after link_cosyvoice.py and transformers==4.51.3.
 # Verified 2026-10-28: Fun-CosyVoice3-0.5B loads and synthesizes Korean (RTF about 0.6, 3.3 GB VRAM).
 aiohappyeyeballs==2.7.1
 aiohttp==3.14.5
