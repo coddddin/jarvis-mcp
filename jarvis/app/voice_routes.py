@@ -112,6 +112,8 @@ def voice_routes(service, *, valid, origins):
             sender.cancel()
             if current['socket'] is websocket:
                 current['socket'] = None
-                await asyncio.to_thread(service.cancel)     # no page, no open mic and no speech
+                # No page, no open mic and no speech. Called directly (it is quick) so a cancelled handler, for
+                # example during server shutdown, cannot skip it.
+                service.cancel()
 
     return [WebSocketRoute('/voice', voice)]
