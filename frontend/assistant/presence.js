@@ -1,49 +1,61 @@
 'use strict';
 // The assistant's presence in one place: a small state machine plus the live input the orb draws.
-// States: offline, connecting, idle, listening, thinking, speaking, error. The page sends events; the orb and the
-// status line only subscribe. Input: setLevel(0..1) and setSpectrum(bins 0..1) from the mic today, and later from a
-// native voice service that sends level/spectrum frames.
+// States: offline, connecting, idle, listening, thinking, speaking, error. The page sends events; the orb, the caption
+// and the status line only subscribe. Input: setLevel(0..1) and setSpectrum(bins 0..1) come from the browser mic
+// today and later from a native voice service that streams level/spectrum frames.
 (() => {
   const BINS = 32;
   const LIVE_MS = 250;  // a live frame older than this no longer drives the orb
+  const CONNECTED = ['idle', 'listening', 'thinking', 'speaking', 'error'];
   const TRANSITIONS = {
-    connecting: {offline: 'connecting'},
-    connected: {offline: 'idle', connecting: 'idle'},
+    connecting: {offline: 'connecting', error: 'connecting'},
+    connected: {connecting: 'idle', error: 'idle'},
     disconnected: null,  // from any state
     listen: {idle: 'listening', error: 'listening'},
     listenEnd: {listening: 'idle'},
     ask: {idle: 'thinking', listening: 'thinking', error: 'thinking'},
-    draft: {thinking: 'speaking', speaking: 'speaking'},
-    reply: {thinking: 'speaking', speaking: 'speaking'},
+    speak: {thinking: 'speaking', speaking: 'speaking'},
     spoken: {speaking: 'idle'},
-    fail: {idle: 'error', listening: 'error', thinking: 'error', speaking: 'error'},
+    fail: {connecting: 'error', idle: 'error', listening: 'error', thinking: 'error', speaking: 'error', error: 'error'},
   };
+  const SYLLABLE_S = 1 / 14;  // pseudo speech plays about 14 characters a second
+  const QUEUE_MAX = 80;
   const clamp = value => (value > 1 ? 1 : value > 0 ? value : 0);
 
   function create({random = Math.random, now = () => performance.now()} = {}) {
-    let state = 'offline';
+    let state = 'offline', model = '', linked = false;
     const listeners = new Set();
     const live = {level: 0, spectrum: new Float32Array(BINS), at: -Infinity};
     const out = {level: 0, spectrum: new Float32Array(BINS)};
-    const jitter = new Float32Array(BINS).map(() => random());
-    let queued = 0, energy = 0, last = null;
+    const shape = new Float32Array(BINS);
+    let queue = '', energy = 0, nextAt = 0, last = null;
 
-    function dispatch(event) {
+    const info = () => ({model, linked, connected: CONNECTED.includes(state)});
+    const notify = previous => listeners.forEach(listener => listener(state, previous, info()));
+
+    // Returns true when the event applies in the current state. detail.model is kept from 'connected'.
+    function dispatch(event, detail = {}) {
       if (!(event in TRANSITIONS)) return false;
       const rule = TRANSITIONS[event];
       const next = rule === null ? 'offline' : rule[state];
       if (!next) return false;
-      if (next !== state) {
-        const previous = state;
-        state = next;
-        if (state !== 'speaking') queued = 0;
-        listeners.forEach(listener => listener(state, previous));
-      }
+      if (event === 'connected') {model = String(detail.model || ''); linked = true;}
+      if (next === 'offline') {model = ''; linked = false;}
+      const previous = state;
+      state = next;
+      if (state !== 'speaking') queue = '';
+      if (next !== previous) notify(previous);
       return true;
+    }
+    // Whether the server answered the last request; the status line follows it without changing the state.
+    function setLinked(value) {
+      if (linked === Boolean(value) || state === 'offline') return;
+      linked = Boolean(value);
+      if (state !== 'connecting') notify(state);  // the line says '연결 중' until the connection settles
     }
     function subscribe(listener) {
       listeners.add(listener);
-      listener(state, null);
+      listener(state, null, info());
       return () => listeners.delete(listener);
     }
     function setLevel(value) {
@@ -55,33 +67,44 @@
       for (let i = 0; i < BINS; i++) live.spectrum[i] = i < count ? clamp(Number(bins[i]) || 0) : 0;
       live.at = now();
     }
-    // Pseudo speech while there is no audio of the reply: each streamed character is a small burst, played back at
-    // about 14 characters a second. Replace with setLevel/setSpectrum frames from the voice service when it exists.
+    // Pseudo speech while the reply has no audio: each streamed character is one syllable-like burst, spaces and
+    // punctuation are pauses. Returns about how long the queued text takes, in ms.
+    // REPLACE: when the voice service plays real audio, feed its setLevel/setSpectrum frames and drop this.
     function speechText(text) {
-      queued = Math.min(60, queued + String(text || '').replace(/\s+/g, '').length);
-      return Math.round(queued / 14 * 1000);
+      queue = (queue + String(text || '')).slice(-QUEUE_MAX);
+      return Math.round(queue.length * SYLLABLE_S * 1000);
     }
     // Called by the renderer once per frame.
     function sample() {
-      const t = now(), dt = last === null ? 0 : Math.min(.1, (t - last) / 1000);
+      const t = now() / 1000, dt = last === null ? 0 : Math.min(.1, t - last);
       last = t;
-      if (t - live.at < LIVE_MS) {
+      if (t * 1000 - live.at < LIVE_MS) {
         out.level = live.level;
         out.spectrum.set(live.spectrum);
         return out;
       }
-      const kicks = Math.min(queued, dt * 14);
-      queued -= kicks;
-      energy = clamp(energy * Math.pow(.02, dt) + kicks * (.45 + .3 * random()));
+      if (queue && t >= nextAt) {
+        const char = queue[0];
+        queue = queue.slice(1);
+        const pause = /\s/.test(char) ? 1.4 : /[.,!?。、…]/.test(char) ? 3 : 0;
+        if (!pause) {
+          energy = Math.max(energy, .55 + .45 * random());
+          for (let i = 0; i < BINS; i++) shape[i] = random();
+        }
+        nextAt = t + SYLLABLE_S * (pause || .7 + .6 * random());
+      }
+      energy *= Math.pow(.004, dt);  // a burst fades in about a tenth of a second
       for (let i = 0; i < BINS; i++) {
-        jitter[i] += (random() - jitter[i]) * Math.min(1, dt * 9);
-        const voice = Math.exp(-Math.pow(i / BINS - .22, 2) / .04);  // most energy low-mid, like speech
-        out.spectrum[i] = clamp(energy * (.35 + .65 * voice) * (.55 + .45 * jitter[i]));
+        const voice = Math.exp(-Math.pow(i / BINS - .2, 2) / .05);  // most energy low-mid, like speech
+        out.spectrum[i] = clamp(energy * (.25 + .75 * voice) * (.45 + .55 * shape[i]));
       }
       out.level = energy;
       return out;
     }
-    return {get state() {return state;}, dispatch, subscribe, setLevel, setSpectrum, speechText, sample, BINS};
+    return {
+      get state() {return state;}, get linked() {return linked;}, get model() {return model;},
+      dispatch, setLinked, subscribe, setLevel, setSpectrum, speechText, sample, BINS,
+    };
   }
 
   window.JarvisPresence = {create};

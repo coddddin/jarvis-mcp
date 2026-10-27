@@ -6,6 +6,7 @@
   <meta name="color-scheme" content="dark">
   <title>J.A.R.V.I.S.</title>
   <link rel="stylesheet" href="/assets/assistant/assistant.css">
+  <script src="/assets/assistant/presence.js" defer></script>
   <script src="/assets/assistant/orb.js" defer></script>
   <script src="/assets/assistant/connection.js" defer></script>
   <script src="/assets/assistant/assistant.js" defer></script>
@@ -13,7 +14,7 @@
 <body>
   <main class="stage" aria-label="자비스">
     <header class="presence">
-      <span id="presenceDot" class="presence-dot" aria-hidden="true"></span>
+      <span id="presenceDot" class="presence-dot" data-state="offline" aria-hidden="true"></span>
       <span id="presenceText">연결 전</span>
     </header>
 

@@ -1,30 +1,36 @@
 'use strict';
 // Assistant view: one orb, one caption, one composer, connected to the local chat API.
-// States: idle -> listening (mic level drives the orb) -> thinking -> speaking (draft or reply) -> idle.
-// The mic only moves the orb for now; speech recognition is wired in after PA1-VOICE (#51) lands.
+// State lives in presence.js: this file sends events (connect, listen, ask, speak, fail) and the orb, caption and
+// status line follow. The mic only moves the orb for now; speech recognition is wired in after PA1-VOICE (#51) lands.
 (() => {
   const $ = id => document.getElementById(id);
-  const orb = window.JarvisOrb.create($('orb'));
+  const presenceState = window.JarvisPresence.create();
+  window.JarvisOrb.create($('orb'), presenceState);
   const caption = $('caption'), reply = $('reply'), sources = $('sources'), input = $('input'), mic = $('mic');
   const send = $('send'), presence = $('presenceText'), dot = $('presenceDot'), connectLink = $('connectLink');
-  const CAPTIONS = {idle: '무엇을 도와드릴까요?', listening: '듣고 있어요', thinking: '생각하고 있어요', speaking: ''};
+  const CAPTIONS = {connecting: '연결하고 있어요', idle: '무엇을 도와드릴까요?', listening: '듣고 있어요',
+    thinking: '생각하고 있어요', speaking: ''};
   const POLL_MS = 400;  // only while a reply is pending: it carries the streamed draft
+  const SPOKEN_MS = [900, 4000];  // how long the reply keeps the speaking look, from the pseudo speech length
   const DISCONNECTED = '연결이 필요해요.';
-  let mode = 'idle', audio = null, token = null, conversation = null, pending = false, generation = 0, level = 0;
+  let audio = null, token = null, conversation = null, pending = false, generation = 0;
   let resumePoll = null;  // set while a reply is pending; polling pauses while the tab is hidden
 
-  function setMode(next, text) {
-    mode = next;
-    orb.setMode(next);
-    caption.dataset.mode = next;
-    caption.textContent = text ?? CAPTIONS[next];
-    mic.setAttribute('aria-pressed', String(next === 'listening'));
+  // Send an event; the caption shows text, or the state's own caption when text is undefined.
+  function go(event, text, detail) {
+    presenceState.dispatch(event, detail);
+    caption.textContent = text ?? CAPTIONS[presenceState.state] ?? '';
   }
-  function setPresence(text, online) {
-    presence.textContent = text;
-    dot.dataset.state = online ? 'online' : 'offline';
-    connectLink.hidden = online || text === '연결 중';
-  }
+  // The status line shows the connection only: not connected, connecting, connected (model), or needs a check.
+  presenceState.subscribe((state, _, info) => {
+    caption.dataset.mode = state;
+    mic.setAttribute('aria-pressed', String(state === 'listening'));
+    const line = state === 'offline' ? ['연결 전', 'offline'] : state === 'connecting' ? ['연결 중', 'connecting']
+      : info.linked ? ['연결됨 · ' + (info.model || '로컬 모델'), 'online'] : ['연결 확인 필요', 'warn'];
+    presence.textContent = line[0];
+    dot.dataset.state = line[1];
+    connectLink.hidden = line[1] === 'online' || line[1] === 'connecting';
+  });
   function setBusy(value) {
     pending = value;
     send.disabled = value || !conversation;
@@ -34,10 +40,17 @@
 
   async function api(path, body) {
     const selected = token, version = generation;
-    const response = await fetch(path, {method: body === undefined ? 'GET' : 'POST',
-      headers: {Authorization: 'Bearer ' + selected, ...(body === undefined ? {} : {'Content-Type': 'application/json'})},
-      body: body === undefined ? undefined : JSON.stringify(body), cache: 'no-store', credentials: 'omit'});
+    let response;
+    try {
+      response = await fetch(path, {method: body === undefined ? 'GET' : 'POST',
+        headers: {Authorization: 'Bearer ' + selected, ...(body === undefined ? {} : {'Content-Type': 'application/json'})},
+        body: body === undefined ? undefined : JSON.stringify(body), cache: 'no-store', credentials: 'omit'});
+    } catch (_) {  // the server is not running or the network is down
+      if (token === selected && generation === version) presenceState.setLinked(false);
+      throw new Error('자비스 서버에 연결하지 못했어요. 서버가 켜져 있는지 확인해 주세요.');
+    }
     if (token !== selected || generation !== version) throw new Error('stale');
+    presenceState.setLinked(true);
     if (response.status === 401) {disconnect(); throw new Error(DISCONNECTED);}
     let data;
     try {data = await response.json();} catch (_) {  // e.g. an HTML error page from something in between
@@ -51,49 +64,56 @@
     window.JarvisConnection.forget();
     token = null; conversation = null; generation++;
     setBusy(false);
-    setPresence('연결 전', false);
-    setMode('idle', DISCONNECTED);
+    go('disconnected', DISCONNECTED);
   }
 
-  // --- mic: the level only moves the orb ---
+  // --- mic: level and spectrum go to presence each frame; they only move the orb ---
+  const raf = window.requestAnimationFrame?.bind(window), cancelRaf = window.cancelAnimationFrame?.bind(window);
   async function startListening() {
-    if (mode === 'listening' || pending) return;
-    setMode('listening');
+    if (presenceState.state === 'listening' || pending) return;
+    if (!presenceState.dispatch('listen')) return;
+    caption.textContent = CAPTIONS.listening;
     let stream = null, context = null;
     try {
       stream = await navigator.mediaDevices.getUserMedia({audio: true});
-      if (mode !== 'listening') {stream.getTracks().forEach(track => track.stop()); return;}
+      if (presenceState.state !== 'listening') {stream.getTracks().forEach(track => track.stop()); return;}
       context = new AudioContext();
       const analyser = context.createAnalyser();
       analyser.fftSize = 512;
       analyser.smoothingTimeConstant = .6;
       context.createMediaStreamSource(stream).connect(analyser);
-      const data = new Uint8Array(analyser.frequencyBinCount);
-      audio = {stream, context};
-      orb.setSource(() => {
+      const data = new Uint8Array(analyser.frequencyBinCount), bins = new Float32Array(presenceState.BINS);
+      audio = {stream, context, frame: 0};
+      const pump = () => {
+        if (!audio) return;
         analyser.getByteFrequencyData(data);
         let sum = 0;
         for (let i = 2; i < 64; i++) sum += data[i];   // speech band
-        return sum / 62 / 255 * 2.4;
-      });
+        // 32 log-spaced bins from about 190 Hz to 6 kHz
+        for (let i = 0; i < bins.length; i++) bins[i] = (data[Math.round(2 * Math.pow(32, i / bins.length))] || 0) / 255;
+        presenceState.setLevel(sum / 62 / 255 * 2.4);
+        presenceState.setSpectrum(bins);
+        audio.frame = raf ? raf(pump) : 0;
+      };
+      pump();
     } catch (_) {
       // Audio setup can fail after the mic was granted: never leave it recording.
       if (stream) stream.getTracks().forEach(track => track.stop());
       if (context) {try {context.close();} catch (__) { /* already closed */ }}
-      audio = null; orb.setSource(null);
-      setMode('idle', '마이크를 쓸 수 없어요. 입력창에 적어 주세요.');
+      audio = null;
+      go('fail', '마이크를 쓸 수 없어요. 입력창에 적어 주세요.');
     }
   }
   function stopListening(text) {
-    if (audio) {audio.stream.getTracks().forEach(track => track.stop()); audio.context.close(); audio = null;}
-    orb.setSource(null);
-    if (mode === 'listening') setMode('idle', text);
+    if (audio) {
+      if (audio.frame && cancelRaf) cancelRaf(audio.frame);
+      audio.stream.getTracks().forEach(track => track.stop()); audio.context.close(); audio = null;
+    }
+    if (presenceState.state === 'listening') go('listenEnd', text);
   }
   const NOT_YET = '음성 입력은 준비 중이에요. 입력창에 적어 주세요.';
 
   // --- replies ---
-  const pulse = () => {level = .55 + Math.random() * .35;};
-  const speakingSource = () => (level *= .92);
   function showText(text, draft) {
     reply.hidden = !text;
     reply.textContent = text;
@@ -126,7 +146,7 @@
     input.value = '';
     showText('', false); sources.hidden = true;
     setBusy(true);
-    setMode('thinking');
+    go('ask');
     const poll = async () => {
       if (!polling || version !== generation) return;
       if (document.hidden) {resumePoll = () => {resumePoll = null; poll();}; return;}  // resumes on visible
@@ -134,9 +154,10 @@
         const snapshot = await api('/api/chat/conversations/' + identity);
         const turn = snapshot.turns.find(item => item.id === requestId);
         if (polling && turn?.status === 'pending' && turn.draft && turn.draft !== drafted) {
+          presenceState.speechText(turn.draft.startsWith(drafted) ? turn.draft.slice(drafted.length) : turn.draft);
           drafted = turn.draft;
-          if (mode !== 'speaking') {setMode('speaking'); orb.setSource(speakingSource);}
-          showText(drafted, true); pulse();
+          if (presenceState.state !== 'speaking') go('speak');
+          showText(drafted, true);
         }
       } catch (_) { /* the final response decides; a missed poll only delays the draft */ }
       if (polling && version === generation) timer = setTimeout(poll, POLL_MS);
@@ -149,19 +170,22 @@
       const turn = result.turns.find(item => item.id === requestId);
       if (turn?.status === 'completed' && turn.assistant) {
         showTurn(turn);
-        setMode('speaking'); orb.setSource(speakingSource); pulse();
-        setTimeout(() => {if (mode === 'speaking' && version === generation && !pending) {orb.setSource(null); setMode('idle', '');}}, 900);
+        const rest = turn.assistant.startsWith(drafted) ? turn.assistant.slice(drafted.length) : turn.assistant;
+        const ms = presenceState.speechText(rest);
+        go('speak');
+        setTimeout(() => {
+          if (presenceState.state === 'speaking' && version === generation && !pending) go('spoken', '');
+        }, Math.min(SPOKEN_MS[1], Math.max(SPOKEN_MS[0], ms)));
       } else {
         showText('', false);
-        setMode('idle', '답변을 완료하지 못했어요. 자동으로 다시 실행하지 않아요.');
+        go('fail', '답변을 완료하지 못했어요. 자동으로 다시 실행하지 않아요.');
       }
     } catch (error) {
       polling = false; clearTimeout(timer);
       if (!input.value) input.value = text;  // first, so a disconnect (401) never loses the question
       if (version !== generation) return;
-      orb.setSource(null);
       showText('', false);
-      if (token) setMode('idle', error.message);
+      if (token) go('fail', error.message);
     } finally {
       polling = false; clearTimeout(timer); resumePoll = null;
       if (version === generation) setBusy(false);
@@ -169,12 +193,11 @@
   }
 
   async function connect() {
-    setPresence('연결 중', false);
+    go('connecting');
     setBusy(false);
     const result = await window.JarvisConnection.start();
     if (!result.token) {
-      setPresence('연결 전', false);
-      setMode('idle', result.codeFailed ? '자동 연결 시간이 지났어요. 다시 연결해 주세요.' : DISCONNECTED);
+      go('disconnected', result.codeFailed ? '자동 연결 시간이 지났어요. 다시 연결해 주세요.' : DISCONNECTED);
       return;
     }
     token = result.token;
@@ -185,17 +208,16 @@
       const chosen = latest || (await api('/api/chat/conversations', {})).id;
       if (version !== generation) return;
       conversation = chosen;
-      setPresence('연결됨 · ' + (listing.model || '로컬 모델'), true);
       setBusy(false);
-      setMode('idle');
+      go('connected', undefined, {model: listing.model});
     } catch (error) {
       if (version !== generation) return;
-      if (token) {setPresence('연결 확인 필요', false); setMode('idle', error.message);}
+      if (token) {presenceState.setLinked(false); go('fail', error.message);}
     }
   }
 
   $('composer').addEventListener('submit', event => {event.preventDefault(); ask(input.value);});
-  mic.addEventListener('click', () => (mode === 'listening' ? stopListening(NOT_YET) : startListening()));
+  mic.addEventListener('click', () => (presenceState.state === 'listening' ? stopListening(NOT_YET) : startListening()));
   $('suggestions').addEventListener('click', event => {
     const prompt = event.target.closest('button')?.dataset.prompt;
     if (prompt) ask(prompt);
@@ -211,11 +233,10 @@
     }
   });
   document.addEventListener('keyup', event => {
-    if (event.code === 'Space' && mode === 'listening' && spaceIsFree()) stopListening(NOT_YET);
+    if (event.code === 'Space' && presenceState.state === 'listening' && spaceIsFree()) stopListening(NOT_YET);
   });
   document.addEventListener('visibilitychange', () => {if (document.hidden) stopListening(); else if (resumePoll) resumePoll();});
   window.addEventListener('pagehide', () => {stopListening(); generation++; token = null; resumePoll = null;});
-  setPresence('연결 전', false);
   setBusy(false);
   connect();
 })();
