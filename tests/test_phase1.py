@@ -153,7 +153,7 @@ def test_real_stdio_protocol(guard):
                     'search_public_web', 'read_public_web_page',
                     'board_list', 'board_get', 'board_create', 'board_claim', 'board_heartbeat',
                     'board_note', 'board_release', 'board_send', 'board_inbox',
-                    'index_obsidian_vault', 'search_obsidian_vault'}
+                    'index_obsidian_vault', 'search_obsidian_vault', 'prepare_obsidian_context'}
                 sources = await session.call_tool('list_web_sources', {})
                 assert not sources.isError
                 assert any(x['source_id'] == 'python-news' for x in json.loads(sources.content[0].text)['sources'])
