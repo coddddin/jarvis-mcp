@@ -7,6 +7,7 @@
 - [DEVELOPMENT.md](DEVELOPMENT.md): 개발·보안·검증·문서 관리 규칙.
 - [패키지 구조와 이전 계획](architecture.md): 기능별 코드 배치·의존 방향·진입점 보존·구조 검사.
 - [프로젝트 지도](../AGENTS_CONTEXT.md): 에이전트가 처음 읽는 50줄 이내의 요약.
+- [ADR 0001 하드웨어 자원 사용 원칙](adr/0001-hardware-resource-policy.md): 다른 프로그램 우선 자동 양보, GPU·CPU·RAM 역할, 모델 활성·절전·꺼짐 단계와 임시 수치.
 
 ## 사용 안내
 - [Obsidian 로컬 검색](guides/obsidian.md): 승인된 Markdown 메타데이터 검증·별도 로컬 인덱스·개인자료 비전송.
