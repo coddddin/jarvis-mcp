@@ -3,11 +3,15 @@
 Started by CosyVoiceSynthesizer in service.py as
     <root>/venv/Scripts/python.exe -I -X utf8 cosyvoice_tts.py --root <root> --ref <voice.wav>
 It imports nothing from JARVIS. Protocol over stdin/stdout:
-    worker -> {"ready": true, "rate": 24000}                after the model loaded and one warm-up sentence
+    worker -> {"ready": true, "rate": 24000, "precision": "fp16"|"fp32"}   after loading and one warm-up sentence
     client -> {"text": "..."}                               one sentence per line, UTF-8 JSON
     worker -> {"ok": true, "samples": N} + N int16 LE mono samples, or {"ok": false, "error": "<code>"}
 EOF on stdin ends the worker, so it never outlives the HUD. Text and audio are never logged or written to disk;
 stdout carries only the protocol (stray prints from libraries go to stderr, which the client discards).
+
+On CUDA the llm and flow modules are cast to half after loading (about 2.0 GB instead of 3.6 GB on the device, and
+slightly faster); the hift vocoder stays fp32. CosyVoice's own fp16 flag only turns on autocast and keeps fp32
+weights. If the half-precision warm-up fails or produces non-finite or silent audio, the model is reloaded in fp32.
 """
 import argparse
 import json
@@ -40,22 +44,51 @@ def main():
     sys.path[:0] = [os.path.join(src, 'third_party', 'Matcha-TTS'), src]
     try:
         import numpy as np
+        import torch
         from cosyvoice.cli.cosyvoice import AutoModel
-        model = AutoModel(model_dir=os.path.join(args.root, 'models', MODEL))
-        model.add_zero_shot_spk('', args.ref, SPEAKER)     # the reference voice is analysed once
+
+        def load(half):
+            loaded = AutoModel(model_dir=os.path.join(args.root, 'models', MODEL), fp16=half)
+            if half:
+                loaded.model.llm.half()
+                loaded.model.flow.half()                   # hift (the vocoder) stays fp32
+            loaded.add_zero_shot_spk('', args.ref, SPEAKER)  # the reference voice is analysed once
+            return loaded
+
+        def speech(loaded, text):
+            parts = [item['tts_speech'] for item in
+                     loaded.inference_cross_lingual(PROMPT + text, args.ref, zero_shot_spk_id=SPEAKER, stream=False)]
+            return (np.concatenate([part.squeeze(0).float().cpu().numpy() for part in parts]) if parts
+                    else np.zeros(0, dtype=np.float32))
+
+        def sound(samples):
+            return samples.size > 0 and bool(np.isfinite(samples).all()) and float(np.abs(samples).max()) > 0.01
+
+        model, precision = None, 'fp32'
+        if torch.cuda.is_available():
+            try:
+                model = load(True)
+                if sound(speech(model, WARM_UP)):          # the first call compiles kernels and is slow
+                    precision = 'fp16'
+                else:
+                    print('fp16 warm-up was not usable; reloading in fp32', file=sys.stderr)
+                    model = None
+            except Exception as exc:                       # noqa: BLE001 - fall back to the full-precision model
+                print(f'fp16 load failed: {type(exc).__name__}; reloading in fp32', file=sys.stderr)
+                model = None
+            if model is None:
+                torch.cuda.empty_cache()
+        if model is None:
+            model = load(False)
+            speech(model, WARM_UP)
 
         def synthesize(text):
-            parts = [item['tts_speech'] for item in
-                     model.inference_cross_lingual(PROMPT + text, args.ref, zero_shot_spk_id=SPEAKER, stream=False)]
-            speech = np.concatenate([part.squeeze(0).cpu().numpy() for part in parts]) if parts else np.zeros(0)
-            return (np.clip(speech, -1, 1) * 32767).astype('<i2').tobytes()
-
-        synthesize(WARM_UP)                                # the first call compiles kernels and is slow
+            return (np.clip(np.nan_to_num(speech(model, text)), -1, 1) * 32767).astype('<i2').tobytes()
     except Exception as exc:                               # noqa: BLE001 - reported as a code, details on stderr
         print(f'load failed: {type(exc).__name__}', file=sys.stderr)
         send({'ready': False, 'error': 'tts_unavailable'})
         return 1
-    send({'ready': True, 'rate': model.sample_rate})
+    send({'ready': True, 'rate': model.sample_rate, 'precision': precision})
 
     for line in sys.stdin.buffer:
         try:

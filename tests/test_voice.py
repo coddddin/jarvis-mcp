@@ -282,7 +282,8 @@ out = sys.stdout.buffer
 mode = sys.argv[sys.argv.index('--root') + 1].rsplit('-', 1)[-1]
 if mode == 'broken':
     out.write(b'{"ready": false, "error": "tts_unavailable"}\n'); out.flush(); sys.exit(1)
-out.write(b'{"ready": true, "rate": 24000}\n'); out.flush()
+precision = b'"int4"' if mode == 'oddprecision' else b'"fp16"'
+out.write(b'{"ready": true, "rate": 24000, "precision": ' + precision + b'}\n'); out.flush()
 for line in sys.stdin.buffer:
     text = json.loads(line)['text']
     if mode == 'dies':
@@ -307,9 +308,39 @@ def test_cosyvoice_client_speaks_through_the_worker_and_stops_it(tmp_path):
     synth.warm_up()
     samples, rate = synth.synthesize('12통')                  # sent as 열두 통: four characters
     assert rate == 24000 and samples.size == 4 and abs(samples[0] - 1000 / 32768) < 1e-6
+    assert synth.precision == 'fp16'
     process = synth.process
     synth.close()
     assert synth.process is None and process.poll() is not None
+
+
+def test_an_unknown_precision_from_the_worker_is_not_reported(tmp_path):
+    synth = cosyvoice(tmp_path, 'oddprecision')
+    synth.warm_up()
+    assert synth.precision is None and synth.rate == 24000
+    synth.close()
+
+
+def test_gpu_speech_to_text_uses_int8_weights_with_float16_compute(monkeypatch, tmp_path):
+    import sys
+    import types
+    from jarvis.features.voice import service
+    built = []
+
+    class Model:
+        def transcribe(self, samples, **options):
+            return iter(()), None
+
+    def build(name, device, compute):
+        built.append((name, device, compute))
+        return Model()
+    monkeypatch.setattr(service, '_add_cuda_wheels_to_path', lambda: True)
+    monkeypatch.setitem(sys.modules, 'ctranslate2', types.SimpleNamespace(get_cuda_device_count=lambda: 1))
+    transcriber = service.WhisperTranscriber(tmp_path)
+    monkeypatch.setattr(transcriber, '_build', build)
+    transcriber.load()
+    assert built == [(service.GPU_MODEL, 'cuda', 'int8_float16')]
+    assert (transcriber.device, transcriber.compute) == ('cuda', 'int8_float16')
 
 
 def test_cosyvoice_that_cannot_load_or_dies_reports_unavailable(tmp_path):

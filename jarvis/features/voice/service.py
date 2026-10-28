@@ -7,7 +7,7 @@ hands reply text back here to be spoken. This module only moves audio.
 - Audio stays in memory. The mic stream is open only while listening and is closed on stop, cancel, error, close
   or client disconnect; captured samples are dropped once transcribed. Nothing is written to disk or logged,
   including transcripts.
-- Speech to text: faster-whisper. GPU (large-v3-turbo, float16) when CUDA works, otherwise CPU (small, int8).
+- Speech to text: faster-whisper. GPU (large-v3-turbo, int8 weights with float16 compute) when CUDA works, otherwise CPU (small, int8).
   Models live in one fixed folder; after the first download they load with local_files_only, so an offline
   restart never downloads again.
 - Text to speech: a Synthesizer. CosyVoice 3 in its own Python 3.10 process (jarvis/workers/cosyvoice_tts.py) when JARVIS's copy
@@ -233,7 +233,7 @@ class CosyVoiceSynthesizer:
         self.python = Path(python) if python else self.root / 'venv' / 'Scripts' / 'python.exe'
         self.worker = Path(worker) if worker else WORKERS_ROOT / 'cosyvoice_tts.py'
         self.name = 'cosyvoice3'
-        self.process = self.rate = None
+        self.process = self.rate = self.precision = None  # precision: 'fp16' or 'fp32', from the worker
         self.lock = threading.Lock()
 
     def available(self):
@@ -293,6 +293,7 @@ class CosyVoiceSynthesizer:
                 self._stop()
                 raise VoiceError('tts_unavailable')
             self.rate = header['rate']
+            self.precision = header.get('precision') if header.get('precision') in ('fp16', 'fp32') else None
 
     def synthesize(self, text):
         text = korean_numbers(text)
@@ -352,13 +353,16 @@ def _add_cuda_wheels_to_path():
 
 
 class WhisperTranscriber:
-    """faster-whisper with a fixed model folder: GPU large-v3-turbo when CUDA works, else CPU small int8."""
+    """faster-whisper with a fixed model folder: GPU large-v3-turbo when CUDA works, else CPU small int8.
+
+    On CUDA the weights are int8 with float16 compute: about 1.2 GB on the device instead of 2.2 GB for float16, with
+    the same speed and the same text on the fixed Korean test clip (ADR 0001 measurements)."""
 
     def __init__(self, model_root=DEFAULT_MODEL_ROOT, *, prefer_gpu=True, allow_download=True):
         self.model_root = Path(model_root)
         self.prefer_gpu, self.allow_download = prefer_gpu, allow_download
         self.model = None
-        self.device = self.model_name = None
+        self.device = self.model_name = self.compute = None
         self.downloaded = False                             # True only when this process fetched model files
 
     def _build(self, name, device, compute):
@@ -382,7 +386,7 @@ class WhisperTranscriber:
             try:
                 import ctranslate2
                 if ctranslate2.get_cuda_device_count() > 0:
-                    attempts.insert(0, (GPU_MODEL, 'cuda', 'float16'))
+                    attempts.insert(0, (GPU_MODEL, 'cuda', 'int8_float16'))
             except Exception:
                 pass
         failure = None
@@ -394,7 +398,7 @@ class WhisperTranscriber:
             except Exception as exc:
                 failure = exc
                 continue
-            self.model, self.device, self.model_name = model, device, name
+            self.model, self.device, self.model_name, self.compute = model, device, name, compute
             return
         raise failure if isinstance(failure, VoiceError) else VoiceError('stt_unavailable')
 
@@ -531,7 +535,8 @@ class VoiceService:
 
     def status(self):
         return {'state': self.state, 'error': self.error, 'device': self.transcriber.device,
-                'model': self.transcriber.model_name, 'voice': self.synthesizer.name}
+                'model': self.transcriber.model_name, 'compute': getattr(self.transcriber, 'compute', None),
+                'voice': self.synthesizer.name, 'precision': getattr(self.synthesizer, 'precision', None)}
 
     # loading
     def start(self):
