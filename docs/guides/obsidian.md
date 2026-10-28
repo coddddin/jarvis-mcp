@@ -23,6 +23,23 @@ Obsidian 앱/플러그인 없이 Markdown을 읽는다. 서버 작업공간 내�
 - 중지 표식은 오래된 노트로 처리하지 않고 오류로 끝난다. 호출 예산·중지 정책은 다른 도구와 같다.
 - `external_transmission: false`는 이 함수가 노트를 외부로 보내지 않는다는 뜻일 뿐이다. 결과를 받은 MCP 클라이언트가 이를 외부 모델로 보낼 수 있으며 이 기능은 그것을 막지 못한다.
 
+## 작업 재개 문맥 (로컬 CLI)
+
+```powershell
+python -m jarvis.cli.resume_context --task-id <32자리 소문자 hex> --query "주간 회의" [--workspace <기존 작업공간>] [--max-chars 6000]
+```
+
+board 작업 하나의 현재 상태와 Vault 문맥을 JSON 한 줄(ASCII 이스케이프)로 **준비만** 한다. 작업을 claim·재개·실행하지 않고 프로세스·모델·네트워크를 호출하지 않으며 MCP 도구·DB·기억·시작 훅을 추가하지 않는다. 함수는 `prepare_resume_context(guard, task_id, query, max_chars=6000)`.
+
+- `board.current`: 상태·owner·stale·updated·detail(≤2000자)·`depends_on`. board 상태도 인증되지 않은 에이전트의 자기 신고다.
+- `board.dependencies`: 명시된 `depends_on` ID만(최대 10개, board 생성 상한) 현재 상태를 읽는다. 없는 ID는 `status:"unknown"`. ID·제목·본문·시간으로 다른 작업이나 Activity를 추측해 연결하지 않고 노트 refs·파일 링크를 따라가지 않는다.
+- `board.history`: 최근 노트 3개(각 600자에서 자르고 `truncated` 표시)와 `total_notes`. **검증되지 않은 자기 신고 데이터**이며 승인·검증·지시가 아니다.
+- `knowledge`: `prepare_context` 결과를 그대로 넣는다(`sources` 수정 없음). `max_chars`는 **`knowledge.context`에만** 적용되며 전체 JSON 크기 상한이 아니다. 인덱스가 없으면 빈 성공이 아니라 `status:"not_indexed"`, `error:"knowledge_not_indexed"`이고 패킷은 `incomplete:true`로 반환된다(종료 코드 0). 인덱스 저장소 오류는 `knowledge_unavailable`. 유효한 빈 인덱스는 정상 `NO SOURCES`다.
+- 입력은 `prepare_context`와 같은 엄격 타입(bool·실수·문자열 숫자 거부)이며 저장소 접근 전에 검사한다. 오류는 경로·예외 문구 없이 `{"ok":false,"error":"<code>"}`로 출력하고 0이 아닌 코드로 끝난다: `invalid_task_id`·`invalid_query`·`invalid_max_chars`·`invalid_workspace`·`board_unavailable`·`task_not_found`·`stopped`·`guard_refused`(1), 인자 형식 오류 `invalid_arguments`(2).
+- board DB가 없으면 `BoardStore.get` 전에 `board_unavailable`로 끝나 빈 DB·디렉터리를 만들지 않는다. 인덱스 파일이 없을 때도 `.jarvis-obsidian`을 만들지 않는다. 작업공간은 기존 디렉터리만 허용하고 만들지 않는다. 링크·junction 저장소는 가드레일 오류다.
+- 기존 DB가 있으면 `BoardStore`의 연결이 쓰기 잠금 트랜잭션과 스키마 확인(`CREATE ... IF NOT EXISTS`)을 내부 관리용으로 수행한다. SQLite 파일이 바이트 단위로 변하지 않는다고 보장하지 않는다.
+- `snapshot.started_at`/`finished_at`은 별도 읽기들의 시작·끝이다. 원자적 스냅샷이 아니므로 읽기 사이·이후에 상태가 바뀔 수 있다. 존재 확인과 읽기 사이의 경쟁도 같은 한계다. 중지 표식은 시작 전, 의존성 읽기 사이, 반환 직전에 확인하며 오류로 끝난다(미인덱스·누락으로 바꾸지 않음).
+
 ## 지원하는 frontmatter
 
 전체 YAML이 아닌 **평면 필드만** 지원한다. 문자열은 JSON 쌍따옴표 또는 단순 한 줄 값/작은따옴표, tags는 JSON 문자열 배열이다. 중첩 맵·블록 문자열·별칭·객체 태그·중복/미등록 필드는 거부한다. created/updated는 시간대가 있는 ISO 시각이며 updated가 created보다 빠르면 거부한다.
@@ -55,4 +72,4 @@ review_status: "approved"
 - 기존 백업 범위·설정은 바꾸지 않았다. 작업공간 내부 Vault는 기존 작업공간 백업에 포함될 가능성이 있으므로 실제 사용 전에 포함/제외 범위와 복원 정책을 확인한다. 자동으로 검증되거나 별도 백업이 보장된 것으로 간주하지 않는다.
 - 합성 Vault·실행 중 WAL SQLite를 기존 `stage_data.stage`로 staging하고 별도 임시 경로에 복원한 검사에서 Markdown 해시·SQLite 무결성·복원 후 검색을 확인했다. 기본 작업공간 내부 Vault와 인덱스가 staging에 포함됐다. 실제 restic/R2 업로드·암호화·자격증명·일정·기존 백업 복구 검증은 수행하지 않았다. 사용자 데이터로 적용 전에 포함 범위를 확인한다.
 
-모의검증은 `python -m pytest -q tests/test_obsidian.py tests/test_obsidian_context.py tests/test_phase2.py tests/test_plugins.py tests/test_architecture.py`. 실제 노트·Windows 환경 검증은 별도다.
+모의검증은 `python -m pytest -q tests/test_obsidian.py tests/test_obsidian_context.py tests/test_resume_context.py tests/test_phase2.py tests/test_plugins.py tests/test_architecture.py`. 실제 노트·Windows 환경 검증은 별도다.
