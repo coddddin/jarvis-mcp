@@ -53,6 +53,6 @@
 
 2026-10-18 실제 stdio MCP에서 출처 3종(Python RSS/BBC RSS/서울 날씨)을 각 1개씩 수집해 `status=ok`와 보고서 저장을 확인했습니다. Python 공식 HTML 문서 출처도 별도 실제 수집에 성공했습니다. 세부 이력은 [Phase 2 보고서](../archive/reports/phase-02.md)를 따릅니다.
 
-검색엔진 기반 탐색, 임의 사이트, 다른 도시·예보, 자동 예약, 기사 전문, 신경망 요약은 후속 확장입니다. 다음 큰 단계는 Phase 2.5의 역할별 협업·기억·재시도·이벤트 설계이며 이번에는 구현하지 않았습니다.
+제한 검색과 현재 요청의 검색 결과 원문 읽기는 위 계약을 따릅니다. 광범위한 사이트 자동화, 다른 도시·예보, 자동 예약과 전문 수집은 추가 범위입니다. 현재 개발 순서는 [개인 비서 계획](../PLAN.md)을 따르며 옛 Phase 2.5 순서를 재개하지 않습니다.
 
 설계 참고: [OWASP SSRF 방어](https://cheatsheetseries.owasp.org/cheatsheets/Server_Side_Request_Forgery_Prevention_Cheat_Sheet.html), [Python URL 파싱의 검증 한계](https://docs.python.org/3.13/library/urllib.parse.html#url-parsing-security), [Open-Meteo 공식 API](https://open-meteo.com/en/docs).

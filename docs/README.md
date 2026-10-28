@@ -3,12 +3,15 @@
 계획·상태는 [현재 통합 계획](PLAN.md), 개발 방법은 [개발 규칙](DEVELOPMENT.md)을 기준으로 합니다. 프로젝트 루트를 기준으로 실행합니다.
 
 ## 현재 기준
-- [PLAN.md](PLAN.md): V2~V5를 통합한 유일한 현재 계획·진행 상태.
+- [PLAN.md](PLAN.md): PA1~PA6 개인 비서 목표·제품 순서·현재 상태의 유일한 기준. J0~J5는 내부 계약으로 대응.
 - [DEVELOPMENT.md](DEVELOPMENT.md): 개발·보안·검증·문서 관리 규칙.
 - [패키지 구조와 이전 계획](architecture.md): 기능별 코드 배치·의존 방향·진입점 보존·구조 검사.
 - [프로젝트 지도](../AGENTS_CONTEXT.md): 에이전트가 처음 읽는 50줄 이내의 요약.
 
 ## 사용 안내
+
+대화·음성 → 개인 지식 → 업무/화면 → 모바일 순서의 제품 계획은 PLAN을 따릅니다. 아래 가이드는 현재 구현의 사용법이며 나열 순서가 개발 우선순위는 아닙니다.
+
 - [Obsidian 로컬 검색](guides/obsidian.md): 승인된 Markdown 메타데이터 검증·별도 로컬 인덱스·개인자료 비전송.
 - [GitHub 우편함](guides/github-inbox.md) · [로그인 수신](guides/github-inbox-logon.md): 수동 미리보기·승인 Issue 수신·선택 설치.
 - [원격 인계](handoffs/work-2026-10-22.md) · [보안 검토·검증 기록](handoffs/work-review-2026-10-22.md): PR 의존성과 실제 검증 범위.
@@ -24,7 +27,7 @@
 - [에이전트 스킬: 이슈 트래커](agents/issue-tracker.md): 이슈는 JARVIS 게시판 작업으로 다룸.
 - [에이전트 스킬: 분류 라벨](agents/triage-labels.md): 게시판에 라벨이 없어 `Triage: <label>` 줄이나 노트로 기록.
 - [에이전트 스킬: 도메인 문서](agents/domain.md): 루트 GLOSSARY.md와 docs/adr/를 필요할 때 만듦.
-- [공용 작업 게시판](guides/board.md): Codex·Claude Code가 담당·경로 claim·lease·인수인계를 공유하는 board_* 도구 7개.
+- [공용 작업 게시판](guides/board.md): Codex·Claude Code가 담당·경로 claim·lease·인수인계를 공유하는 board_* 도구.
 - [데이터 암호화 백업](guides/backup.md): JarvisWorkspace·인증 폴더의 restic→Cloudflare R2 백업, 복원 확인, 예약 등록.
 - [스냅샷 백업·복원](guides/snapshots.md): 프로젝트 백업, 복원 미리보기·적용·실패 복구와 제한.
 - [파일 정리·다운로드 미리보기](guides/file-organization.md): 분류·백업·이동·기록·되돌리기와 다운로드 읽기 전용 경계.
@@ -40,6 +43,8 @@
 - [REA · Agent Reach](guides/rea-agent-reach.md): 전용 설치, 단일 프로그램 정적 분석과 등록 RSS 읽기.
 
 ## 보관 자료 (평소에는 읽지 않음)
+
+- [개인 비서 개편 전 계획](archive/plan-before-personal-assistant-2026-10-26.md): 2026-10-26 이전 J/OBS 계약·완료 근거. 현재 실행 순서는 PLAN으로 대체.
 
 당시 기록입니다. 현재 상태는 PLAN.md가 우선합니다. 에이전트는 필요한 절만 grep으로 찾습니다.
 

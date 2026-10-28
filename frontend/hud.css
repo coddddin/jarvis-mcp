@@ -3,3 +3,11 @@
 .chat-mode{display:flex;align-items:center;gap:12px;margin:16px 28px;font-size:12px;color:var(--muted)}.chat-mode select{background:#0b181e;color:#e1ecee;border:1px solid #3c5458;border-radius:6px;padding:8px;font:inherit}.team-assignment{border-left:2px solid #426355;padding-left:12px;margin:12px 0}.team-assignment p{white-space:pre-wrap;overflow-wrap:anywhere}
 .chat-markdown p,.chat-markdown .chat-list,.chat-markdown .chat-code{margin:0 0 10px}.chat-markdown>:last-child{margin-bottom:0}.chat-markdown .chat-list{padding-left:22px;white-space:normal}.chat-md-heading{font-size:15px;margin:4px 0 8px}.chat-code{white-space:pre;overflow:auto;max-height:360px;background:#091217;border:1px solid #23383d;border-radius:6px;padding:12px 14px;font:12px/1.6 Consolas,'Cascadia Mono',monospace}.chat-inline-code{background:#0b181e;border:1px solid #23383d;border-radius:4px;padding:0 4px;font:12px Consolas,'Cascadia Mono',monospace}.chat-link{color:#7fd1c7;text-decoration:underline}
 .chat-draft{opacity:.6;border-left:2px dashed #3c5458;padding-left:12px}.chat-draft .chat-author{font-style:italic}
+/* Voice controls: readable consent, stop helper and status (scoped; other footnotes stay 10px) */
+.voice-consent{display:flex;align-items:flex-start;gap:10px;min-height:44px;box-sizing:border-box;margin:auto 28px 8px;padding:10px 0;font-size:14px;line-height:1.5;color:var(--muted);cursor:pointer;overflow-wrap:anywhere}
+.voice-consent input{flex:0 0 auto;width:18px;height:18px;margin:2px 0 0;accent-color:var(--mint);cursor:pointer}
+.voice-consent span{flex:1 1 auto;min-width:0}
+.chat-suggestions.voice-controls{margin-top:0;padding-bottom:4px}
+.voice-help,.voice-status{font-size:14px;line-height:1.5;color:var(--muted);margin:4px 28px 10px;overflow-wrap:anywhere}
+.voice-status{margin-bottom:18px}
+@media(max-width:760px){.voice-consent,.voice-help,.voice-status{margin-left:18px;margin-right:18px}}

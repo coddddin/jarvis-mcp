@@ -16,8 +16,131 @@
     return value;
   };
   function say(text = '') {byId('chatNotice').textContent = text; byId('chatNotice').hidden = !text;}
+  // Voice is a user-operated input/output adapter. It never submits or grants action permission.
+  const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  const synth = window.speechSynthesis;
+  const VOICE_LIMIT_MS = 30000, VOICE_DRAIN_MS = 3000;
+  const VOICE_DRAIN_CUT = '입력을 마쳤어요. 마지막 말은 반영되지 않았을 수 있어요. 내용을 확인하고 보내세요.';
+  // finishing holds the end notice while a stopped session drains its last final phrase; '' otherwise.
+  let recognition = null, finishing = '', utterance = null, voiceTimer = null, drainTimer = null, voiceContext = '';
+  const voiceNote = text => {byId('voiceStatus').textContent = text;};
+  const voiceReady = () => Boolean(token && current && !pending && mode === 'chat' && !document.hidden);
+  const latestAnswer = () => {
+    const last = current?.turns.at(-1);
+    return last?.status === 'completed' && typeof last.assistant === 'string' ? last.assistant : '';
+  };
+  const muted = () => /(?:^|[?&])mute=1(?:&|$)/.test(window.location?.search || '');
+  function clearVoiceTimers() {clearTimeout(voiceTimer); clearTimeout(drainTimer); voiceTimer = null; drainTimer = null;}
+  // Hard cancel: aborts immediately and discards anything the engine has not delivered yet.
+  function stopVoice(message = '') {
+    const old = recognition; recognition = null; finishing = '';
+    clearVoiceTimers();
+    if (old) {try {old.abort();} catch (_) { /* Already ended; callbacks are fenced. */ }}
+    if (utterance) {utterance = null; try {synth.cancel();} catch (_) { /* Browser already closed. */ }}
+    if (message) voiceNote(message);
+    syncVoice();
+  }
+  // Graceful finish: stop() lets the engine deliver its last final phrase; the same session stays fenced until onend.
+  function finishVoice(message) {
+    const reader = recognition;
+    if (!reader || finishing) return;
+    finishing = message; clearTimeout(voiceTimer); voiceTimer = null;
+    // Armed before stop() so a synchronous end, error or throw still leaves a bounded, cleaned-up session.
+    drainTimer = setTimeout(() => {if (recognition === reader) stopVoice(VOICE_DRAIN_CUT);}, VOICE_DRAIN_MS);
+    voiceNote('마지막 말을 정리하는 중이에요. 잠시만 기다려주세요.');
+    syncVoice();
+    if (recognition !== reader) return;
+    try {reader.stop();} catch (_) {if (recognition === reader) stopVoice(VOICE_DRAIN_CUT);}
+  }
+  function syncVoice() {
+    const identity = generation + ':' + (current?.id || '');
+    if (identity !== voiceContext || !voiceReady()) {
+      voiceContext = identity;
+      if (recognition || utterance) {stopVoice('음성이 중지됐어요.'); return;}
+    }
+    byId('voiceListen').disabled = !voiceReady() || !Recognition || !byId('voiceConsent').checked || Boolean(finishing);
+    byId('voiceListen').textContent = finishing ? '마무리 중…' : recognition ? '입력 마치기' : '말로 입력';
+    byId('voiceListen').setAttribute('aria-pressed', String(Boolean(recognition)));
+    byId('voiceRead').disabled = !voiceReady() || !synth || !window.SpeechSynthesisUtterance || !latestAnswer() || muted();
+    byId('voiceStop').disabled = !recognition && !utterance;
+  }
+  byId('voiceListen').addEventListener('click', () => {
+    if (!voiceReady() || !Recognition || !byId('voiceConsent').checked) return;
+    if (recognition) {finishVoice('입력을 마쳤어요. 내용을 확인하고 보내세요.'); return;}
+    stopVoice();
+    let reader;
+    try {reader = new Recognition();} catch (_) {voiceNote('이 브라우저에서 음성 인식을 시작할 수 없어요.'); return;}
+    const identity = voiceContext, original = byId('chatInput').value;
+    let heardFinal = false;
+    reader.lang = 'ko-KR'; reader.continuous = true; reader.interimResults = false;
+    const active = () => recognition === reader && voiceContext === identity && voiceReady();
+    reader.onstart = () => {if (active() && !finishing) voiceNote('듣고 있어요. 입력 마치기 또는 Esc로 중지할 수 있어요.');};
+    reader.onresult = event => {
+      if (!active()) return;
+      const phrases = [];
+      for (let i = 0; i < event.results.length; i++) {
+        const result = event.results[i];
+        if (result.isFinal && typeof result[0]?.transcript === 'string') phrases.push(result[0].transcript);
+      }
+      if (!phrases.some(text => text.trim())) return;
+      heardFinal = true;
+      const text = [original, ...phrases].filter(Boolean).join(' ');
+      byId('chatInput').value = text.slice(0, 2000);
+      if (text.length > 2000) stopVoice('입력 한도 2,000자에 도달했어요. 내용을 확인해주세요.');
+      else if (!finishing) voiceNote('듣고 있어요. 문장 중간에 쉬어도 자동 전송하지 않아요.');
+    };
+    reader.onerror = event => {
+      if (!active()) return;
+      const messages = new Map([
+        ['not-allowed', '마이크 사용이 허용되지 않았어요. 이 화면과 Windows의 마이크 권한을 확인해주세요.'],
+        ['audio-capture', '마이크에서 소리를 가져오지 못했어요. 입력 장치와 다른 앱의 마이크 사용을 확인해주세요.'],
+        ['network', '음성 인식 서비스에 연결하지 못했어요. 앱 안의 탭이라면 일반 브라우저에서 같은 주소를 열어보세요.'],
+        ['service-not-allowed', '이 브라우저에서 음성 인식 서비스를 사용할 수 없어요. 음성 인식을 지원하는 브라우저에서 같은 주소를 열어주세요.'],
+        ['language-not-supported', '이 브라우저의 음성 인식 서비스가 한국어를 지원하지 않아요. 직접 입력할 수 있어요.'],
+        ['no-speech', '말소리가 감지되지 않아 입력을 중지했어요. 준비되면 말로 입력을 다시 눌러주세요.'],
+        ['aborted', '브라우저가 음성 입력을 중단했어요. 이미 입력된 내용은 그대로 남아 있어요.']
+      ]);
+      stopVoice(messages.get(event?.error) || '음성 인식을 계속할 수 없었어요. 입력 내용은 유지되며 직접 입력할 수 있어요.');
+    };
+    reader.onend = () => {if (active()) {
+      const finished = finishing;
+      recognition = null; finishing = ''; clearVoiceTimers();
+      voiceNote(finished || (heardFinal ? '입력을 마쳤어요. 내용을 확인하고 보내세요.' : '음성이 입력되지 않은 채 인식이 끝났어요. 준비되면 말로 입력을 다시 눌러주세요.'));
+      syncVoice();
+    }};
+    recognition = reader;
+    voiceNote('마이크를 여는 중이에요. 권한 안내가 있으면 확인해주세요.');
+    try {
+      reader.start();
+      if (recognition !== reader) return;
+      voiceTimer = setTimeout(() => {if (active()) finishVoice('30초 입력을 마쳤어요. 내용을 확인하고 보내세요.');}, VOICE_LIMIT_MS);
+      syncVoice();
+    } catch (_) {stopVoice('마이크를 시작하지 못했어요. 직접 입력할 수 있어요.');}
+  });
+  byId('voiceRead').addEventListener('click', () => {
+    if (!voiceReady() || !synth || !window.SpeechSynthesisUtterance || muted() || !latestAnswer()) return;
+    stopVoice();
+    try {
+      const local = synth.getVoices().find(voice => voice.localService === true && /^ko(?:-|$)/i.test(voice.lang));
+      if (!local) {voiceNote('기기의 한국어 음성이 준비되지 않았어요. 잠시 뒤 다시 누르거나 텍스트로 읽어주세요.'); return;}
+      const speech = new window.SpeechSynthesisUtterance(latestAnswer());
+      speech.lang = 'ko-KR'; speech.voice = local; utterance = speech;
+      speech.onend = () => {if (utterance === speech) {utterance = null; voiceNote('답변을 다 읽었어요.'); syncVoice();}};
+      speech.onerror = () => {if (utterance === speech) stopVoice('답변을 읽지 못했어요. 텍스트는 그대로 볼 수 있어요.');};
+      voiceNote('답변을 읽고 있어요. 음성 중지 또는 Esc로 멈출 수 있어요.');
+      synth.speak(speech); syncVoice();
+    } catch (_) {stopVoice('이 브라우저에서 답변을 읽을 수 없어요.');}
+  });
+  byId('voiceStop').addEventListener('click', () => stopVoice('음성을 중지했어요. 서버 작업을 취소한 것은 아니에요.'));
+  byId('voiceConsent').addEventListener('change', () => stopVoice('음성 인식 설정을 변경했어요.'));
+  byId('chatInput').addEventListener('input', () => {if (recognition) stopVoice('직접 입력으로 전환했어요.');});
+  window.addEventListener('keydown', event => {if (event.key === 'Escape') stopVoice('음성을 중지했어요.');});
+  // Returning only refreshes control state; it never restarts the microphone or speech.
+  document.addEventListener?.('visibilitychange', () => {if (document.hidden) stopVoice('화면을 벗어나 음성을 중지했어요.'); else syncVoice();});
+  if (!Recognition) voiceNote('이 브라우저는 음성 입력을 지원하지 않아요. 직접 입력할 수 있어요.');
+
   function view(next) {
-    mode = next;
+    mode = next; syncVoice();
     byId('chatPanel').hidden = !token || mode !== 'chat';
     byId('workspace').hidden = Boolean(token) && mode === 'chat';
     for (const [id, selected] of [['chatTab', mode === 'chat'], ['tasksTab', mode === 'tasks']]) {
@@ -25,7 +148,7 @@
     }
   }
   function busy(value) {
-    pending = value;
+    pending = value; syncVoice();
     byId('chatSend').disabled = value || !current;
     byId('newChat').disabled = value;
     byId('chatInput').disabled = value;
@@ -52,6 +175,7 @@
       button.setAttribute('aria-pressed', String(current?.id === conversation.id));
       button.addEventListener('click', async () => {
         if (pending) return;
+        stopVoice();
         const version = generation, chosen = ++selection;
         try {const result = await api('/api/chat/conversations/' + conversation.id); if (generation !== version || selection !== chosen) return; current = result; render(); say();}
         catch (error) {if (generation === version) say(error.message);}
@@ -270,7 +394,7 @@
     } finally {polling = false; clearTimeout(pollTimer); if (version === generation) {busy(false); byId('chatInput').focus();}}
   });
   for (const button of document.querySelectorAll('[data-chat-prompt]')) button.addEventListener('click', () => {
-    if (!pending) {byId('chatInput').value = button.dataset.chatPrompt; byId('chatInput').focus();}
+    if (!pending) {stopVoice(); byId('chatInput').value = button.dataset.chatPrompt; byId('chatInput').focus();}
   });
-  window.addEventListener('pagehide', () => {token = null; current = null; generation++;});
+  window.addEventListener('pagehide', () => {token = null; current = null; generation++; stopVoice('음성을 중지했어요.');});
 })();

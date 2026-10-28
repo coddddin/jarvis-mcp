@@ -1,7 +1,7 @@
 # AGENTS_CONTEXT.md (Project J.A.R.V.I.S. Map)
 ## 1. Project Overview & Vision
-- Goal: Personal AI with guarded tools, personal knowledge, planned multi-agent collaboration and 3D/voice HUD.
-- Current basis: [docs/PLAN.md](docs/PLAN.md); rules: [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md). On user request “최신화하고 작업시작해”, inspect latest PR #13 and PLAN “한 문장 재개 계약”; preserve dirty work and active claims; follow J0–J5 and start J1-ACCEPTANCE-V1 unless H-01A is already active. PLAN has no automatic candidate checkboxes.
+- Goal: A Korean personal assistant for conversation, knowledge, screen understanding and completed tasks across PC/phone; agent operations are supporting infrastructure.
+- Current basis: [docs/PLAN.md](docs/PLAN.md); rules: [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md). Follow PA1–PA6 and the “한 문장 재개 계약”; inspect current main, all open PRs and live Board claims. Preserve existing J work. Next product slice: PA1-VOICE verification, then PA1-KNOWLEDGE. PLAN is not an automatic assignment queue.
 - Documentation: [docs/README.md](docs/README.md); V5 preserved at [docs/master_blueprint_v5.md](docs/master_blueprint_v5.md).
 ## 2. Directory Structure (actual project root)
 - server.py / google_auth_setup.py: stable launcher wrappers; existing client commands unchanged.
