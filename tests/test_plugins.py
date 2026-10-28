@@ -50,8 +50,15 @@ def test_existing_tool_contract_unchanged(tmp_path):
     original_names = {tool['name'] for tool in original}
     existing = [tool for tool in actual if tool['name'] in original_names]
     assert sorted(existing, key=lambda x: x['name']) == sorted(original, key=lambda x: x['name'])
-    assert len(actual) == 42
-    assert {'index_obsidian_vault', 'search_obsidian_vault'} <= {tool['name'] for tool in actual}
+    assert len(actual) == 43
+    assert {'index_obsidian_vault', 'search_obsidian_vault', 'prepare_obsidian_context'} <= {
+        tool['name'] for tool in actual}
+    [prepare] = [tool for tool in actual if tool['name'] == 'prepare_obsidian_context']
+    schema = prepare['inputSchema']
+    assert set(schema['properties']) == {'query', 'max_chars'} and schema['required'] == ['query']
+    assert schema['properties']['query']['type'] == 'string'
+    assert schema['properties']['max_chars']['type'] == 'integer'
+    assert schema['properties']['max_chars']['default'] == 6000
     assert {'board_list', 'board_get', 'board_create', 'board_claim', 'board_heartbeat',
             'board_note', 'board_release', 'board_send', 'board_inbox'} <= {tool['name'] for tool in actual}
     assert 'read_public_web_page' in {tool['name'] for tool in actual}

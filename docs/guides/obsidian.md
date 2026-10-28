@@ -6,8 +6,22 @@ Obsidian 앱/플러그인 없이 Markdown을 읽는다. 서버 작업공간 내�
 
 - `index_obsidian_vault(directory="JARVIS-Vault")`: 검토 승인된 `.md`만 스캔해 별도 `.jarvis-obsidian/knowledge.sqlite3` 인덱스를 만든다. 소스 노트는 수정하지 않는다.
 - `search_obsidian_vault(query="검색어", limit=5)`: 경로·줄번호·발췌·메타데이터·유사도 반환. 기존 로컬 lexical hashing 검색을 재사용하며 의미 임베딩 검색은 아니다.
+- `prepare_obsidian_context(query="검색어", max_chars=6000)`: 같은 검색(`limit=10`) 결과를 출처가 붙은 하나의 `context` 문자열로 묶는다. 아래 "문맥 준비" 참고.
 - 일반 문서의 `.jarvis-index`는 유지한다. Vault 재인덱싱은 이전 Vault 인덱스 전체를 대체한다. 빌드 상한 초과 시 기존 인덱스를 유지한다.
 - 같은 ID를 가진 승인 노트가 둘 이상이거나 인덱싱 중 노트가 바뀌면 빌드를 중단하고 이전 인덱스를 유지한다. ID는 대소문자를 구분한다. 검색은 발췌와 메타데이터가 같은 원본 버전인지 다시 확인하고 `source_sha256`을 함께 반환한다.
+
+## 문맥 준비
+
+`prepare_obsidian_context`는 읽기 전용이다. 새 DB·그래프·훅·자동 모델 프롬프트 삽입은 없고 모델도 호출하지 않는다.
+
+- `query`는 1~500자, `max_chars`는 1000~12000 정수다. bool·실수·문자열 숫자는 거부한다.
+- `max_chars`는 **`context` 문자열의 Unicode 코드 포인트 수** 상한이다(`used_chars == len(context)`). 토큰 수나 모델 전체 창 크기를 보장하지 않는다. 한글·이모지도 코드 포인트 단위로 센다.
+- 후보는 기존 검색이 통과시킨 인덱싱된 승인·비secret 노트뿐이다. 인덱스가 없으면 빈 성공이 아니라 오류다. 결과가 없으면 `context`에 "NO SOURCES" 고정 문구만 넣고 답을 지어내지 않는다.
+- 포함 직전에 원본을 다시 읽어 SHA-256·메타데이터·발췌를 검색 결과와 대조한다. 그 사이 수정·승인 철회된 노트는 발췌 없이 `stale_documents`에 경로만 남는다. 이는 스냅샷 검사이며 트랜잭션이 아니다. 마지막 검사 이후의 수정은 반영되지 않는다.
+- `context`는 고정 머리말 + `SOURCE {JSON}` 한 줄씩 + 고정 꼬리말이다. 각 줄에 id·note_id·제목·경로·`source_sha256`·줄 범위·발췌가 JSON으로 들어 있어 노트 본문이나 여러 줄 제목이 머리말·출처 줄을 위조할 수 없다. 머리말은 질의와 노트 내용이 지시가 아닌 신뢰하지 않는 데이터임을 밝힌다.
+- 출처 블록은 통째로 넣거나 통째로 뺀다. 예산 초과로 뺀 블록은 `omitted`에 `{id, reason:"budget"}`로만 남는다. `sources`에는 발췌 없이 인용 정보만 있다. id는 노트 ID·경로·해시·줄·발췌 해시로 정해지므로 다른 블록이 빠져도 바뀌지 않는다.
+- 중지 표식은 오래된 노트로 처리하지 않고 오류로 끝난다. 호출 예산·중지 정책은 다른 도구와 같다.
+- `external_transmission: false`는 이 함수가 노트를 외부로 보내지 않는다는 뜻일 뿐이다. 결과를 받은 MCP 클라이언트가 이를 외부 모델로 보낼 수 있으며 이 기능은 그것을 막지 못한다.
 
 ## 지원하는 frontmatter
 
@@ -41,4 +55,4 @@ review_status: "approved"
 - 기존 백업 범위·설정은 바꾸지 않았다. 작업공간 내부 Vault는 기존 작업공간 백업에 포함될 가능성이 있으므로 실제 사용 전에 포함/제외 범위와 복원 정책을 확인한다. 자동으로 검증되거나 별도 백업이 보장된 것으로 간주하지 않는다.
 - 합성 Vault·실행 중 WAL SQLite를 기존 `stage_data.stage`로 staging하고 별도 임시 경로에 복원한 검사에서 Markdown 해시·SQLite 무결성·복원 후 검색을 확인했다. 기본 작업공간 내부 Vault와 인덱스가 staging에 포함됐다. 실제 restic/R2 업로드·암호화·자격증명·일정·기존 백업 복구 검증은 수행하지 않았다. 사용자 데이터로 적용 전에 포함 범위를 확인한다.
 
-모의검증은 `python -m pytest -q tests/test_obsidian.py tests/test_phase2.py tests/test_plugins.py tests/test_architecture.py`. 실제 노트·Windows 환경 검증은 별도다.
+모의검증은 `python -m pytest -q tests/test_obsidian.py tests/test_obsidian_context.py tests/test_phase2.py tests/test_plugins.py tests/test_architecture.py`. 실제 노트·Windows 환경 검증은 별도다.
