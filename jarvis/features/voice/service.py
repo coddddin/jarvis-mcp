@@ -43,6 +43,11 @@ MAX_PENDING_TEXT = 4000            # characters waiting to be spoken
 SENTENCE_LIMIT = 160               # a run-on sentence is cut at a comma or space after this many characters
 
 GPU_MODEL, CPU_MODEL = 'large-v3-turbo', 'small'
+# Idle release (ADR 0001). Measured on this PC: STT reloads from disk in about 1-2 s, CosyVoice respawns in about
+# 7 s plus warm-up. Both wake when the mic opens, so the wait hides behind the user's speaking time.
+STT_IDLE_SECONDS = 5 * 60          # the GPU speech-to-text model is fully unloaded after this long without use
+TTS_IDLE_SECONDS = 30 * 60         # the CosyVoice worker ends after this long without use (Heami covers the reload)
+IDLE_CHECK_SECONDS = 15
 DEFAULT_MODEL_ROOT = Path(os.environ.get('LOCALAPPDATA') or Path.home()) / 'Jarvis' / 'voice-models'
 
 STATES = ('loading', 'ready', 'listening', 'transcribing', 'speaking', 'unavailable')
@@ -364,6 +369,7 @@ class WhisperTranscriber:
         self.model = None
         self.device = self.model_name = self.compute = None
         self.downloaded = False                             # True only when this process fetched model files
+        self.lock = threading.Lock()                        # transcribe, release and reload never overlap
 
     def _build(self, name, device, compute):
         from faster_whisper import WhisperModel
@@ -402,10 +408,40 @@ class WhisperTranscriber:
             return
         raise failure if isinstance(failure, VoiceError) else VoiceError('stt_unavailable')
 
+    def _inner(self):
+        return getattr(self.model, 'model', None)          # the CTranslate2 Whisper object
+
+    @property
+    def loaded(self):
+        inner = self._inner()
+        return inner is not None and bool(inner.model_is_loaded)
+
+    def release(self):
+        """Free the GPU copy of the model: a full unload, not parked in RAM. Only on CUDA (the CPU model is small).
+        Returns True when something was freed."""
+        with self.lock:
+            inner = self._inner()
+            if self.device != 'cuda' or inner is None or not inner.model_is_loaded:
+                return False
+            inner.unload_model()
+            return True
+
+    def ensure_loaded(self):
+        """Reload a released model. Called when the mic opens, and again before transcribing."""
+        with self.lock:
+            self._ensure_loaded_locked()
+
+    def _ensure_loaded_locked(self):
+        inner = self._inner()
+        if inner is not None and not inner.model_is_loaded:
+            inner.load_model()
+
     def transcribe(self, samples):
-        segments, _ = self.model.transcribe(np.asarray(samples, dtype=np.float32), language='ko', beam_size=5,
-                                            vad_filter=True, condition_on_previous_text=False)
-        return ' '.join(segment.text.strip() for segment in segments).strip()
+        with self.lock:
+            self._ensure_loaded_locked()
+            segments, _ = self.model.transcribe(np.asarray(samples, dtype=np.float32), language='ko', beam_size=5,
+                                                vad_filter=True, condition_on_previous_text=False)
+            return ' '.join(segment.text.strip() for segment in segments).strip()
 
 
 # --- audio devices ---------------------------------------------------------------------------------------------
@@ -511,6 +547,12 @@ class VoiceService:
         self.playback = self.speaker = None
         self.last_frame = -1.0
         self.closed = False
+        # Idle release: when the service was last used, and whether the main voice engine is up. A released engine
+        # is woken in the background while the fallback speaks; tts_lifecycle keeps a release and a wake apart.
+        self.last_used = self.clock()
+        self.tts_awake, self.tts_waking = True, False
+        self.tts_lifecycle = threading.Lock()
+        self.stopping = threading.Event()
         self.worker = threading.Thread(target=self._synthesis_loop, daemon=True, name='voice-tts')
         self.worker.start()
 
@@ -536,11 +578,13 @@ class VoiceService:
     def status(self):
         return {'state': self.state, 'error': self.error, 'device': self.transcriber.device,
                 'model': self.transcriber.model_name, 'compute': getattr(self.transcriber, 'compute', None),
-                'voice': self.synthesizer.name, 'precision': getattr(self.synthesizer, 'precision', None)}
+                'voice': self.synthesizer.name, 'precision': getattr(self.synthesizer, 'precision', None),
+                'stt_loaded': getattr(self.transcriber, 'loaded', True), 'tts_awake': self.tts_awake}
 
     # loading
     def start(self):
         threading.Thread(target=self._load, daemon=True, name='voice-load').start()
+        threading.Thread(target=self._watch_idle, daemon=True, name='voice-idle').start()
 
     def _load(self):
         code = None
@@ -582,6 +626,8 @@ class VoiceService:
                 self._set_state('ready', 'mic_unavailable')
                 raise VoiceError('mic_unavailable')
             self._set_state('listening')
+            self.last_used = self.clock()
+        self._wake()                                        # reload while the user speaks
 
     def _captured_block(self, block):
         with self.lock:
@@ -635,6 +681,7 @@ class VoiceService:
             text, failed = '', 'stt_failed'
         del samples                                         # the capture does not outlive this call
         with self.lock:
+            self.last_used = self.clock()
             if turn != self.capture_turn or self.state != 'transcribing':
                 return                                      # cancelled or replaced meanwhile
             self._set_state('ready', failed)
@@ -653,6 +700,7 @@ class VoiceService:
             if len(self.pending_text) + len(text) > MAX_PENDING_TEXT:
                 raise VoiceError('too_much_text')
             sentences, self.pending_text = split_sentences(self.pending_text + speakable(text), final)
+            self.last_used = self.clock()
             self.reply_open = not final
             for sentence in sentences:
                 self.sentences.put((self.speech_turn, sentence))
@@ -731,6 +779,11 @@ class VoiceService:
                     continue
                 self.synthesizing = True
                 synthesizer = self.synthesizer
+                asleep = not self.tts_awake and synthesizer is not self.fallback and self.fallback is not None
+                if asleep:
+                    synthesizer = self.fallback             # the main voice is reloading; this sentence uses Heami
+            if asleep:
+                self._wake_tts()
             samples, rate, failed = self._synthesize(synthesizer, sentence)
             if failed == 'tts_unavailable' and self._fall_back(synthesizer):
                 samples, rate, failed = self._synthesize(self.fallback, sentence)   # the same sentence, new voice
@@ -763,6 +816,7 @@ class VoiceService:
         with self.lock:
             if playback is not self.playback:
                 return
+            self.last_used = self.clock()
             self.playback, speaker, self.speaker = None, self.speaker, None
             if speaker is not None:
                 try:
@@ -776,6 +830,78 @@ class VoiceService:
         if self.state == 'speaking' and self.playback is None and self._reply_complete(None):
             self._set_state('ready')
 
+    # idle release (ADR 0001)
+    def _watch_idle(self):
+        while not self.stopping.wait(IDLE_CHECK_SECONDS):
+            self.release_idle()
+
+    def release_idle(self):
+        """Free models that were not used for a while. Only between turns: never while listening or speaking."""
+        with self.lock:
+            if (self.closed or self.state != 'ready' or self.synthesizing or self.playback is not None
+                    or not self.sentences.empty()):
+                return
+            idle = self.clock() - self.last_used
+            release_stt = idle >= STT_IDLE_SECONDS
+            engine = self.synthesizer
+            release_tts = (idle >= TTS_IDLE_SECONDS and self.tts_awake and not self.tts_waking
+                           and self.fallback is not None and engine is not self.fallback
+                           and hasattr(engine, 'warm_up') and hasattr(engine, 'close'))
+            if release_tts:
+                self.tts_awake = False
+        if release_stt:
+            releaser = getattr(self.transcriber, 'release', None)
+            if releaser is not None:
+                try:
+                    releaser()
+                except Exception:
+                    pass
+        if release_tts:
+            with self.tts_lifecycle:
+                try:
+                    engine.close()
+                except Exception:
+                    pass
+
+    def _wake(self):
+        """Start reloading whatever idle release freed, without blocking the caller."""
+        loader = getattr(self.transcriber, 'ensure_loaded', None)
+        if loader is not None:
+            def load():
+                try:
+                    loader()
+                except Exception:
+                    pass                                    # _transcribe tries again and reports stt_failed
+            threading.Thread(target=load, daemon=True, name='voice-stt-wake').start()
+        self._wake_tts()
+
+    def _wake_tts(self):
+        with self.lock:
+            if self.closed or self.tts_awake or self.tts_waking or self.synthesizer is self.fallback:
+                return
+            self.tts_waking, engine = True, self.synthesizer
+        threading.Thread(target=self._warm_tts, args=(engine,), daemon=True, name='voice-tts-wake').start()
+
+    def _warm_tts(self, engine):
+        try:
+            with self.tts_lifecycle:
+                engine.warm_up()
+            ok = True
+        except Exception:
+            ok = False
+        with self.lock:
+            self.tts_waking = False
+            closed = self.closed
+            if ok and not closed:
+                self.tts_awake = True
+            elif not ok and self.synthesizer is engine and self.fallback is not None:
+                self.synthesizer = self.fallback            # a reload that fails is a broken engine, as in #69
+        if closed or not ok:
+            try:
+                engine.close()
+            except Exception:
+                pass
+
     # frames
     def _frame(self, block, rate):
         level, bins = frame_features(block, rate)
@@ -786,6 +912,7 @@ class VoiceService:
         return level, bins
 
     def close(self):
+        self.stopping.set()
         with self.lock:
             self.closed = True
             self.capture_turn += 1

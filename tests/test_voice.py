@@ -516,3 +516,174 @@ def test_worker_reports_non_finite_sentence_audio_as_a_failure(tmp_path):
     finally:
         process.stdin.close()
         process.wait(10)
+
+
+# --- idle release (ADR 0001) -----------------------------------------------------------------------------------
+
+class Clock:
+    def __init__(self):
+        self.now = 1000.0
+
+    def __call__(self):
+        return self.now
+
+
+class ReleasableTranscriber(FakeTranscriber):
+    def __init__(self):
+        super().__init__()
+        self.loaded, self.releases, self.reloads = True, 0, 0
+
+    def release(self):
+        self.loaded = False
+        self.releases += 1
+
+    def ensure_loaded(self):
+        if not self.loaded:
+            self.loaded = True
+            self.reloads += 1
+
+
+class Engine(FakeSynth):
+    """A main voice that can be ended and started again; later warm-ups wait for `gate` and may fail."""
+    def __init__(self, fail_reload=False):
+        super().__init__('cosyvoice3')
+        self.warm_ups = self.closes = 0
+        self.gate, self.fail_reload = threading.Event(), fail_reload
+
+    def warm_up(self):
+        self.warm_ups += 1
+        if self.warm_ups > 1:
+            self.gate.wait(3)
+            if self.fail_reload:
+                raise RuntimeError('reload failed')
+
+    def close(self):
+        self.closes += 1
+
+
+def idle_service(**changes):
+    from jarvis.features.voice import service as module
+    clock = Clock()
+    parts = {'transcriber': ReleasableTranscriber(), 'synthesizer': Engine(), 'fallback': FakeSynth('heami'),
+             'clock': clock, **changes}
+    voice, events, audio = service(**parts)
+    return voice, events, audio, clock, module
+
+
+def finish_reply(voice, audio, text):
+    assert voice.speak(text, final=True)
+    wait(lambda: audio.outputs)
+    drain(audio.outputs.pop())
+    wait(lambda: voice.state == 'ready')
+
+
+def test_idle_stt_is_released_after_five_minutes_and_reloads_when_the_mic_opens():
+    voice, events, audio, clock, module = idle_service()
+    stt = voice.transcriber
+    clock.now += module.STT_IDLE_SECONDS - 1
+    voice.release_idle()
+    assert stt.releases == 0 and voice.status()['stt_loaded'] is True
+    clock.now += 1
+    voice.release_idle()
+    assert stt.releases == 1 and voice.status()['stt_loaded'] is False
+    voice.listen()                                          # the reload starts with the mic, not after it
+    wait(lambda: stt.reloads == 1)
+    assert voice.synthesizer.closes == 0                    # the voice engine has a longer idle time
+    voice.close()
+
+
+def test_idle_tts_worker_ends_and_heami_covers_until_it_is_back():
+    voice, events, audio, clock, module = idle_service()
+    engine, heami = voice.synthesizer, voice.fallback
+    clock.now += module.TTS_IDLE_SECONDS
+    voice.release_idle()
+    assert engine.closes == 1 and voice.status()['tts_awake'] is False
+    finish_reply(voice, audio, '첫 문장입니다.')             # Heami speaks while the engine reloads
+    assert heami.spoken == ['첫 문장입니다.'] and engine.spoken == []
+    wait(lambda: engine.warm_ups == 2)
+    engine.gate.set()
+    wait(lambda: voice.status()['tts_awake'])
+    finish_reply(voice, audio, '다음 문장입니다.')
+    assert engine.spoken == ['다음 문장입니다.'] and voice.synthesizer is engine
+    voice.close()
+
+
+def test_the_mic_wakes_a_released_voice_engine_before_the_reply():
+    voice, events, audio, clock, module = idle_service()
+    engine = voice.synthesizer
+    engine.gate.set()
+    clock.now += module.TTS_IDLE_SECONDS
+    voice.release_idle()
+    voice.listen()
+    wait(lambda: voice.status()['tts_awake'])
+    assert engine.warm_ups == 2
+    voice.close()
+
+
+def test_nothing_is_released_while_listening_or_speaking():
+    voice, events, audio, clock, module = idle_service()
+    voice.listen()
+    clock.now += module.TTS_IDLE_SECONDS
+    voice.release_idle()
+    voice.cancel()
+    assert voice.transcriber.releases == 0 and voice.synthesizer.closes == 0
+    assert voice.speak('말하는 중입니다.', final=True)
+    wait(lambda: audio.outputs)
+    clock.now += module.TTS_IDLE_SECONDS
+    voice.release_idle()
+    assert voice.transcriber.releases == 0 and voice.synthesizer.closes == 0
+    voice.close()
+
+
+def test_a_voice_engine_that_fails_to_reload_hands_over_to_the_fallback():
+    voice, events, audio, clock, module = idle_service(synthesizer=Engine(fail_reload=True))
+    engine, heami = voice.synthesizer, voice.fallback
+    engine.gate.set()
+    clock.now += module.TTS_IDLE_SECONDS
+    voice.release_idle()
+    voice.listen()
+    wait(lambda: voice.synthesizer is heami)
+    assert engine.closes == 2 and voice.status()['voice'] == 'heami'
+    voice.close()
+
+
+def test_without_a_fallback_the_voice_engine_is_never_released():
+    voice, events, audio, clock, module = idle_service(fallback=None)
+    clock.now += module.TTS_IDLE_SECONDS
+    voice.release_idle()
+    assert voice.synthesizer.closes == 0 and voice.status()['tts_awake'] is True
+    assert voice.transcriber.releases == 1
+    voice.close()
+
+
+def test_whisper_release_is_a_full_unload_on_cuda_and_transcribe_reloads(tmp_path):
+    from jarvis.features.voice.service import WhisperTranscriber
+
+    class Inner:
+        def __init__(self):
+            self.model_is_loaded, self.calls = True, []
+
+        def unload_model(self, to_cpu=False):
+            self.calls.append(('unload', to_cpu))
+            self.model_is_loaded = False
+
+        def load_model(self):
+            self.calls.append(('load',))
+            self.model_is_loaded = True
+
+    class Model:
+        def __init__(self):
+            self.model = Inner()
+
+        def transcribe(self, samples, **options):
+            assert self.model.model_is_loaded
+            return iter(()), None
+
+    transcriber = WhisperTranscriber(tmp_path)
+    transcriber.model, transcriber.device = Model(), 'cpu'
+    assert transcriber.release() is False and transcriber.loaded
+    transcriber.device = 'cuda'
+    assert transcriber.release() is True and not transcriber.loaded
+    assert transcriber.release() is False
+    assert transcriber.transcribe(np.zeros(SAMPLE_RATE, dtype=np.float32)) == ''
+    assert transcriber.model.model.calls == [('unload', False), ('load',)]
