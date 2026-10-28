@@ -1,3 +1,51 @@
+# GitHub 우편함·Vault 인계 및 검증 — 2026-10-22
+
+> 보관 기록입니다. 당시 구현·검증·제약을 보존하며 현재 작업 지시나 승인으로 사용하지 않습니다. 현재 계획은 [PLAN](../../PLAN.md), 진행 중인 작업은 Board/PR에서 확인합니다.
+
+기존 날짜별 인계 2개를 한 기록으로 통합했습니다. 원문 본문은 아래에 보존했고 상대 링크만 새 위치에 맞췄습니다. 통합 전 원문은 Git 이력에도 남습니다.
+
+## 원본: `docs/handoffs/work-2026-10-22.md`
+
+# Work 인수인계 — J.A.R.V.I.S. GitHub 원격 개발 (2026-10-22)
+
+## 목표와 작업 원칙
+- 비공개 저장소: `coddddin/jarvis-mcp`. 로컬 Windows PC는 현재 꺼져 있고, 로컬 Ollama·디스패처·SQLite 게시판을 원격에서 실행할 수 없음.
+- 기존 데스크톱 작업 및 미커밋 변경 보존. **main 병합, 파일 삭제, 기존 예약 작업 교체, 유료 API/서비스 활성화는 사용자 승인 전 금지.**
+- 신규 상시 과금 없이 GitHub Issue를 휴대폰에서 작성하고, PC 로그인 후 로컬 게시판에 안전하게 수신하는 것이 우선 목표.
+- Codex·Claude 사용량 한도로 중단된 로컬 작업이 있으므로 로컬 상태를 보지 않고 재설정/강제 checkout 금지.
+
+## 구현 및 PR 의존성
+1. **PR #8** `feat/github-inbox-mvp` → `main`
+   - `jarvis/cli/github_inbox.py`: 승인된 open Issue만 읽는 CLI; 기본 preview, `--apply` 시 SQLite 보드에 작업 생성; 제목/링크만 저장, 본문 실행 금지, 중복 수신 방지.
+   - `tests/test_github_inbox.py`, `docs/guides/github-inbox.md`.
+   - 미실행 테스트. 토큰 필요. 이 브랜치에는 기존 파일 변경/삭제 없음.
+2. **PR #9** `feat/github-actions-triage-mvp` → `main`
+   - `jarvis/cli/github_triage.py`, `tests/test_github_triage_unittest.py`, `.github/workflows/jarvis-issue-triage.yml`.
+   - 읽기 전용 분류, AI 호출 없음, 댓글/라벨 변경 없음. GitHub Actions 워크플로는 main 병합 전 자동 활성화되지 않음. 실행 검증 및 Actions 과금 정책 확인 필요.
+3. **PR #10** `feat/github-inbox-logon` → **`feat/github-inbox-mvp`**
+   - PR #8에 의존하는 stacked PR. `scripts/github-inbox/register-logon.ps1`, `docs/guides/github-inbox-logon.md`.
+   - 기존 `JARVIS Dispatcher`와 별도의 `JARVIS GitHub Inbox` 예약 작업을 사용자가 PC에서 명시적으로 등록하면 Windows **로그인 시 1회** `--apply` 수행.
+   - 전원 켜기만으로 동작하지 않음. 등록 스크립트 미실행, 예약 작업 미등록, 로컬 PowerShell 테스트 미실행.
+
+## 검증 시 우선 확인
+- 로컬 `git status`와 현재 브랜치/미커밋 변경 먼저 확인. 기존 변경을 stash/reset/checkout으로 임의 이동하지 말 것.
+- PR #8: `python -m pytest -q tests/test_github_inbox.py`; 제목 상한·잘못된 API payload·트랜잭션/중복 수신 점검. 특히 보드 `BoardStore.connection()`의 가드레일·로스터와 호환성 확인.
+- PR #9: `python -m unittest discover -s tests -p test_github_triage_unittest.py -v` 및 GitHub Actions workflow 문법/권한 검증. 실제 실행/비용은 별도 확인.
+- PR #10: PowerShell 문법, `GITHUB_TOKEN` 사용자 환경 변수의 로그인 세션 가시성, 작업 디렉터리/venv/워크스페이스 경로 확인. 스케줄러 등록은 사용자 승인 전 실행 금지.
+- 토큰을 코드/로그/Issue/채팅에 노출하지 말 것. 인증 실패를 작업 성공으로 표시하지 말 것.
+- 기능별 브랜치·PR 유지, 리뷰 후에만 병합 계획 제안.
+
+## 현재까지 확인한 사실과 남은 일
+- PR #8과 #9는 각자 새 파일 3개만 추가했고, 기존 파일을 수정·삭제하지 않음. PR #10은 PR #8을 기반으로 새 파일 2개만 추가.
+- GitHub 커넥터로 코드 작성·커밋·Draft PR 생성 완료. **로컬 테스트나 Windows 스케줄러 설치/실행은 하지 않았음.**
+- 다음 단계: (1) PR #8~#10 정적 검토 및 테스트, (2) 승인 후 PC에서 동기화 등록, (3) Obsidian Vault 구조와 백업 범위 별도 설계/구현. Obsidian Vault는 현재 백업 대상에 포함된 것으로 간주하지 말 것.
+- 기준 문서: `docs/PLAN.md`, `docs/guides/board.md`, `docs/guides/dispatcher.md`, `docs/guides/backup.md`, GitHub Issues #6, #7.
+
+
+---
+
+## 원본: `docs/handoffs/work-review-2026-10-22.md`
+
 # 원격 보안 검토·Obsidian 구현 기록 (2026-10-22)
 
 ## 기준·보존
@@ -14,7 +62,7 @@
 3. Issue별 매핑·task·event 원자성, 동시 수신 중복 방지와 실패 롤백을 검증했다. 직접 SQL에는 명시적 컬럼을 쓴다. 여러 Issue 전체가 단일 원자적 배치는 아니다.
 4. 로그인 스크립트의 `Register-ScheduledTask -Force`를 제거하고 기존 동명 작업이 있으면 중단한다. 현재 사용자 전체 계정명·Interactive/Limited principal을 지정한다. Windows 실행은 미검증이다.
 5. Triage의 최상위 비정상 자료·양수가 아닌 번호·빈 제목을 거부한다. 이벤트 파일은 실제 read 상한을 적용하고 JSON 오류에 원문을 출력하지 않는다. 기존 workflow는 읽기 전용 권한, 제한된 이벤트, Issue 텍스트 shell 미삽입을 확인했다. checkout 태그의 SHA 고정·실제 Actions/비용 검증은 #9 후속이다.
-6. Vault 어댑터와 2개 도구를 추가했다. approved/non-secret `.md`의 엄격한 frontmatter 검증, 비밀 패턴·링크 차단, 메타데이터 반환, 별도 인덱스·승인 철회 재검증. 기존 KnowledgeStore에 인덱스 디렉터리 상수와 stop 검사를 추가해 검색 엔진을 재사용한다. 기존 도구 계약은 유지한다. [가이드](../guides/obsidian.md).
+6. Vault 어댑터와 2개 도구를 추가했다. approved/non-secret `.md`의 엄격한 frontmatter 검증, 비밀 패턴·링크 차단, 메타데이터 반환, 별도 인덱스·승인 철회 재검증. 기존 KnowledgeStore에 인덱스 디렉터리 상수와 stop 검사를 추가해 검색 엔진을 재사용한다. 기존 도구 계약은 유지한다. [가이드](../../guides/obsidian.md).
 
 ## 검증
 
