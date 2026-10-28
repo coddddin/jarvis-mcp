@@ -1,14 +1,15 @@
 // J.A.R.V.I.S. desktop app (Tauri v2, Windows).
 // Starts the HUD server from this repository as a child in a kill-on-close job object, opens /assistant with the
 // server's one-time connect code, and restarts the server if it stops on its own (watch.rs). Adds a tray,
-// close-to-tray, a single instance, a global show/hide hotkey, an opt-in start at login, and a transparent mini ring
-// that follows the assistant's state.
+// close-to-tray, a single instance, a global show/hide hotkey, an opt-in start at login, a voice switch (settings.rs)
+// and a transparent mini ring that follows the assistant's state.
 // IPC is narrow: the server page may only call `presence` (a capability added at startup for the exact server port),
 // the bundled mini ring only `expand` and `drag` (capabilities/mini.json). Navigation in the main window is held to
 // the local server.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod server;
+mod settings;
 mod watch;
 mod win;
 
@@ -43,11 +44,29 @@ struct Supervisor {
     restart_item: Mutex<Option<MenuItem<tauri::Wry>>>,
     /// The normal tray tooltip (it names a hotkey registration failure, if any).
     tooltip: Mutex<String>,
+    /// Saved settings, and their folder (None when Windows gave no app data folder: then nothing is saved).
+    settings: Mutex<settings::Settings>,
+    settings_dir: Option<PathBuf>,
 }
 
 impl Supervisor {
     fn quitting(&self) -> bool {
         self.quitting.load(Ordering::SeqCst)
+    }
+
+    fn voice(&self) -> bool {
+        self.settings.lock().unwrap().voice
+    }
+
+    /// Flip the voice setting and save it. Returns the new value, and an error text if it could not be saved.
+    fn toggle_voice(&self) -> (bool, Option<String>) {
+        let mut settings = self.settings.lock().unwrap();
+        settings.voice = !settings.voice;
+        let saved = match &self.settings_dir {
+            Some(dir) => settings.save(dir).err().map(|e| e.to_string()),
+            None => Some("앱 데이터 폴더를 찾지 못했습니다".to_string()),
+        };
+        (settings.voice, saved)
     }
 
     fn quit(&self) {
@@ -118,6 +137,8 @@ fn pause(supervisor: &Supervisor, total: Duration) -> bool {
 
 /// Start the server, show it, and restart it when it stops on its own. A failed first start ends the app (for
 /// example: the port is in use); later failures back off and finally wait for the tray's restart item.
+/// When the voice setting changes, the running server is stopped and started again with the new setting at once;
+/// that restart is not counted as a failure.
 fn supervise(app: AppHandle, root: PathBuf, python: PathBuf, port: u16, started: Instant, hidden: bool,
              retry: mpsc::Receiver<()>) {
     let supervisor = app.state::<Supervisor>();
@@ -127,7 +148,8 @@ fn supervise(app: AppHandle, root: PathBuf, python: PathBuf, port: u16, started:
         if supervisor.quitting() {
             return;
         }
-        let next = match server::start(&root, &python, port) {
+        let voice = supervisor.voice();
+        let next = match server::start(&root, &python, port, voice) {
             Ok(running) => {
                 if first {
                     record_start(&app, started.elapsed(), hidden);
@@ -140,19 +162,30 @@ fn supervise(app: AppHandle, root: PathBuf, python: PathBuf, port: u16, started:
                 if let Some(window) = app.get_webview_window("main") {
                     let _ = window.navigate(url);
                 }
+                let mut switched = false;
                 loop {
                     std::thread::sleep(Duration::from_millis(500));
-                    let guard = supervisor.server.lock().unwrap();
-                    match guard.as_ref() {
+                    let mut guard = supervisor.server.lock().unwrap();
+                    match guard.as_mut() {
                         None => return, // taken by quit
                         Some(running) if running.exited().is_some() => break,
+                        Some(running) if supervisor.voice() != voice => {
+                            running.stop();
+                            switched = true;
+                            break;
+                        }
                         Some(_) => {}
                     }
                 }
-                // Dropping the server closes its job, which ends anything it left running.
+                // Dropping the server closes its job, which ends anything it left running (the speech worker too).
                 drop(supervisor.server.lock().unwrap().take());
                 if supervisor.quitting() {
                     return;
+                }
+                if switched {
+                    restarts.reset();
+                    show_status(&app, Status::Restarting(0));
+                    continue;
                 }
                 restarts.after_exit(up.elapsed())
             }
@@ -301,13 +334,16 @@ fn build_tray(app: &tauri::App, retry: mpsc::Sender<()>) -> tauri::Result<()> {
     let hide = MenuItem::with_id(app, "hide", "숨기기", true, None::<&str>)?;
     let mini = CheckMenuItem::with_id(app, "mini", "미니 고리", true, false, None::<&str>)?;
     let login = CheckMenuItem::with_id(app, "login", "로그인 시 자동 실행", true, autostart_on, None::<&str>)?;
+    let voice_on = app.state::<Supervisor>().voice();
+    let voice = CheckMenuItem::with_id(app, "voice", "음성", true, voice_on, None::<&str>)?;
     let restart = MenuItem::with_id(app, "restart", "서버 다시 시작", false, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "종료", true, None::<&str>)?;
     let separator = PredefinedMenuItem::separator(app)?;
-    let menu = Menu::with_items(app, &[&open, &hide, &mini, &separator, &login, &restart, &separator, &quit])?;
+    let menu = Menu::with_items(app, &[&open, &hide, &mini, &separator, &login, &voice, &restart, &separator, &quit])?;
     *app.state::<Supervisor>().restart_item.lock().unwrap() = Some(restart);
     let toggle = login.clone();
     let mini_toggle = mini.clone();
+    let voice_toggle = voice.clone();
     TrayIconBuilder::with_id("tray")
         .icon(app.default_window_icon().expect("bundled icon").clone())
         .tooltip(format!("J.A.R.V.I.S. ({} 보이기/숨기기)", HOTKEY.2))
@@ -333,6 +369,15 @@ fn build_tray(app: &tauri::App, retry: mpsc::Sender<()>) -> tauri::Result<()> {
                 }
                 // Show what Windows actually has, whatever the click did to the check mark.
                 let _ = toggle.set_checked(manager.is_enabled().unwrap_or(false));
+            }
+            "voice" => {
+                let (on, failed) = app.state::<Supervisor>().toggle_voice();
+                let _ = voice_toggle.set_checked(on);
+                if let Some(e) = failed {
+                    win::error_box(&format!("음성 설정을 저장하지 못했습니다. 이번 실행에만 적용됩니다: {e}"));
+                }
+                // supervise() restarts a running server with the new setting; this wakes one the app gave up on.
+                let _ = retry.send(());
             }
             "restart" => {
                 let _ = retry.send(());
@@ -389,11 +434,15 @@ fn main() {
         )
         .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, Some(vec![HIDDEN_ARG])))
         .setup(move |app| {
+            let settings_dir = app.path().app_local_data_dir().ok();
+            let settings = settings_dir.as_deref().map(settings::Settings::load).unwrap_or_default();
             app.manage(Supervisor {
                 server: Mutex::new(None),
                 quitting: AtomicBool::new(false),
                 restart_item: Mutex::new(None),
                 tooltip: Mutex::new(format!("J.A.R.V.I.S. ({} 보이기/숨기기)", HOTKEY.2)),
+                settings: Mutex::new(settings),
+                settings_dir,
             });
             app.manage(Presence(Mutex::new("offline")));
             let (root, python) = match locate() {
