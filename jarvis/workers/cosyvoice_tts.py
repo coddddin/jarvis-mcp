@@ -12,8 +12,10 @@ stdout carries only the protocol (stray prints from libraries go to stderr, whic
 On CUDA the llm and flow modules are cast to half after loading (about 2.0 GB instead of 3.6 GB on the device, and
 slightly faster); the hift vocoder stays fp32. CosyVoice's own fp16 flag only turns on autocast and keeps fp32
 weights. If the half-precision warm-up fails or produces non-finite or silent audio, the model is reloaded in fp32.
+A sentence whose audio is not finite is answered with tts_failed rather than played as silence.
 """
 import argparse
+import gc
 import json
 import logging
 import os
@@ -77,13 +79,17 @@ def main():
                 print(f'fp16 load failed: {type(exc).__name__}; reloading in fp32', file=sys.stderr)
                 model = None
             if model is None:
+                gc.collect()                               # a cycle can keep the half model alive otherwise
                 torch.cuda.empty_cache()
         if model is None:
             model = load(False)
             speech(model, WARM_UP)
 
         def synthesize(text):
-            return (np.clip(np.nan_to_num(speech(model, text)), -1, 1) * 32767).astype('<i2').tobytes()
+            samples = speech(model, text)
+            if not np.isfinite(samples).all():
+                raise ValueError('non-finite audio')       # reported as tts_failed, never played as silence
+            return (np.clip(samples, -1, 1) * 32767).astype('<i2').tobytes()
     except Exception as exc:                               # noqa: BLE001 - reported as a code, details on stderr
         print(f'load failed: {type(exc).__name__}', file=sys.stderr)
         send({'ready': False, 'error': 'tts_unavailable'})
