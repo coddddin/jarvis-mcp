@@ -299,12 +299,22 @@ fn drain<R: Read + Send + 'static>(stream: R, mut each: impl FnMut(String) + Sen
     });
 }
 
-/// Start `python -X utf8 -m jarvis.cli.hud --shell` in a new kill-on-close job and wait for its READY line.
+/// The server's arguments. `--voice` adds local push-to-talk and spoken replies; the server loads the speech models
+/// itself, in the background after it is ready, and runs without voice when the voice packages are missing.
+fn hud_args(port: &str, voice: bool) -> Vec<&str> {
+    let mut args = vec!["-X", "utf8", "-m", "jarvis.cli.hud", "--shell", "--port", port];
+    if voice {
+        args.push("--voice");
+    }
+    args
+}
+
+/// Start `python -X utf8 -m jarvis.cli.hud --shell [--voice]` in a new kill-on-close job and wait for its READY line.
 /// The error text is for the user: it names the cause and the last server error lines, never the code.
-pub fn start(root: &Path, python: &Path, port: u16) -> Result<Server, String> {
+pub fn start(root: &Path, python: &Path, port: u16, voice: bool) -> Result<Server, String> {
     let job = Job::kill_on_close().map_err(|e| format!("작업 개체를 만들지 못했습니다: {e}"))?;
     let port_text = port.to_string();
-    let args = ["-X", "utf8", "-m", "jarvis.cli.hud", "--shell", "--port", port_text.as_str()];
+    let args = hud_args(&port_text, voice);
     let spawned = spawn_in_job(&job, python, &args, root)
         .map_err(|e| format!("Python을 시작하지 못했습니다 ({}): {e}", python.display()))?;
     let errors: Arc<Mutex<VecDeque<String>>> = Arc::default();
@@ -384,6 +394,15 @@ mod tests {
         std::fs::write(&python, "").unwrap();
         assert_eq!(find_python(&root, None), Some(python));
         let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn voice_adds_only_the_voice_flag() {
+        let plain = hud_args("8787", false);
+        assert_eq!(plain, ["-X", "utf8", "-m", "jarvis.cli.hud", "--shell", "--port", "8787"]);
+        let voice = hud_args("8787", true);
+        assert_eq!(voice[..plain.len()], plain[..]);
+        assert_eq!(voice[plain.len()..], ["--voice"]);
     }
 
     #[test]
