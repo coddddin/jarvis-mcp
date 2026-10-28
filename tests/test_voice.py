@@ -282,7 +282,8 @@ out = sys.stdout.buffer
 mode = sys.argv[sys.argv.index('--root') + 1].rsplit('-', 1)[-1]
 if mode == 'broken':
     out.write(b'{"ready": false, "error": "tts_unavailable"}\n'); out.flush(); sys.exit(1)
-out.write(b'{"ready": true, "rate": 24000}\n'); out.flush()
+precision = b'"int4"' if mode == 'oddprecision' else b'"fp16"'
+out.write(b'{"ready": true, "rate": 24000, "precision": ' + precision + b'}\n'); out.flush()
 for line in sys.stdin.buffer:
     text = json.loads(line)['text']
     if mode == 'dies':
@@ -307,9 +308,39 @@ def test_cosyvoice_client_speaks_through_the_worker_and_stops_it(tmp_path):
     synth.warm_up()
     samples, rate = synth.synthesize('12통')                  # sent as 열두 통: four characters
     assert rate == 24000 and samples.size == 4 and abs(samples[0] - 1000 / 32768) < 1e-6
+    assert synth.precision == 'fp16'
     process = synth.process
     synth.close()
     assert synth.process is None and process.poll() is not None
+
+
+def test_an_unknown_precision_from_the_worker_is_not_reported(tmp_path):
+    synth = cosyvoice(tmp_path, 'oddprecision')
+    synth.warm_up()
+    assert synth.precision is None and synth.rate == 24000
+    synth.close()
+
+
+def test_gpu_speech_to_text_uses_int8_weights_with_float16_compute(monkeypatch, tmp_path):
+    import sys
+    import types
+    from jarvis.features.voice import service
+    built = []
+
+    class Model:
+        def transcribe(self, samples, **options):
+            return iter(()), None
+
+    def build(name, device, compute):
+        built.append((name, device, compute))
+        return Model()
+    monkeypatch.setattr(service, '_add_cuda_wheels_to_path', lambda: True)
+    monkeypatch.setitem(sys.modules, 'ctranslate2', types.SimpleNamespace(get_cuda_device_count=lambda: 1))
+    transcriber = service.WhisperTranscriber(tmp_path)
+    monkeypatch.setattr(transcriber, '_build', build)
+    transcriber.load()
+    assert built == [(service.GPU_MODEL, 'cuda', 'int8_float16')]
+    assert (transcriber.device, transcriber.compute) == ('cuda', 'int8_float16')
 
 
 def test_cosyvoice_that_cannot_load_or_dies_reports_unavailable(tmp_path):
@@ -353,3 +384,135 @@ def test_a_failing_fallback_is_reported_and_not_swapped_again():
     voice.speak('말해 볼게요.', final=True)
     wait(lambda: any(event['type'] == 'error' for event in events))
     assert [e['code'] for e in events if e['type'] == 'error'] == ['tts_unavailable'] and voice.state == 'ready'
+
+
+# --- the real CosyVoice worker script, with fake torch and cosyvoice packages -------------------------------------
+
+FAKE_TORCH = r'''
+import os
+
+
+class _Cuda:
+    @staticmethod
+    def is_available():
+        return True
+
+    @staticmethod
+    def empty_cache():
+        from cosyvoice.cli.cosyvoice import half_alive
+        with open(os.environ['FAKE_TTS_LOG'], 'a', encoding='utf-8') as log:
+            log.write(f'empty_cache half_alive={half_alive()}\n')
+
+
+cuda = _Cuda()
+'''
+
+FAKE_COSYVOICE = r'''
+import os
+import weakref
+
+import numpy as np
+
+_halves = weakref.WeakSet()
+
+
+def half_alive():
+    return len(_halves)
+
+
+class Tensor:
+    def __init__(self, array):
+        self.array = array
+
+    def squeeze(self, dim):
+        return self
+
+    def float(self):
+        return self
+
+    def cpu(self):
+        return self
+
+    def numpy(self):
+        return self.array
+
+
+class Module:
+    def __init__(self, owner):
+        self.owner = owner                  # owner -> inner -> module -> owner: only gc frees it
+
+    def half(self):
+        self.owner.is_half = True
+        _halves.add(self.owner)
+
+
+class Inner:
+    pass
+
+
+class AutoModel:
+    def __init__(self, model_dir, fp16=False):
+        self.sample_rate, self.is_half = 24000, False
+        self.model = Inner()
+        self.model.llm, self.model.flow = Module(self), Module(self)
+
+    def add_zero_shot_spk(self, *args):
+        pass
+
+    def inference_cross_lingual(self, text, ref, zero_shot_spk_id, stream):
+        bad = (self.is_half and os.environ.get('FAKE_TTS_MODE') == 'nan_half') or 'NAN' in text
+        yield {'tts_speech': Tensor(np.full(240, np.nan if bad else 0.5, dtype=np.float32))}
+'''
+
+
+def run_worker(tmp_path, mode):
+    import json
+    import os
+    import subprocess
+    import sys
+    from jarvis.features.voice.service import WORKERS_ROOT
+    src = tmp_path / 'root' / 'src'
+    (src / 'torch').mkdir(parents=True)
+    (src / 'torch' / '__init__.py').write_text(FAKE_TORCH, encoding='utf-8')
+    (src / 'cosyvoice' / 'cli').mkdir(parents=True)
+    (src / 'cosyvoice' / '__init__.py').write_text('', encoding='utf-8')
+    (src / 'cosyvoice' / 'cli' / '__init__.py').write_text('', encoding='utf-8')
+    (src / 'cosyvoice' / 'cli' / 'cosyvoice.py').write_text(FAKE_COSYVOICE, encoding='utf-8')
+    log = tmp_path / 'log.txt'
+    env = {**os.environ, 'FAKE_TTS_MODE': mode, 'FAKE_TTS_LOG': str(log)}
+    process = subprocess.Popen([sys.executable, '-X', 'utf8', str(WORKERS_ROOT / 'cosyvoice_tts.py'),
+                                '--root', str(tmp_path / 'root'), '--ref', str(tmp_path / 'ref.wav')],
+                               stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=env)
+
+    def ask(text):
+        process.stdin.write(json.dumps({'text': text}).encode() + b'\n')
+        process.stdin.flush()
+        header = json.loads(process.stdout.readline())
+        if header.get('ok'):
+            process.stdout.read(header['samples'] * 2)
+        return header
+    header = json.loads(process.stdout.readline())
+    return process, header, ask, log
+
+
+def test_worker_drops_the_half_model_before_reloading_in_fp32(tmp_path):
+    process, header, ask, log = run_worker(tmp_path, 'nan_half')
+    try:
+        assert header == {'ready': True, 'rate': 24000, 'precision': 'fp32'}
+        assert log.read_text(encoding='utf-8') == 'empty_cache half_alive=0\n'
+        assert ask('안녕하세요') == {'ok': True, 'samples': 240}
+    finally:
+        process.stdin.close()
+        process.wait(10)
+
+
+def test_worker_reports_non_finite_sentence_audio_as_a_failure(tmp_path):
+    process, header, ask, log = run_worker(tmp_path, 'ok')
+    try:
+        assert header == {'ready': True, 'rate': 24000, 'precision': 'fp16'}
+        assert not log.exists()                         # no fallback, so no cache flush
+        assert ask('NAN 문장') == {'ok': False, 'error': 'tts_failed'}
+        assert ask('다음 문장') == {'ok': True, 'samples': 240}
+    finally:
+        process.stdin.close()
+        process.wait(10)
