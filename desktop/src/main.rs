@@ -35,6 +35,8 @@ const HOTKEY: (Modifiers, Code, &str) = (Modifiers::CONTROL.union(Modifiers::ALT
 /// The presence states of frontend/assistant/presence.js.
 const STATES: [&str; 7] = ["offline", "connecting", "idle", "listening", "thinking", "speaking", "error"];
 const MINI_SIZE: f64 = 128.0;
+/// How long a voice switch waits for the old server and its speech worker to be gone before starting the new one.
+const SWITCH_WAIT: Duration = Duration::from_secs(30);
 
 /// The running server, and whether the user is quitting (then nothing restarts it).
 struct Supervisor {
@@ -170,7 +172,9 @@ fn supervise(app: AppHandle, root: PathBuf, python: PathBuf, port: u16, started:
                         None => return, // taken by quit
                         Some(running) if running.exited().is_some() => break,
                         Some(running) if supervisor.voice() != voice => {
-                            running.stop();
+                            // Wait until the whole old tree is gone: a server still holding the port would make
+                            // the new start fail and count as a watchdog failure.
+                            running.end_all(SWITCH_WAIT);
                             switched = true;
                             break;
                         }
@@ -204,6 +208,8 @@ fn supervise(app: AppHandle, root: PathBuf, python: PathBuf, port: u16, started:
             }
             watch::Next::GiveUp => {
                 show_status(&app, Status::Stopped);
+                // Blocks this thread until the tray's restart or voice item sends. Quitting needs no wake-up here:
+                // app.exit ends the process, and with it this thread.
                 while retry.try_recv().is_ok() {}
                 if retry.recv().is_err() || supervisor.quitting() {
                     return;

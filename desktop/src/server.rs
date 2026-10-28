@@ -121,6 +121,35 @@ impl Job {
         Ok(job)
     }
 
+    /// End every process in the job now and wait until none is left, up to `limit`. True when all are gone.
+    /// Unlike closing the handle, this also tells the caller when the processes (and their ports) are really gone.
+    pub fn end_all(&self, limit: Duration) -> bool {
+        unsafe { TerminateJobObject(self.0, 1) };
+        let until = std::time::Instant::now() + limit;
+        loop {
+            match self.active_processes() {
+                Some(0) => return true,
+                None => return false,
+                Some(_) if std::time::Instant::now() >= until => return false,
+                Some(_) => std::thread::sleep(Duration::from_millis(50)),
+            }
+        }
+    }
+
+    fn active_processes(&self) -> Option<u32> {
+        let mut info = JOBOBJECT_BASIC_ACCOUNTING_INFORMATION::default();
+        let ok = unsafe {
+            QueryInformationJobObject(
+                self.0,
+                JobObjectBasicAccountingInformation,
+                &mut info as *mut _ as *mut core::ffi::c_void,
+                std::mem::size_of::<JOBOBJECT_BASIC_ACCOUNTING_INFORMATION>() as u32,
+                std::ptr::null_mut(),
+            )
+        };
+        (ok != 0).then_some(info.ActiveProcesses)
+    }
+
     #[cfg(test)]
     pub fn contains(&self, process: &Process) -> bool {
         let mut inside = 0;
@@ -167,6 +196,9 @@ pub struct Spawned {
 }
 
 /// An anonymous pipe: (read, write). Both ends start inheritable; the caller clears the parent's end.
+/// Until CreateProcessW returns, the child ends are inheritable handles in this process. That is safe only while
+/// spawn_in_job is the only code here that creates processes with bInheritHandles=TRUE (it lists exactly its own
+/// three handles, so a concurrent call cannot take the other's ends); a new spawner must also use a handle list.
 fn pipe() -> io::Result<(OwnedHandle, OwnedHandle)> {
     let attributes = SECURITY_ATTRIBUTES {
         nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
@@ -282,6 +314,14 @@ impl Server {
     pub fn stop(&mut self) {
         self.child.kill();
         let _ = self.child.wait(Duration::from_secs(5));
+    }
+
+    /// End the server and everything it started (the speech worker too), waiting up to `limit` until they are
+    /// gone, so a new server can take the port. True when nothing is left.
+    pub fn end_all(&self, limit: Duration) -> bool {
+        let until = std::time::Instant::now() + limit;
+        // The job's count can reach zero a moment before the server's own handle is signalled; wait for both.
+        self._job.end_all(limit) && self.child.wait(until.saturating_duration_since(std::time::Instant::now())).is_some()
     }
 }
 
@@ -439,6 +479,18 @@ mod tests {
         assert_eq!(spawned.process.wait(Duration::from_secs(5)), Some(0));
         let other = Job::kill_on_close().unwrap();
         assert!(!other.contains(&spawned.process));
+    }
+
+    #[test]
+    fn ending_the_job_waits_until_the_child_and_its_children_are_gone() {
+        let job = Job::kill_on_close().unwrap();
+        let spawned = spawn_in_job(&job, &cmd(), &["/c", "ping", "-n", "30", "127.0.0.1"], &std::env::temp_dir()).unwrap();
+        std::thread::sleep(Duration::from_millis(300)); // let cmd start ping
+        assert!(job.active_processes().unwrap() >= 2, "cmd and ping are in the job");
+        assert!(job.end_all(Duration::from_secs(10)));
+        assert_eq!(job.active_processes(), Some(0));
+        assert!(spawned.process.wait(Duration::from_secs(5)).is_some());
+        assert!(job.end_all(Duration::ZERO), "an empty job is done at once");
     }
 
     #[test]
