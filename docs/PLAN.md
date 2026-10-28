@@ -121,6 +121,28 @@
 
 검토 근거(2026-10-26 공식 문서): [Langfuse OTLP](https://langfuse.com/integrations/native/opentelemetry), [셀프호스팅 구성](https://langfuse.com/self-hosting), [LiteLLM 비용 집계](https://docs.litellm.ai/docs/proxy/cost_tracking), [예산과 DB 조건](https://docs.litellm.ai/docs/proxy/users), [Helicone Gateway](https://docs.helicone.ai/getting-started/quick-start), [Braintrust 계측](https://www.braintrust.dev/docs/instrument), [Maxim tracing](https://www.getmaxim.ai/docs/tracing/overview), [로그 기반 AI Token Monitor](https://github.com/soulduse/ai-token-monitor), [Windows 한도 모니터](https://github.com/rotcst/AiTokenMonitor). 제품 기능은 문서 검토이며 이 프로젝트에서 설치·통합·성능 검증한 결과가 아니다.
 
+### 음성 비서 시연에서 채택한 두뇌 위임 계획 (J2/J3/J4, 2026-10-28)
+
+참고: [GPT-6 Astra JARVIS 시연](https://youtu.be/s3WkutktHsw). 영어 자동 자막을 바탕으로 한다. 영상은 음성 요청을 로컬 Claude Code/Codex CLI에 넘기고, CLI가 도구 목록(이름·설명·입력·실행 코드)에서 필요한 도구를 스스로 골라 여러 출처(일정·메일·노트·Drive)를 묶어 답하는 구성이다. 영상은 우리 구현의 안전성/성능 근거가 아니다. 아래는 계획이며 구현 완료나 작업 배정이 아니다.
+
+현재 기준(2026-10-28, main `1fa020b`):
+- 로컬 음성 입출력, 가드레일을 거친 도구 모음(자비스 MCP), CLI 실행 경로(Dispatcher의 `claude -p --strict-mcp-config`)는 이미 있다.
+- 채팅 협업의 Claude 제안 작업자는 도구 없이 실행한다(`--tools ''`, 빈 MCP 설정, `--max-turns 1`). 로컬 모델은 한 턴에 도구를 최대 2회만 쓰므로 여러 출처를 엮는 요청을 처리하지 못한다.
+- Google 권한은 `gmail.metadata`·`calendar.events.readonly`다. Gmail `messages.list`의 `q` 검색은 metadata 범위에서 쓸 수 없어(공식 API 문서) 특정 상대와 주고받은 메일을 찾을 수 없다. Drive 연동은 없다.
+- 사용 기록(건수만 집계): 채팅 28턴, 대부분 시험. 도구는 웹 검색 4, 시스템 상태 2, 협업 7, Google 0(채팅에서 호출 불가). 다중 출처 요청의 실수요는 아직 측정되지 않았다.
+
+| 작업 ID / 연결 | 범위 | 완료 기준 |
+|---|---|---|
+| CLI-BRAIN-A0 / J2 측정 | 채팅 요청 하나를 `claude -p`에 넘기는 실험 경로. 도구는 결과가 개인 정보가 아닌 것만 준다(시스템 상태, 공개 웹 검색·페이지 읽기). 기존 `worker_adapters`의 strict MCP 설정·턴/시간 상한·구조화 출력·redaction을 재사용한다. 요청 문장은 기존 협업 경로처럼 CLI에 전달되지만 노트·로컬 문서·메일·일정 결과는 넘기지 않는다. 기본 경로로 바꾸지 않는다 | 고정 요청 5~10개를 로컬 모델과 같은 조건으로 실행해 품질(근거·정답), 지연(첫 응답·전체), 구독 사용량을 비교한다. 실패·시간초과를 포함한 전체 표본을 공개하고 미계측을 0으로 계산하지 않는다. 효과가 없으면 여기서 멈춘다 |
+| CLI-BRAIN-A1 / J3 경계 | A0에서 효과가 확인된 뒤 노트·로컬 문서·메일·일정 결과를 클라우드 모델에 넘길지 사용자가 범위별로 결정한다. 결정 전에는 현재 규칙(노트의 외부 모델 전송 거절)을 유지한다 | 사용자 결정 기록. 허용 범위 밖 도구가 CLI의 MCP 설정에 들어가지 않음을 시험으로 확인 |
+| 회의 준비 브리핑 / J3 | 일정·메일·노트를 묶은 브리핑. A1 허용과 `gmail.readonly`(Google 제한 범위) 승인이 필요하다 | 지금 착수하지 않음 |
+| 메일 초안 작성 / J4 | 쓰기 권한(`gmail.compose`)과 J4 T4 대상 한정 승인 계약 이후 | 지금 착수하지 않음 |
+| 요청별 도구 호출 기록 | J1-TRACE/J4-CASE에 합친다. 음성·채팅 전용 화면을 따로 만들지 않는다 | 해당 작업의 완료 기준 |
+| 도구 추가 안내 | 자비스 MCP 도구 추가 절차(이름·설명·입력 스키마·구현·가드레일·시험) 문서 | 작은 문서 작업으로 언제든 가능 |
+
+- 채택하지 않음: 호출어 상시 듣기(사용자가 Space 누르고 말하기를 선택했고 마이크 상시 개방을 피한다), ElevenLabs 같은 외부 음성 서비스(로컬 STT/TTS가 있다).
+- 순서: 사용자의 A0 허용 → A0 한 과업 claim → 측정 결과 보고 → 사용자의 A1 범위 결정. 이 계획 추가는 배정·설치·외부 전송·유료 호출의 승인이 아니다.
+
 ### J3~J5 확장 경계
 
 - 지식: 원본 불변·출처 URL/ID/수집시각/해시, 초안과 승인 분리. 생성자 자기 승인 거부, 원본 변경/철회가 파생 문서에 반영. frontmatter 호환 및 Vault 쓰기/외부 모델 전송 범위를 확정한 후 구현. 자동 스킬 채택·삭제·비활성화 금지.
