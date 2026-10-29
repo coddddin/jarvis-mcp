@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "as_of": "2026-10-29",
+  "note": "Expected values were checked on 2026-10-29. Values that change over time (rates, fares, versions) must be re-checked when a task starts failing for every driver.",
+  "tasks": [
+    {"id": "t01", "prompt": "2026년 대한민국 최저임금 시간급은 얼마인가요? 공식 출처로 확인해 주세요.",
+     "answer_all": ["10,?320"], "source_hosts": ["minimumwage.go.kr", "moel.go.kr", "korea.kr"]},
+    {"id": "t02", "prompt": "현재 대한민국 한국은행 기준금리는 몇 %이고, 마지막으로 결정된 날짜는 언제인가요?",
+     "answer_all": ["3\\.00?\\s*%|3\\s*%"], "source_hosts": ["bok.or.kr"]},
+    {"id": "t03", "prompt": "서울 지하철 성인 기본운임(교통카드 기준)은 현재 얼마인가요?",
+     "answer_all": ["1,?550"], "source_hosts": ["seoul.go.kr", "seoulmetro.co.kr"]},
+    {"id": "t04", "prompt": "2026년 노벨 문학상 수상자는 누구이고, 어떤 이유로 수상했나요?",
+     "answer_all": ["Carson|카슨|커슨"], "source_hosts": ["nobelprize.org"]},
+    {"id": "t05", "prompt": "한국어 위키백과의 \"세종\" 문서(조선 4대 국왕)에서 \"훈민정음\" 문서 링크를 따라간 뒤, 다시 그 문서에서 \"훈민정음 해례본\" 관련 링크를 따라가서 해례본의 국보 지정 정보(지정 번호 또는 지정 연도)를 알려 주세요. 거친 페이지 URL을 순서대로 적어 주세요.",
+     "answer_all": ["70\\s*호|제\\s*70|1962"], "source_hosts": ["ko.wikipedia.org"], "min_visited_pages": 2},
+    {"id": "t06", "prompt": "KTX 서울역-부산역 일반실 어른 기본 운임은 현재 얼마인가요?",
+     "answer_all": ["59,?800"], "source_hosts": ["korail.com", "letskorail.com", "wikipedia.org", "namu.wiki"]},
+    {"id": "t07", "prompt": "파이썬(Python)의 최신 안정 버전 번호와 그 출시일을 공식 사이트에서 확인해 주세요.",
+     "answer_all": ["3\\.15\\.2"], "source_hosts": ["python.org"]},
+    {"id": "t08", "prompt": "기상청 기준 내일 제주시 날씨 예보(최저/최고기온, 하늘 상태)를 알려 주세요.",
+     "answer_all": ["최저", "최고", "-?\\d{1,2}\\s*(°|도|℃)"], "source_hosts": ["weather.go.kr", "kma.go.kr"]},
+    {"id": "t09", "prompt": "What is the current Node.js Active LTS release line, its latest version number, and its end-of-life date? Use nodejs.org.",
+     "answer_all": ["v?26\\.\\d+\\.\\d+", "2029"], "source_hosts": ["nodejs.org"]},
+    {"id": "t10", "prompt": "한국 정부나 공공데이터 사이트(예: data.go.kr)에서 로그인 없이 받을 수 있는 작은(5MB 이하) 공개 CSV 또는 PDF 파일 하나를 찾아 내려받아 주세요. 로그인이 필요하면 다른 파일을 고르세요. 받은 파일 이름, 원래 URL, 어떤 데이터인지 알려 주세요.",
+     "answer_all": [], "source_hosts": ["go.kr", "or.kr"], "download": {"extensions": [".csv", ".pdf"], "max_bytes": 5242880}}
+  ]
+}
