@@ -1,6 +1,7 @@
 """Registered public sources, extractive briefs and exclusive local report saves."""
 from jarvis.core.paths import CONFIG_ROOT, WORKERS_ROOT
 import base64
+import ipaddress
 from datetime import datetime, timezone
 from html.parser import HTMLParser
 import json
@@ -20,6 +21,15 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from jarvis.core.redaction import redact
 from jarvis.core.guardrails import GuardrailError
 from jarvis.workers.web_https import MAX_BYTES, FetchError, validate_url
+
+# Browsing limits for one chat request. Defaults the user may change; chat.py enforces the per-request ones.
+FOLLOW_DEPTH = 2              # link hops away from a search result or a URL the user typed
+PAGES_PER_REQUEST = 5         # pages opened in one request
+PAGE_BYTES = MAX_BYTES        # 512 KB per fetch (the HTTPS worker enforces it)
+REQUEST_BYTES = 2 * 1024 * 1024   # page bytes read in one request
+PAGE_SECONDS = 12             # per fetch, HTTPS worker included
+LINKS_PER_PAGE = 20           # followable links returned with a page (the local model has an 8192-token context)
+LINK_URL_CHARS = 300          # longer link URLs are left out
 
 
 class WebError(ValueError):
@@ -104,31 +114,94 @@ class CollectionReport(StrictModel):
 
 class VisibleText(HTMLParser):
     SKIP = {'script', 'style', 'nav', 'footer', 'noscript', 'template', 'svg', 'form'}
+    NO_LINKS = {'script', 'style', 'noscript', 'template', 'svg'}   # nav and footer links are still followable
+    CHROME = {'nav', 'header', 'footer', 'aside'}
+    # Link rank: 0 inside <main>/<article>/role=main, 1 elsewhere, 2 in page chrome (menus, sidebars, footers).
 
     def __init__(self):
         super().__init__(convert_charrefs=True)
         self.hidden = []
         self.in_title = False
         self.parts, self.title = [], []
+        self.regions = []                       # (tag, rank) of open main/chrome elements
+        self.anchors, self.anchor = [], None    # [href, text parts, rank] per <a href>
 
     def handle_starttag(self, tag, attrs):
         if tag in self.SKIP:
             self.hidden.append(tag)
         if tag == 'title':
             self.in_title = True
+        values = dict(attrs)
+        if tag in ('main', 'article') or values.get('role') == 'main':
+            self.regions.append((tag, 0))
+        elif tag in self.CHROME or values.get('role') in ('navigation', 'banner', 'contentinfo', 'complementary'):
+            self.regions.append((tag, 2))
+        if tag == 'a' and not any(name in self.NO_LINKS for name in self.hidden):
+            href = values.get('href')
+            rank = 2 if any(r == 2 for _, r in self.regions) else 0 if self.regions else 1
+            self.anchor = [href, [], rank] if href else None
+            if self.anchor:
+                self.anchors.append(self.anchor)
 
     def handle_endtag(self, tag):
         if tag in self.hidden:
             self.hidden = self.hidden[:self.hidden.index(tag)]
         if tag == 'title':
             self.in_title = False
+        if tag == 'a':
+            self.anchor = None
+        for index in range(len(self.regions) - 1, -1, -1):
+            if self.regions[index][0] == tag:
+                del self.regions[index:]
+                break
 
     def handle_data(self, data):
+        if self.anchor is not None:
+            self.anchor[1].append(data)
         if not self.hidden:
             if self.in_title:
                 self.title.append(data)
             else:
                 self.parts.append(data)
+
+
+def public_host(host):
+    """False for names and IP literals that cannot be public Internet hosts. DNS is still checked at fetch time."""
+    if host == 'localhost' or host.endswith(('.localhost', '.local', '.internal', '.lan', '.home.arpa')):
+        return False
+    try:
+        return ipaddress.ip_address(host).is_global
+    except ValueError:
+        return '.' in host
+
+
+# Files the page reader cannot open (it reads HTML and plain text only); downloads are a later phase.
+NOT_PAGES = re.compile(r'\.(?:zip|7z|rar|tar|gz|tgz|bz2|xz|whl|exe|msi|dmg|iso|img|apk|pdf|epub|docx?|xlsx?|pptx?'
+                       r'|png|jpe?g|gif|webp|svg|ico|mp3|mp4|m4a|wav|webm|avi|mov)$', re.I)
+
+
+def page_links(anchors, page_url):
+    """Followable links of a page: absolute public-looking HTTPS URLs that pass the worker's URL check, with link text,
+    no fragment, no file downloads, deduplicated, without the page itself. Main-content links come first, menu and
+    footer links last. DNS is still checked when a link is fetched."""
+    links, seen = [], {page_url}
+    for href, parts, rank in sorted(anchors, key=lambda anchor: anchor[2]):
+        text = normalize(parts, 80)
+        try:
+            url = urljoin(page_url, href.strip()).split('#', 1)[0]
+            parsed = urlsplit(url)
+            host = parsed.hostname
+            if (not text or not host or not public_host(host) or len(url) > LINK_URL_CHARS or url in seen
+                    or NOT_PAGES.search(parsed.path)):
+                continue
+            validate_url(url, [host])
+        except (FetchError, ValueError):
+            continue
+        seen.add(url)
+        links.append({'url': url, 'text': text})
+        if len(links) >= LINKS_PER_PAGE:
+            break
+    return links
 
 
 def normalize(parts, limit):
@@ -152,7 +225,7 @@ def child_text(element, names):
 class WebCollector:
     CONFIG = CONFIG_ROOT / 'web_sources.json'
     WORKER = WORKERS_ROOT / 'web_https.py'
-    WORKER_TIMEOUT = 12
+    WORKER_TIMEOUT = PAGE_SECONDS
 
     def __init__(self, snapshots):
         self.snapshots = snapshots
@@ -225,6 +298,7 @@ class WebCollector:
             raise WebError('No visible page text was returned.')
         return {'status': 'ok', 'url': source.url, 'title': normalize(parser.title, 300) or host,
                 'excerpt': excerpt[:3000], 'truncated': len(excerpt) > 3000,
+                'bytes': len(text.encode('utf-8')), 'links': page_links(parser.anchors, source.url),
                 'retrieved_at': datetime.now(timezone.utc).isoformat(), 'untrusted_content': True,
                 'scope': 'Visible page excerpt only; no script execution, whole-document review or independent fact checking.'}
 
