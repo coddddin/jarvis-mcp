@@ -447,3 +447,12 @@ def test_open_with_an_unoffered_number_opens_the_best_result(guard, tmp_path):
     result = make(guard, tmp_path, decide, {agent.bing_url('제주 날씨'): BING},
                   Collector({'https://www.weather.go.kr/w/index.do': text})).run('제주 날씨')
     assert [t['tool'] for t in result['traces']] == ['search', 'open'] and result['calls'] == 2
+
+def test_a_click_label_never_looks_like_a_path(tmp_path):
+    b = browser({}, tmp_path)
+    b.current = 'https://example.org/a'
+    b.session.pages['https://example.org/a'] = PAGE
+    b.session.current = 'https://example.org/a'
+    b.press('e8', r'C:\Windows\..\x file:///etc \\server\share')
+    label = [args for tool, args in b.session.calls if tool == 'browser_click'][0]['element']
+    assert '\\' not in label and 'file:' not in label.lower()
