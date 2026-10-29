@@ -9,6 +9,7 @@ import uvicorn
 from jarvis.agents.activity import ActivityStore
 from jarvis.agents.session_status import SessionStatusStore
 from jarvis.agents.store import TaskStore
+from jarvis.agents.claude_brain import ClaudeCliProvider
 from jarvis.agents.process_registry import ProcessRegistry
 from jarvis.features.board.service import BoardStore
 from jarvis.app.events import create_event_app, load_event_token
@@ -63,7 +64,7 @@ def main():
     code = secrets.token_urlsafe(32) if args.open or args.shell else None
     sessions = SessionStatusStore(store.guard)
     activity = ActivityStore(store.guard)
-    chat = ChatService(store.guard, model=args.model)
+    chat = ChatService(store.guard, model=args.model, brains=[ClaudeCliProvider(store.guard)])
     chat.team.activity_store = activity
     processes = ProcessRegistry(store.guard)
     processes.register_current(kind='hud', label='JARVIS HUD', max_runtime_seconds=604800)
