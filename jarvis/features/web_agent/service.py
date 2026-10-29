@@ -231,8 +231,9 @@ def relevant_excerpt(text, request, limit=600):
 
 
 def simpler_query(query):
-    """The query without search operators (site:, quotes, OR, minus words), or '' when nothing changes."""
-    plain = ' '.join(re.sub(r'\bsite:\S+|"|\bOR\b|(?<!\S)-\S+', ' ', query).split())
+    """The query without search operators (quotes, OR, minus words; site:X becomes the word X), or ''."""
+    plain = re.sub(r'\bsite:(\S+)', r'\1', query)                       # keep the site as a plain word
+    plain = ' '.join(re.sub(r'"|\bOR\b|(?<!\S)-\S+', ' ', plain).split())
     words = plain.split()
     plain = ' '.join(words[:8])
     return plain if plain and plain != query and len(plain) >= 2 else ''
@@ -508,6 +509,10 @@ class WebAgent:
             tool = decision.get('tool') if isinstance(decision, dict) else None
             if invalid >= MAX_INVALID + 2:
                 return self._finish(state, '', 'failed', '모델이 고를 수 없는 행동만 계속 골랐습니다.')
+            if tool == 'open' and tools.get('open') and decision.get('number') not in tools['open']:
+                pick = self._best_result(state, tools['open']) or tools['open'][0]      # number 0 or not offered
+                messages.append({'role': 'user', 'content': f'번호 {decision.get("number")}는 열 수 없어 자비스가 [{pick}]을 열었다.'})
+                decision = {**decision, 'number': pick}
             if tool not in tools or (tools[tool] is not None and decision.get('number') not in tools[tool]):
                 invalid += 1
                 messages.append({'role': 'user', 'content': f'잘못된 선택: {tool}. 고를 수 있는 도구: {", ".join(tools)}'})

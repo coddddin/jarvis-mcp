@@ -182,7 +182,7 @@ def test_short_https_text_falls_back_to_the_browser(guard, tmp_path):
 
 
 def test_an_unoffered_number_or_tool_is_refused_and_the_answer_forced(guard, tmp_path):
-    decide = scripted({'tool': 'open', 'number': 99}, {'tool': 'delete'}, {'tool': 'open', 'number': 7},
+    decide = scripted({'tool': 'press', 'number': 99}, {'tool': 'delete'}, {'tool': 'download', 'number': 7},
                       {'tool': 'answer', 'answer': '모름'})
     result = make(guard, tmp_path, decide).run('아무거나')
     assert result['status'] == 'completed' and result['calls'] == 0
@@ -434,8 +434,16 @@ def test_without_model_notes_jarvis_keeps_the_sentences_matching_the_request():
 
 def test_an_empty_operator_search_is_retried_in_plain_words(guard, tmp_path):
     plain = agent.simpler_query('site:data.go.kr "csv" 공공데이터 OR 파일')
-    assert plain == 'csv 공공데이터 파일'
+    assert plain == 'data.go.kr csv 공공데이터 파일'
     decide = scripted({'tool': 'search', 'query': 'site:www.weather.go.kr 제주 날씨'}, {'tool': 'answer', 'answer': 'x'})
-    result = make(guard, tmp_path, decide, {agent.bing_url('제주 날씨'): BING}).run('제주 날씨')
-    assert result['searches'] == ['site:www.weather.go.kr 제주 날씨', '제주 날씨']
+    result = make(guard, tmp_path, decide, {agent.bing_url('www.weather.go.kr 제주 날씨'): BING}).run('제주 날씨')
+    assert result['searches'] == ['site:www.weather.go.kr 제주 날씨', 'www.weather.go.kr 제주 날씨']
     assert '[1] 기상청 날씨누리' in decide.seen[1][0][-2]['content']
+
+def test_open_with_an_unoffered_number_opens_the_best_result(guard, tmp_path):
+    text = '제주 오늘 최고기온 21도. ' * 40
+    decide = scripted({'tool': 'search', 'query': '제주 날씨'}, {'tool': 'open', 'number': 0},
+                      {'tool': 'answer', 'answer': '21도'})
+    result = make(guard, tmp_path, decide, {agent.bing_url('제주 날씨'): BING},
+                  Collector({'https://www.weather.go.kr/w/index.do': text})).run('제주 날씨')
+    assert [t['tool'] for t in result['traces']] == ['search', 'open'] and result['calls'] == 2
