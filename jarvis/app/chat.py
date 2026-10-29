@@ -6,6 +6,7 @@ import threading
 import time
 from datetime import datetime, timezone
 from typing import Literal
+from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -25,6 +26,7 @@ from jarvis.features.knowledge.service import KnowledgeError
 from jarvis.features.mcp_client.service import McpSettings, families as mcp_families
 from jarvis.features.obsidian.service import ObsidianStore
 from jarvis.features.web.service import FOLLOW_DEPTH, PAGES_PER_REQUEST, REQUEST_BYTES
+from jarvis.features.web_agent import service as web_agent
 
 
 # JARVIS voice and manner, shared by every chat system prompt. Facts and safety rules come after it.
@@ -125,6 +127,8 @@ class ChatService:
         self.team.worker_view = lambda conversation, request: open_worker_view(self.guard, conversation, request)
         self.dispatcher = FreeDispatcher(self.store, candidates=provider_candidates, executors=provider_executors)
         self.notes = ObsidianStore(guard)
+        self._web_stop = threading.Event()                   # the chat stop button for a running web task
+        self._web_running = False
 
     def metadata(self):
         choice = self.brain.current()
@@ -550,6 +554,125 @@ class ChatService:
                    for item, note in zip(hits, notes)]
         return decision.reply, [trace], sources
 
+    # Requests that ask JARVIS to look something up on the web or fetch a file run the web task agent (M4a).
+    WEB_TASK = re.compile(r'찾아\s*(?:줘|주|봐|서)|찾고|알아\s*보고|검색해\s*(?:서|줘|주|봐)|알아\s*봐|조사해|다운\s*받|내려\s*받|다운로드'
+                          r'|(?<![a-z])(?:look\s+up|search\s+(?:the\s+)?web|find\s+(?:out|me)|download)(?![a-z])', re.I)
+    WEB_TASK_SECONDS = 660            # the agent's 10 minutes plus the answer and the browser shutdown
+    WEB_TASKS_PER_DAY = 100           # web tasks per local day; each task also has its own 30-call cap
+    # Wording about places on this PC: such requests stay with the local tools unless they also name the web.
+    LOCAL_PLACE = re.compile(r'다운로드\s*(?:폴더|목록)|다운로드한\s*파일|(?:다운|내려)\s*받은|폴더|바탕\s*화면|문서\s*폴더|'
+                             r'내\s*(?:PC|컴퓨터|파일|드라이브)|드라이브|로컬|파일\s*탐색기|projects/|[A-Za-z]:[\\/]|\\\\|'
+                             r'(?<![a-z])(?:desktop|downloads\s+folder|my\s+(?:pc|computer|files?))(?![a-z])', re.I)
+    NAMES_WEB = re.compile(r'웹|인터넷|사이트|온라인|https?://|(?<![a-z])(?:web|internet|online|site)(?![a-z])', re.I)
+    WEB_TRACE = {'search': 'search_public_web', 'open': 'read_public_web_page', 'press': 'read_public_web_page',
+                 'download': 'web_download'}   # web_download is not on the external allowlist: files stay local
+
+    def _wants_web_task(self, message, plan):
+        if local_only_source(message) or (plan is not None and plan.evidence == 'local'):
+            return False
+        if self.STATUS_REQUEST.search(message) and not re.search(r'웹|인터넷|\bweb\b', message, re.I):
+            return False
+        if self.LOCAL_PLACE.search(message) and not self.NAMES_WEB.search(message):
+            return False
+        return bool(self.WEB_TASK.search(message) or (plan is not None and plan.web_action != 'none'))
+
+    WEB_COUNT = '.jarvis-chat/web_tasks.json'
+
+    def _take_web_task(self):
+        """Count one web task for today (local date); False when today's cap is reached. Runs under self.lock."""
+        path = self.guard.validate_path(self.WEB_COUNT, must_exist=False)
+        today = datetime.now().date().isoformat()
+        try:
+            data = json.loads(path.read_text(encoding='utf-8')) if path.is_file() and not path.is_symlink() else {}
+        except (OSError, ValueError):
+            data = {}
+        count = data.get('count', 0) if data.get('date') == today and isinstance(data.get('count'), int) else 0
+        if count >= self.WEB_TASKS_PER_DAY:
+            return False
+        path.parent.mkdir(exist_ok=True)
+        temporary = path.with_name(path.name + '.tmp')
+        temporary.write_text(json.dumps({'date': today, 'count': count + 1}), encoding='utf-8')
+        temporary.replace(path)
+        return True
+
+    def stop_web(self):
+        """The chat stop button: the running web task ends before its next step."""
+        running = self._web_running
+        if running:
+            self._web_stop.set()
+        return {'stopping': running}
+
+    @staticmethod
+    def _progress_line(event):
+        tool = event.get('tool')
+        if event.get('phase') == 'start':
+            host = urlsplit(event.get('url') or '').hostname or ''
+            if tool == 'search':
+                return '검색 중: ' + event.get('query', '')[:80]
+            if tool == 'open':
+                return '페이지 여는 중: ' + (host or event.get('text', '')[:60])
+            if tool == 'press':
+                return '버튼 누르는 중: ' + event.get('text', '')[:60]
+            return '받는 중: ' + (event.get('text', '')[:60] or host)
+        trace = event.get('trace') or {}
+        if trace.get('status') == 'failed':
+            return '실패: ' + str(trace.get('reason', ''))[:80]
+        if tool == 'download' and trace.get('files'):
+            return '받은 파일: ' + ', '.join(f"{item['name']} ({web_agent.FILE_STATUS.get(item['status'], item['status'])})"
+                                         for item in trace['files'])[:160]
+        return None
+
+    def _web_task(self, identity, request_id, message, choice, plan):
+        """One web task with the selected brain; progress lines go to the turn's draft. Returns the stored
+        conversation, or None when the browser is not set up and the request is not a download: the existing
+        search path answers it then."""
+        if (web_agent.configured_server(McpSettings(self.guard).load()) is None
+                and not web_agent.DOWNLOAD_REQUEST.search(message)):
+            return None
+        self.store.extend(identity, request_id, self.WEB_TASK_SECONDS)
+        self._turn_choice, local_reason = self._choose(choice, message, plan)
+        if not self._take_web_task():
+            self.store.finish(identity, request_id, model=self._turn_choice.record(local_reason),
+                              reply=f'오늘 웹 작업 한도({self.WEB_TASKS_PER_DAY}회)에 닿았습니다. 내일 다시 요청해 주십시오.')
+            return self.store.get(identity)
+        self.store.reserve(identity)                         # one conversation budget unit per web task
+        answered_by = self._turn_choice.record(local_reason)
+        lines = []
+
+        def progress(event):
+            line = self._progress_line(event)
+            if line:
+                lines.append(redact(line))
+                self.store.draft(identity, request_id, '\n'.join(lines[-12:]))
+
+        def decide(messages, schema, deadline):            # counted by the task's own 30-call cap
+            return self._answer(messages, schema, deadline)
+
+        self._web_stop.clear()
+        self._web_running = True
+        try:
+            result = web_agent.run_task(self.guard, message, decide, on_progress=progress,
+                                        should_stop=self._web_stop.is_set)
+        except web_agent.WebSetupRequired as exc:
+            self.store.finish(identity, request_id, reply=str(exc), model=answered_by)
+            return self.store.get(identity)
+        finally:
+            self._web_running = False
+            self._web_stop.clear()
+        traces = []
+        for index, trace in enumerate(result['traces'], 1):
+            name = self.WEB_TRACE.get(trace.get('tool'), 'web_download')
+            detail = trace.get('query') or trace.get('url') or trace.get('from') or ''
+            if trace.get('status') == 'failed':
+                detail = (detail + ' - ' + trace.get('reason', '')).strip(' -')
+            traces.append({'name': name, 'status': 'ok' if trace.get('status') == 'ok' else 'error',
+                           'detail': redact(str(detail))[:300], 'evidence_id': f'w{index}',
+                           'retrieved_at': datetime.now(timezone.utc).isoformat(), 'untrusted_content': True,
+                           **({'url': trace['url']} if trace.get('url') else {})})
+        status = 'completed' if result['status'] == 'completed' else 'failed'
+        self.store.finish(identity, request_id, reply=result['answer'], status=status, tools=traces, model=answered_by)
+        return self.store.get(identity)
+
     def send(self, identity, request_id, message, mode='chat'):
         if not self.lock.acquire(blocking=False):
             raise ChatBusy('자비스가 답변 중입니다. 잠시 후 다시 보내 주십시오.')
@@ -636,6 +759,10 @@ class ChatService:
                 answer, traces = self.team.run(identity, request_id, message, external=mode == 'team')
                 self.store.finish(identity, request_id, reply=answer, tools=traces)
                 return self.store.get(identity)
+            if mode == 'chat' and self._wants_web_task(message, plan):
+                done = self._web_task(identity, request_id, message, choice, plan)
+                if done is not None:
+                    return done
             clean, tainted = self._note_tainted(self._current_notes(self.store.get(identity)['turns']))
             # Note content and outside tools never meet in one turn: a web-like request drops note-derived turns from
             # the context; any other turn keeps them and loses the outside tools instead.

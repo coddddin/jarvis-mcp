@@ -168,6 +168,17 @@ class ChatStore:
             if changed != 1:
                 raise ChatError('Automatic request already resolved or expired; replay is forbidden.')
 
+    def extend(self, identity, request_id, seconds):
+        """A pending chat turn that became a web task keeps running up to created+seconds (at most 660)."""
+        self.identifier(identity)
+        self.identifier(request_id)
+        with self.connection() as db:
+            changed = db.execute('UPDATE turns SET deadline=MAX(deadline,created+?) WHERE conversation=? AND id=? '
+                                 'AND status="pending" AND deadline>?',
+                                 (min(int(seconds), 660), identity, request_id, time.time())).rowcount
+            if changed != 1:
+                raise ChatError('Request already finished or expired.')
+
     def update_dispatch(self, identity, request_id, previous, state):
         self.identifier(identity)
         self.identifier(request_id)

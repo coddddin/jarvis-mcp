@@ -182,7 +182,7 @@ def test_short_https_text_falls_back_to_the_browser(guard, tmp_path):
 
 
 def test_an_unoffered_number_or_tool_is_refused_and_the_answer_forced(guard, tmp_path):
-    decide = scripted({'tool': 'open', 'number': 99}, {'tool': 'delete'}, {'tool': 'open', 'number': 7},
+    decide = scripted({'tool': 'press', 'number': 99}, {'tool': 'delete'}, {'tool': 'download', 'number': 7},
                       {'tool': 'answer', 'answer': '모름'})
     result = make(guard, tmp_path, decide).run('아무거나')
     assert result['status'] == 'completed' and result['calls'] == 0
@@ -191,7 +191,7 @@ def test_an_unoffered_number_or_tool_is_refused_and_the_answer_forced(guard, tmp
 
 def test_a_model_that_never_answers_ends_as_failed(guard, tmp_path):
     result = make(guard, tmp_path, scripted({'tool': 'answer', 'answer': ''})).run('질문')
-    assert result['status'] == 'failed' and 'no answer' in result['reason']
+    assert result['status'] == 'failed' and '답을 쓰지 않았' in result['reason']
 
 
 def test_an_opened_item_is_not_offered_again(guard, tmp_path):
@@ -371,3 +371,88 @@ def test_jarvis_picks_public_bodies_before_blogs(guard, tmp_path):
     blog = state.add('result', 'b', url='https://blog.naver.com/x')
     city = state.add('result', 'c', url='https://www.seoul.go.kr/fare')
     assert WebAgent._best_result(state, [blog, city]) == city
+
+def test_an_earlier_page_is_kept_as_the_models_notes(guard, tmp_path):
+    other = snapshot('https://example.org/', 'Home', '- main:\n  - paragraph: ' + '홈 본문 ' * 300)
+    decide = scripted({'tool': 'open', 'number': 1}, {'tool': 'open', 'number': 4, 'notes': '값은 42'},
+                      {'tool': 'answer', 'answer': '42'})
+    make(guard, tmp_path, decide, {'https://example.org/a': PAGE, 'https://example.org/': other}).run(
+        'https://example.org/a 값은?')
+    final = [m['content'] for m in decide.seen[2][0] if m['content'].startswith('UNTRUSTED')]
+    assert '메모: 값은 42' in final[0] and 'The value is 42.' not in final[0]
+    assert '홈 본문' in final[1]                                   # the newest page is still whole
+
+
+def test_at_most_ten_pages_and_two_link_hops(guard, tmp_path):
+    state = agent.TaskState('q')
+    for number in range(1, 11):
+        state.pages[100 + number] = {'url': f'https://example.org/{number}', 'title': '', 'status': 'ok'}
+    state.add('result', 'r', url='https://example.org/next')
+    tools, _ = WebAgent(guard, Collector(), browser({}, tmp_path), None, downloads_dir=tmp_path)._options(state, False)
+    assert 'open' not in tools
+    state = agent.TaskState('q')
+    deep = state.add('link', 'l', url='https://example.org/deep', depth=3)
+    near = state.add('link', 'l', url='https://example.org/near', depth=2)
+    tools, _ = WebAgent(guard, Collector(), browser({}, tmp_path), None, downloads_dir=tmp_path)._options(state, False)
+    assert tools['open'] == [near] and deep not in tools['open']
+
+
+def test_a_page_at_the_depth_limit_offers_no_links(guard, tmp_path):
+    decide = scripted({'tool': 'answer', 'answer': 'x'})
+    agent_ = make(guard, tmp_path, decide, {'https://example.org/a': PAGE})
+    state = agent.TaskState('q')
+    content, _ = agent_._page_result(state, parse_snapshot(PAGE), 'browser', depth=agent.MAX_DEPTH)
+    assert '링크:' not in content
+
+
+def test_the_stop_callback_ends_the_task(guard, tmp_path):
+    result = make(guard, tmp_path, scripted({'tool': 'search', 'query': 'q'}), should_stop=lambda: True).run('q')
+    assert result['status'] == 'stopped' and result['calls'] == 0
+
+
+def test_run_task_without_an_approved_playwright_server_asks_for_setup(guard):
+    with pytest.raises(agent.WebSetupRequired, match='setup_web_agent'):
+        agent.run_task(guard, 'q', None)
+
+
+def test_run_task_reports_a_missing_node(guard, tmp_path):
+    from jarvis.features.mcp_client.service import McpSettings
+    settings = McpSettings(guard)
+    node = tmp_path / 'node.exe'
+    settings.add_server('pw', 'PW', str(node), [r'C:\x\@playwright\mcp\cli.js', '--headless', '--isolated',
+                                                '--no-webmcp', '--output-dir', str(tmp_path / 'q')])
+    config = settings.load()
+    settings.save(config.model_copy(update={'servers': (config.servers[0].model_copy(update={'state': 'approved'}),)}))
+    with pytest.raises(agent.WebSetupRequired, match='Node.js'):
+        agent.run_task(guard, 'q', None)
+
+def test_without_model_notes_jarvis_keeps_the_sentences_matching_the_request():
+    text = '사이트 안내입니다. 메뉴 보기. 2026년 최저임금은 시간급 10,320원입니다. 문의는 고객센터로.'
+    excerpt = agent.relevant_excerpt(text, '2026년 최저임금 시간급은?')
+    assert '10,320원' in excerpt and '메뉴' not in excerpt
+
+
+def test_an_empty_operator_search_is_retried_in_plain_words(guard, tmp_path):
+    plain = agent.simpler_query('site:data.go.kr "csv" 공공데이터 OR 파일')
+    assert plain == 'data.go.kr csv 공공데이터 파일'
+    decide = scripted({'tool': 'search', 'query': 'site:www.weather.go.kr 제주 날씨'}, {'tool': 'answer', 'answer': 'x'})
+    result = make(guard, tmp_path, decide, {agent.bing_url('www.weather.go.kr 제주 날씨'): BING}).run('제주 날씨')
+    assert result['searches'] == ['site:www.weather.go.kr 제주 날씨', 'www.weather.go.kr 제주 날씨']
+    assert '[1] 기상청 날씨누리' in decide.seen[1][0][-2]['content']
+
+def test_open_with_an_unoffered_number_opens_the_best_result(guard, tmp_path):
+    text = '제주 오늘 최고기온 21도. ' * 40
+    decide = scripted({'tool': 'search', 'query': '제주 날씨'}, {'tool': 'open', 'number': 0},
+                      {'tool': 'answer', 'answer': '21도'})
+    result = make(guard, tmp_path, decide, {agent.bing_url('제주 날씨'): BING},
+                  Collector({'https://www.weather.go.kr/w/index.do': text})).run('제주 날씨')
+    assert [t['tool'] for t in result['traces']] == ['search', 'open'] and result['calls'] == 2
+
+def test_a_click_label_never_looks_like_a_path(tmp_path):
+    b = browser({}, tmp_path)
+    b.current = 'https://example.org/a'
+    b.session.pages['https://example.org/a'] = PAGE
+    b.session.current = 'https://example.org/a'
+    b.press('e8', r'C:\Windows\..\x file:///etc \\server\share')
+    label = [args for tool, args in b.session.calls if tool == 'browser_click'][0]['element']
+    assert '\\' not in label and 'file:' not in label.lower()
