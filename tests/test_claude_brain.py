@@ -164,7 +164,7 @@ def provider(tmp_path, *, discover=lambda: 'C:/claude.exe', status=None, spawn=N
 def test_check_reports_a_subscription_login_as_available(tmp_path):
     item, calls = provider(tmp_path)
     info = item.check('sonnet')
-    assert info.available and info.reason is None and info.external and info.label == 'Claude Sonnet (구독)'
+    assert info.available and info.reason is None and info.external and info.label == 'Claude (구독) · sonnet'
     assert info.capabilities.json_schema and info.capabilities.streaming
     assert calls == [['C:/claude.exe', 'auth', 'status', '--json']]
     assert [model.model_id for model in item.models()] == list(cb.MODELS) and len(calls) == 1   # cached

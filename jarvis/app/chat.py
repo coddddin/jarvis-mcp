@@ -644,7 +644,9 @@ class ChatService:
                 # A routing hint cannot re-enable an unregistered or request-filtered tool.
                 schema['properties']['tool']['enum'] = [name for name in schema['properties']['tool']['enum']
                     if name == 'none' or name in tools] or ['none']
-                decision = self._worker(messages, schema, deadline, drafts.add)
+                # A round that must call a tool cannot be the answer, so its text is never shown as a draft.
+                forced = 'none' not in schema['properties']['tool']['enum']
+                decision = self._worker(messages, schema, deadline, None if forced else drafts.add)
                 if decision.tool != 'none':
                     drafts.clear()  # a tool step's text is not the answer; for the final step, finish() clears it
                 if decision.tool not in schema['properties']['tool']['enum']:
