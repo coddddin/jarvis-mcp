@@ -107,6 +107,6 @@ agents/에 memory.py(범위/확인/만료), events.py(영속 이벤트 계약과
 
 2026-10-20 검색 확장: web/service.py의 SearchRequest와 search() 및 tools/search_public_web_tool.py를 추가했다. 기존 WebCollector._fetch와 web_https.py의 공개 IP/검증 IP 고정/리디렉션 거부를 재사용하며 고정 Bing RSS만 조회한다. 결과 URL은 자동 접속하지 않는 데이터다. app/chat.py는 예산을 예약한 로컬 검색어 변환과 서버 발췌 응답을 담당한다. 기존29개에1개 추가, 총30개이며 기존27개 계약은 유지한다.
 
-검색 페이지 확인 확장: web/tools/read_public_web_page_tool.py는 WebCollector.read_page로 위임한다. MCP는 명시적 공개 HTTPS URL을, 채팅은 현재 요청의 성공 검색 결과 URL만 허용한다. 기존 pinned HTTPS worker와 공통 도구 예산을 재사용하며 정적 텍스트3000자만 반환한다. 총31도구/기존27계약보존.
+검색 페이지 확인 확장: web/tools/read_public_web_page_tool.py는 WebCollector.read_page로 위임한다. MCP는 명시적 공개 HTTPS URL을, 채팅은 현재 요청의 출처 집합(성공 검색 결과, 메시지에 적은 https 주소, 이번 요청에서 읽은 페이지의 링크; 깊이·페이지·바이트 한도는 web/service.py 상단)만 허용한다. 기존 pinned HTTPS worker와 공통 도구 예산을 재사용하며 정적 텍스트3000자만 반환한다. 총31도구/기존27계약보존.
 
 데스크톱 앱 확장 (2026-10-28): 루트 `desktop/`은 Python 패키지가 아닌 Tauri v2 Rust 크레이트다. jarvis/를 import하지 않고 `python -m jarvis.cli.hud --shell`을 작업 개체 자식 프로세스로 실행해 stdout의 READY 줄만 읽는다. cli/hud.py의 `--shell`은 브라우저 대신 그 줄을 출력하는 것만 다르다. 앱 IPC는 앱 명령 3개로 제한한다(서버 페이지 권한은 실행 시 정확한 포트로 추가). 구조 검사 대상(루트 Python·jarvis/·tests/)에는 변화가 없다. 사용은 [데스크톱 앱 안내](guides/desktop-app.md)를 따른다.
