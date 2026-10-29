@@ -287,6 +287,20 @@ def test_authenticated_roundtrip_assets_and_empty_task_hud(web):
     assert client.get('/.jarvis-chat/conversations.sqlite3', headers=headers).status_code == 404
 
 
+def test_warm_endpoint_starts_a_warm_up_behind_the_same_gate(web, monkeypatch):
+    service, client, headers = web
+    calls = []
+    monkeypatch.setattr(service, 'warm_up', lambda: calls.append(1))
+    assert client.post('/api/chat/warm', headers={'Origin': headers['Origin']}, json={}).status_code == 401
+    assert client.post('/api/chat/warm', headers={'Authorization': headers['Authorization']}, json={}).status_code == 403
+    assert client.post('/api/chat/warm', headers={**headers, 'Origin': 'https://evil.example'}, json={}).status_code == 403
+    assert client.post('/api/chat/warm', headers=headers, json={'model': 'remote'}).status_code == 400
+    assert client.get('/api/chat/warm', headers=headers).status_code == 405
+    assert calls == []
+    response = client.post('/api/chat/warm', headers=headers, json={})
+    assert response.status_code == 202 and response.json() == {'warming': True} and calls == [1]
+
+
 def test_declared_live_answer_requires_successful_current_evidence(service):
     decision = ChatDecision(reply='retrieved fact', tool='none', argument='', basis='live', evidence_ids=['e1'])
     assert service._verified_reply('news please', decision, []) != decision.reply

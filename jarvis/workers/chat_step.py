@@ -22,7 +22,7 @@ spec.loader.exec_module(support)
 
 # Same options for chat and warm-up: a different num_ctx would make Ollama reload the model.
 OPTIONS = {'temperature': 0.2, 'num_predict': 1024, 'num_ctx': 8192}
-KEEP_ALIVE = '30m'
+KEEP_ALIVE = '5m'                                       # ADR 0001: free the GPU after 5 idle minutes
 REPLY_START = re.compile(r'\s*\{\s*"reply"\s*:\s*"')
 ESCAPES = {'"': '"', '\\': '\\', '/': '/', 'b': '\b', 'f': '\f', 'n': '\n', 'r': '\r', 't': '\t'}
 

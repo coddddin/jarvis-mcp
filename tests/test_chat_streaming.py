@@ -345,6 +345,68 @@ def test_service_warm_up_swallows_failures_and_never_leaves_the_worker_running(s
         assert process.done
 
 
+def test_worker_keeps_the_chat_model_loaded_for_five_minutes(step):
+    assert step.KEEP_ALIVE == '5m'                          # ADR 0001: unload after 5 idle minutes
+
+
+def test_service_warm_up_runs_once_while_one_is_in_flight(service, monkeypatch):
+    import threading
+    release, spawned = threading.Event(), []
+
+    class Slow(WarmProcess):
+        def communicate(self, data=None, timeout=None):
+            release.wait(5)
+            return super().communicate(data, timeout)
+
+    monkeypatch.setattr(service, '_spawn_worker', lambda: spawned.append(1) or Slow())
+    first = service.warm_up()
+    assert service.warm_up() is first                       # a second mic open reuses the running warm-up
+    release.set()
+    first.join(5)
+    service.warm_up().join(5)                               # after it ends a new one may start
+    assert spawned == [1, 1]
+
+
+def test_service_warm_up_after_a_failed_one_tries_again(service, monkeypatch):
+    spawned = []
+
+    def spawn():
+        spawned.append(1)
+        raise OSError('no python')
+
+    monkeypatch.setattr(service, '_spawn_worker', spawn)
+    first = service.warm_up()
+    first.join(5)
+    second = service.warm_up()                              # the next mic open retries
+    second.join(5)
+    assert second is not first and spawned == [1, 1]
+
+
+def test_hud_prefetches_the_chat_model_when_the_mic_opens():
+    from jarvis.cli.hud import prefetch_on_listen
+
+    class Voice:
+        def subscribe(self, listener):
+            self.listener = listener
+            return lambda: None
+
+    class Chat:
+        calls = 0
+
+        def warm_up(self):
+            Chat.calls += 1
+            raise RuntimeError('never reaches the voice service')
+
+    voice = Voice()
+    prefetch_on_listen(voice, Chat())
+    for event in [{'type': 'state', 'state': 'ready'}, {'type': 'transcript', 'text': 'listening'},
+                  {'type': 'state', 'state': 'transcribing'}]:
+        voice.listener(event)
+    assert Chat.calls == 0
+    voice.listener({'type': 'state', 'state': 'listening'})   # errors are swallowed by the listener
+    assert Chat.calls == 1
+
+
 def test_service_warm_up_respects_the_stop_marker(service, tmp_path, monkeypatch):
     (tmp_path / '.jarvis-stop').write_text('stop')
     spawned = []

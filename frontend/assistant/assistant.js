@@ -68,6 +68,16 @@
     return data;
   }
 
+  // ADR 0001: the chat model leaves the GPU after 5 idle minutes. Typing, or Space without the voice service, asks
+  // the server to load it now. With the voice service its listen op does the same, so one key press wakes both.
+  let warmedAt = -Infinity;
+  function warmChat() {
+    const now = Date.now();
+    if (!token || now - warmedAt < 60000) return;
+    warmedAt = now;
+    api('/api/chat/warm', {}).catch(() => {});
+  }
+
   function disconnect() {
     voice?.close(); voice = null; voiceReady = false; voiceListening = false;
     hint.textContent = HINTS.off;
@@ -84,6 +94,7 @@
     if (!presenceState.dispatch('listen')) return;
     caption.textContent = CAPTIONS.listening;
     if (voiceOn()) {voiceListening = true; voice.listen(); return;}  // the service stops speaking first
+    warmChat();
     let stream = null, context = null;
     try {
       stream = await navigator.mediaDevices.getUserMedia({audio: true});
@@ -303,6 +314,7 @@
   }
 
   $('composer').addEventListener('submit', event => {event.preventDefault(); ask(input.value);});
+  input.addEventListener('input', warmChat);
   mic.addEventListener('click', () => (presenceState.state === 'listening' ? finishListening() : startListening()));
   $('suggestions').addEventListener('click', event => {
     const prompt = event.target.closest('button')?.dataset.prompt;

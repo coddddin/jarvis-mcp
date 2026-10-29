@@ -110,6 +110,7 @@ class ChatService:
         self.tools = {function.__name__: function for function in collect_tools(ToolContext.create(guard))
                       if function.__name__ in TOOLS}
         self.lock = threading.Lock()
+        self._warm_lock, self._warm_thread = threading.Lock(), None
         self.team = HybridTeam(self.store, self._infer)
         self.team.worker_view = lambda conversation, request: open_worker_view(self.guard, conversation, request)
         self.dispatcher = FreeDispatcher(self.store, candidates=provider_candidates, executors=provider_executors)
@@ -129,7 +130,8 @@ class ChatService:
 
     def warm_up(self):
         """Ask the worker to load the local model in the background so the first reply starts sooner. Best effort:
-        returns at once, generates nothing, and ignores every failure (the first chat then just loads it)."""
+        returns at once, generates nothing, and ignores every failure (the first chat then just loads it).
+        While one warm-up is still running, a new call returns that same thread instead of starting another."""
         def run():
             process = None
             try:
@@ -142,8 +144,12 @@ class ChatService:
                 if process is not None and process.poll() is None:
                     process.kill()
                     process.communicate()
-        thread = threading.Thread(target=run, daemon=True, name='chat-warm-up')
-        thread.start()
+        with self._warm_lock:
+            if self._warm_thread is not None and self._warm_thread.is_alive():
+                return self._warm_thread
+            thread = threading.Thread(target=run, daemon=True, name='chat-warm-up')
+            self._warm_thread = thread
+            thread.start()
         return thread
 
     def _infer(self, messages, schema, deadline, on_delta=None):
