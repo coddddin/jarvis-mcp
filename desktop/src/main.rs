@@ -35,6 +35,8 @@ const HOTKEY: (Modifiers, Code, &str) = (Modifiers::CONTROL.union(Modifiers::ALT
 /// The presence states of frontend/assistant/presence.js.
 const STATES: [&str; 7] = ["offline", "connecting", "idle", "listening", "thinking", "speaking", "error"];
 const MINI_SIZE: f64 = 128.0;
+/// How long a voice switch waits for the old server and its speech worker to be gone before starting the new one.
+const SWITCH_WAIT: Duration = Duration::from_secs(30);
 
 /// The running server, and whether the user is quitting (then nothing restarts it).
 struct Supervisor {
@@ -71,7 +73,9 @@ impl Supervisor {
 
     fn quit(&self) {
         self.quitting.store(true, Ordering::SeqCst);
-        if let Some(mut running) = self.server.lock().unwrap().take() {
+        // Taken out first, so the lock is free while the server stops.
+        let running = self.server.lock().unwrap().take();
+        if let Some(mut running) = running {
             running.stop();
         }
     }
@@ -162,30 +166,38 @@ fn supervise(app: AppHandle, root: PathBuf, python: PathBuf, port: u16, started:
                 if let Some(window) = app.get_webview_window("main") {
                     let _ = window.navigate(url);
                 }
-                let mut switched = false;
+                let mut switched = None;
                 loop {
                     std::thread::sleep(Duration::from_millis(500));
                     let mut guard = supervisor.server.lock().unwrap();
-                    match guard.as_mut() {
+                    match guard.as_ref() {
                         None => return, // taken by quit
                         Some(running) if running.exited().is_some() => break,
-                        Some(running) if supervisor.voice() != voice => {
-                            running.stop();
-                            switched = true;
+                        Some(_) if supervisor.voice() != voice => {
+                            switched = guard.take(); // out of the lock, so a quit meanwhile never waits on it
                             break;
                         }
                         Some(_) => {}
                     }
                 }
+                if let Some(old) = switched {
+                    // Wait until the whole old tree is gone: a server still holding the port would make the new
+                    // start fail and count as a watchdog failure.
+                    if !old.end_all(SWITCH_WAIT) {
+                        log_line(&app, &format!("voice_switch_wait_timeout_s={}", SWITCH_WAIT.as_secs()));
+                    }
+                    drop(old);
+                    if supervisor.quitting() {
+                        return;
+                    }
+                    restarts.reset();
+                    show_status(&app, Status::Restarting(0));
+                    continue;
+                }
                 // Dropping the server closes its job, which ends anything it left running (the speech worker too).
                 drop(supervisor.server.lock().unwrap().take());
                 if supervisor.quitting() {
                     return;
-                }
-                if switched {
-                    restarts.reset();
-                    show_status(&app, Status::Restarting(0));
-                    continue;
                 }
                 restarts.after_exit(up.elapsed())
             }
@@ -204,6 +216,8 @@ fn supervise(app: AppHandle, root: PathBuf, python: PathBuf, port: u16, started:
             }
             watch::Next::GiveUp => {
                 show_status(&app, Status::Stopped);
+                // Blocks this thread until the tray's restart or voice item sends. Quitting needs no wake-up here:
+                // app.exit ends the process, and with it this thread.
                 while retry.try_recv().is_ok() {}
                 if retry.recv().is_err() || supervisor.quitting() {
                     return;
@@ -400,13 +414,19 @@ fn build_tray(app: &tauri::App, retry: mpsc::Sender<()>) -> tauri::Result<()> {
 /// One line per start in %LOCALAPPDATA%/dev.jarvis.desktop/startup.log, so start time right after a cold boot can be
 /// read later (uptime_s small = just booted). It never contains the server URL or code. Kept under 64 KB.
 fn record_start(app: &AppHandle, ready: Duration, hidden: bool) {
+    log_line(app, &format!("ready_ms={} hidden={hidden}", ready.as_millis()));
+}
+
+/// One `unix=… uptime_s=… <text>` line in startup.log. Also used when a voice switch's old server did not end in
+/// time, so a start failure after it has a visible cause.
+fn log_line(app: &AppHandle, text: &str) {
     let Ok(dir) = app.path().app_local_data_dir() else { return };
     let path = dir.join("startup.log");
     let _ = std::fs::create_dir_all(&dir);
     let full = std::fs::metadata(&path).map(|m| m.len() > 64 * 1024).unwrap_or(false);
     let uptime_s = unsafe { windows_sys::Win32::System::SystemInformation::GetTickCount64() } / 1000;
     let unix = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
-    let line = format!("unix={unix} uptime_s={uptime_s} ready_ms={} hidden={hidden}\n", ready.as_millis());
+    let line = format!("unix={unix} uptime_s={uptime_s} {text}\n");
     let file = std::fs::OpenOptions::new().create(true).write(true).append(!full).truncate(full).open(path);
     if let Ok(mut file) = file {
         let _ = file.write_all(line.as_bytes());
