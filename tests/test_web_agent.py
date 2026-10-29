@@ -316,3 +316,12 @@ def test_public_body_hosts_are_marked_in_results(guard, tmp_path):
     decide = scripted({'tool': 'search', 'query': '제주 날씨'}, {'tool': 'answer', 'answer': 'x'})
     make(guard, tmp_path, decide, {agent.bing_url('제주 날씨'): BING}).run('제주 날씨')
     assert 'www.weather.go.kr (공공기관)' in decide.seen[1][0][-2]['content']
+
+def test_a_repeated_search_opens_the_best_result_instead(guard, tmp_path):
+    decide = scripted({'tool': 'search', 'query': '제주 날씨'}, {'tool': 'search', 'query': '제주  날씨'},
+                      {'tool': 'answer', 'answer': 'x'})
+    text = '제주 오늘 최고기온 21도. ' * 40
+    result = make(guard, tmp_path, decide, {agent.bing_url('제주 날씨'): BING},
+                  Collector({'https://www.weather.go.kr/w/index.do': text})).run('제주 날씨')
+    assert [t['tool'] for t in result['traces']] == ['search', 'open']          # JARVIS opened the best result
+    assert result['calls'] == 2 and 'https://www.weather.go.kr/w/index.do' in result['sources']

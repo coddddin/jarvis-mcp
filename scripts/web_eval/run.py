@@ -222,8 +222,12 @@ def jarvis_task(task, folder):
                                                    'max_chars': chars} for name, (effect, timeout, chars) in pins.items()})
     provider = OllamaProvider(guard)
 
+    decisions = []
+
     def decide(messages, schema, deadline):
-        return provider.infer(QWEN, BrainRequest(messages=messages, schema=schema, deadline=deadline))
+        value = provider.infer(QWEN, BrainRequest(messages=messages, schema=schema, deadline=deadline))
+        decisions.append({'offered': schema['properties']['tool']['enum'], 'chose': value})
+        return value
 
     with McpSession(guard, settings.load()) as session:
         if session.status.get('pw', {}).get('state') != 'ready':
@@ -237,10 +241,10 @@ def jarvis_task(task, folder):
         url = trace.get('url') or (trace.get('from') if str(trace.get('from', '')).startswith('https://') else '')
         calls.append({'name': trace['tool'], 'args': {'url': url} if url else {'query': trace.get('query', '')},
                       'status': trace.get('status'), 'source': trace.get('source'),
-                      'from': str(trace.get('from') or '')[:120]})
+                      'from': str(trace.get('from') or '')[:120], 'reason': trace.get('reason', '')})
     notes = [result['status']] + ([result['reason']] if result['reason'] else [])
     return {'answer': result['answer'], 'calls': calls, 'turns': result['calls'], 'notes': notes,
-            'searches': result['searches'], 'agent_files': result['files']}
+            'searches': result['searches'], 'agent_files': result['files'], 'decisions': decisions}
 
 
 def visited(calls):
