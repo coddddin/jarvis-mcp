@@ -425,3 +425,17 @@ def test_run_task_reports_a_missing_node(guard, tmp_path):
     settings.save(config.model_copy(update={'servers': (config.servers[0].model_copy(update={'state': 'approved'}),)}))
     with pytest.raises(agent.WebSetupRequired, match='Node.js'):
         agent.run_task(guard, 'q', None)
+
+def test_without_model_notes_jarvis_keeps_the_sentences_matching_the_request():
+    text = '사이트 안내입니다. 메뉴 보기. 2026년 최저임금은 시간급 10,320원입니다. 문의는 고객센터로.'
+    excerpt = agent.relevant_excerpt(text, '2026년 최저임금 시간급은?')
+    assert '10,320원' in excerpt and '메뉴' not in excerpt
+
+
+def test_an_empty_operator_search_is_retried_in_plain_words(guard, tmp_path):
+    plain = agent.simpler_query('site:data.go.kr "csv" 공공데이터 OR 파일')
+    assert plain == 'csv 공공데이터 파일'
+    decide = scripted({'tool': 'search', 'query': 'site:www.weather.go.kr 제주 날씨'}, {'tool': 'answer', 'answer': 'x'})
+    result = make(guard, tmp_path, decide, {agent.bing_url('제주 날씨'): BING}).run('제주 날씨')
+    assert result['searches'] == ['site:www.weather.go.kr 제주 날씨', '제주 날씨']
+    assert '[1] 기상청 날씨누리' in decide.seen[1][0][-2]['content']
