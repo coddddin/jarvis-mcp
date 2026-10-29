@@ -3,12 +3,14 @@
 Drivers:
   claude    Claude Code CLI (subscription) with --mcp-config, no built-in tools, dontAsk. Quality baseline.
   qwen-raw  Ollama qwen3.5:9b through a minimal MCP client, no JARVIS help (no trimming, planner or retries).
-A later agent PR adds a 'jarvis' driver that runs the real JARVIS agent loop and reports N/10 the same way.
+  jarvis    the real JARVIS web agent (jarvis.features.web_agent) with qwen3.5:9b through the local chat worker,
+            Playwright attached through the JARVIS MCP client with the recommended launch flags.
 
 Everything runs in SANDBOX (outside the repo). Downloads are scanned with Microsoft Defender and never opened.
   python scripts/web_eval/run.py --setup                       install the pinned servers into SANDBOX
   <SANDBOX>/fetch-venv/Scripts/python.exe scripts/web_eval/run.py --driver qwen-raw [t01 t05 ...]
   python scripts/web_eval/run.py --driver claude [task ids]
+  <repo>/.venv/Scripts/python.exe scripts/web_eval/run.py --driver jarvis [task ids]
   python scripts/web_eval/run.py --rescore <results dir>
 """
 import argparse
@@ -194,6 +196,52 @@ async def qwen_task(task, folder):
     return {'answer': answer, 'calls': calls, 'turns': len(tokens), 'notes': notes, 'max_prompt_tokens': max(tokens or [0])}
 
 
+def jarvis_task(task, folder):
+    """The JARVIS agent loop on a scratch workspace: Playwright approved through McpSettings like the HUD does."""
+    sys.path.insert(0, str(HERE.parent.parent))
+    import shutil
+    from jarvis.agents.brain import BrainRequest, OllamaProvider
+    from jarvis.core.guardrails import Guardrails
+    from jarvis.features.mcp_client.service import McpSession, McpSettings, discover
+    from jarvis.features.snapshots.service import SnapshotStore
+    from jarvis.features.web.service import WebCollector
+    from jarvis.features.web_agent import service as web_agent
+    workspace, quarantine = folder / 'ws', folder / 'quarantine'
+    workspace.mkdir(parents=True, exist_ok=True)
+    guard = Guardrails(workspace)
+    settings = McpSettings(guard)
+    args = [*playwright_args(quarantine), '--user-agent', web_agent.BROWSER_USER_AGENT,
+            '--blocked-origins', web_agent.BLOCKED_ORIGINS]
+    settings.add_server('pw', 'Playwright', shutil.which('node'), args)
+    found = discover(guard, settings.load(), 'pw')
+    if found['status'].get('state') != 'ready':
+        return {'answer': '', 'calls': [], 'turns': None, 'notes': ['playwright: ' + json.dumps(found['status'])]}
+    pins = {'browser_navigate': ('auto', 60, 8000), 'browser_snapshot': ('read', 30, 50000),
+            'browser_click': ('auto', 30, 8000)}
+    settings.approve('pw', found['tools'], {name: {'family': 'public_web', 'effect': effect, 'timeout_s': timeout,
+                                                   'max_chars': chars} for name, (effect, timeout, chars) in pins.items()})
+    provider = OllamaProvider(guard)
+
+    def decide(messages, schema, deadline):
+        return provider.infer(QWEN, BrainRequest(messages=messages, schema=schema, deadline=deadline))
+
+    with McpSession(guard, settings.load()) as session:
+        if session.status.get('pw', {}).get('state') != 'ready':
+            return {'answer': '', 'calls': [], 'turns': None, 'notes': ['session: ' + json.dumps(session.status)]}
+        browser = web_agent.Browser(session, 'pw', quarantine)
+        agent = web_agent.WebAgent(guard, WebCollector(SnapshotStore(guard)), browser, decide,
+                                   downloads_dir=folder / 'downloads', scan=web_agent.defender_scan)
+        result = agent.run(task['prompt'])
+    calls = []
+    for trace in result['traces']:
+        url = trace.get('url') or (trace.get('from') if str(trace.get('from', '')).startswith('https://') else '')
+        calls.append({'name': trace['tool'], 'args': {'url': url} if url else {'query': trace.get('query', '')},
+                      'status': trace.get('status'), 'source': trace.get('source')})
+    notes = [result['status']] + ([result['reason']] if result['reason'] else [])
+    return {'answer': result['answer'], 'calls': calls, 'turns': result['calls'], 'notes': notes,
+            'searches': result['searches'], 'agent_files': result['files']}
+
+
 def visited(calls):
     return [call['args']['url'] for call in calls if isinstance(call.get('args'), dict) and call['args'].get('url')]
 
@@ -201,7 +249,7 @@ def visited(calls):
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--setup', action='store_true')
-    parser.add_argument('--driver', choices=['claude', 'qwen-raw'])
+    parser.add_argument('--driver', choices=['claude', 'qwen-raw', 'jarvis'])
     parser.add_argument('--rescore', type=Path)
     parser.add_argument('--repeat', type=int, default=1, help='run the task set N times; the summary reports the median')
     parser.add_argument('tasks', nargs='*')
@@ -233,7 +281,8 @@ def run_set(args, tasks, spec, folder):
             (work / 'downloads').mkdir(parents=True, exist_ok=True)
             started = time.monotonic()
             try:
-                record = run_claude(task, work) if args.driver == 'claude' else asyncio.run(qwen_task(task, work))
+                record = (run_claude(task, work) if args.driver == 'claude' else jarvis_task(task, work)
+                          if args.driver == 'jarvis' else asyncio.run(qwen_task(task, work)))
             except Exception as exc:  # one broken task must not stop the benchmark
                 record = {'answer': '', 'calls': [], 'turns': None, 'notes': ['harness error: ' + repr(exc)]}
             record.update(task=task['id'], driver=args.driver, wall_s=round(time.monotonic() - started, 1),

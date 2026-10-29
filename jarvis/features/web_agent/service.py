@@ -40,7 +40,7 @@ OLD_PAGE_CHARS = 300            # earlier pages shrink to this
 LINKS = 20                      # numbered links per page
 BUTTONS = 8                     # numbered buttons per browser page
 MIN_TEXT = 400                  # shorter HTTPS text means the page needs the browser
-MESSAGE_BYTES = 45000           # prompt budget (the local brain refuses inputs over 64 KB)
+MESSAGE_CHARS = 12000           # prompt budget: the local brain runs with an 8192-token context
 DOWNLOAD_BYTES = 20 * 1024 * 1024
 DOWNLOAD_SECONDS = 60
 SETTLE_SECONDS = 2              # wait after a navigation or click before the snapshot
@@ -370,8 +370,8 @@ class WebAgent:
 
     @staticmethod
     def _budget(messages):
-        """Keep the prompt under MESSAGE_BYTES: the oldest tool results go first, the request and system stay."""
-        while len(json.dumps(messages, ensure_ascii=False).encode()) > MESSAGE_BYTES and len(messages) > 4:
+        """Keep the prompt under MESSAGE_CHARS: the oldest tool results go first, the request and system stay."""
+        while sum(len(item['content']) for item in messages) > MESSAGE_CHARS and len(messages) > 4:
             for index in range(2, len(messages) - 2):
                 if messages[index]['role'] == 'user' and not messages[index]['content'].endswith('(생략)'):
                     messages[index] = {'role': 'user', 'content': messages[index]['content'][:120] + ' … (생략)'}
@@ -505,7 +505,8 @@ class WebAgent:
             if len(shown) >= LINKS:
                 break
         buttons = [f'[{state.add("button", b["text"], ref=b["ref"], page=number)}] {b["text"][:60]}'
-                   for b in sorted(page['buttons'], key=lambda b: b['rank'])[:BUTTONS]] if source == 'browser' else []
+                   for b in sorted((b for b in page['buttons'] if not BLOCKED_PRESS.search(b['text'])),
+                                  key=lambda b: b['rank'])[:BUTTONS]] if source == 'browser' else []
         text = page['text'][:PAGE_CHARS]
         return (f'페이지 [{number}] {page["title"]}\n주소: {page["url"]}\n본문: {text}'
                 + ('…(잘림)' if len(page['text']) > PAGE_CHARS else '')
