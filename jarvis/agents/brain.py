@@ -144,6 +144,15 @@ def external_allowed(tool_name):
     return family_of(tool_name) in EXTERNAL_FAMILIES
 
 
+def trace_external_allowed(trace):
+    """True when a recorded tool result may reach an external model. Both the tool's family now and the family the
+    result was produced under (McpSession.trace records it) must be external, so re-pinning a tool from local to
+    public_web never releases results that were produced as local."""
+    if not isinstance(trace, dict) or not external_allowed(trace.get('name')):
+        return False
+    return 'family' not in trace or trace['family'] in EXTERNAL_FAMILIES
+
+
 def consent_payload(info):
     return {'provider': info.label, 'sends': [label for _, label in EXTERNAL_SENDS], 'never_sends': list(NEVER_SENT)}
 

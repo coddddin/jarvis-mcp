@@ -52,6 +52,78 @@ FORBIDDEN_ENV_PREFIXES = ('PLAYWRIGHT_MCP_',)
 
 def is_playwright(command, args):
     return any('playwright' in str(part).lower() for part in (command, *args))
+
+
+# --- file paths in tool arguments (board 204bc125) -------------------------------------------------------------
+# A pinned tool declares which top-level arguments are file paths (path_args). At call time each such value must be
+# a path inside JarvisWorkspace that the guard accepts (no UNC/device, ADS, '..', links or junctions) AND inside one
+# of the server's user-approved roots or its own sandbox; the checked absolute path replaces the value. Any other
+# string argument that looks like a Windows path (drive or UNC, \\?\, file: URL, ..\ segment) is refused, so an
+# undeclared path argument cannot reach the server. Ordinary text and http(s) URLs pass.
+PATH_WORDS = frozenset({'path', 'paths', 'pathname', 'file', 'files', 'filename', 'filenames', 'filepath',
+                        'filepaths', 'dir', 'dirs', 'directory', 'directories', 'folder', 'folders', 'binary',
+                        'binaries'})
+LOOKS_LIKE_PATH = re.compile(r'^\s*(?:[A-Za-z]:[\\/]|\\\\|file:|\.\./)|\.\.\\', re.IGNORECASE)
+MAX_PATH_VALUES = 16
+MAX_ROOTS = 8
+
+
+def path_like_name(name):
+    """True when a word of the argument name (snake_case or camelCase) usually means a file path: path, input_file,
+    outputDir, binary_path, fileName... 'profile' or 'url' are not."""
+    if not isinstance(name, str):
+        return False
+    words = re.findall(r'[A-Z]?[a-z]+|[A-Z]+(?![a-z])', name)
+    return any(word.lower() in PATH_WORDS for word in words) or name.lower() in PATH_WORDS
+
+
+def path_suspects(schema):
+    """(top-level names, nested names) of path-like properties in a tool's input schema."""
+    top, nested = [], []
+
+    def walk(node, depth):
+        if not isinstance(node, dict):
+            return
+        properties = node.get('properties')
+        for name, child in (properties.items() if isinstance(properties, dict) else ()):
+            if path_like_name(name):
+                (top if depth == 0 else nested).append(name)
+            walk(child, depth + 1)
+        for key in ('items', 'additionalProperties'):
+            walk(node.get(key), depth + 1)
+        for key in ('anyOf', 'oneOf', 'allOf'):
+            for child in node.get(key) or []:
+                walk(child, depth)
+        for child in node.get('prefixItems') or []:
+            walk(child, depth + 1)
+        for child in (node.get('$defs') or node.get('definitions') or {}).values():
+            walk(child, 1)
+    walk(schema or {}, 0)
+    return sorted(set(top)), sorted(set(nested) - set(top))
+
+
+def unchecked_paths(pin, schema):
+    """Path-like argument names of a tool that its pin neither declares nor marks as text, plus nested ones when the
+    pin is not deny. A pin approved before path_args existed shows up here and must be approved again."""
+    top, nested = path_suspects(schema)
+    known = {item.name for item in pin.path_args} | set(pin.not_paths) | set(pin.blocked_args)
+    return [name for name in top if name not in known] + (nested if pin.effect != 'deny' else [])
+
+
+def valid_root(root):
+    """A workspace-relative folder: no drive, UNC, '..', dot folders (.jarvis-* state and settings) or odd characters.
+    The workspace root itself is not a root."""
+    if not isinstance(root, str) or not 0 < len(root) <= 200 or root.strip() != root:
+        return False
+    parts = re.split(r'[\\/]', root)
+    return all(part and not part.startswith('.') and part.strip() == part
+               and not re.search(r'[<>:"|?*%$\x00-\x1f]', part) for part in parts)
+
+
+def looks_like_path(value):
+    return isinstance(value, str) and LOOKS_LIKE_PATH.search(value) is not None
+
+
 BASE_ENV = ('SYSTEMROOT', 'WINDIR', 'TEMP', 'TMP', 'PATH', 'PATHEXT', 'APPDATA', 'LOCALAPPDATA', 'USERPROFILE',
             'HOMEDRIVE', 'HOMEPATH', 'SYSTEMDRIVE', 'USERNAME', 'PROCESSOR_ARCHITECTURE')
 
@@ -68,6 +140,11 @@ class Strict(BaseModel):
     model_config = ConfigDict(extra='forbid', frozen=True)
 
 
+class PathArg(Strict):
+    name: str = Field(pattern=r'^[A-Za-z0-9_.-]{1,64}$')
+    mode: Literal['read', 'write'] = 'read'       # read: must exist; write: the tool may create or change it
+
+
 class ToolPin(Strict):
     name: str = Field(pattern=r'^[A-Za-z0-9_.-]{1,64}$')
     family: Literal['public_web', 'local'] = 'local'
@@ -76,11 +153,19 @@ class ToolPin(Strict):
     max_chars: int = Field(default=8000, ge=100, le=50000)
     schema_sha256: str = Field(pattern=r'^[0-9a-f]{64}$')
     description: str = Field(default='', max_length=500)       # the user-approved text a model sees
+    path_args: tuple[PathArg, ...] = Field(default=(), max_length=8)
+    not_paths: tuple[str, ...] = Field(default=(), max_length=16)  # path-like names the user said are plain text
+    blocked_args: tuple[str, ...] = Field(default=(), max_length=16)  # arguments a model may never set (e.g. filename)
 
     @model_validator(mode='after')
     def deny_unsafe(self):
         if self.name in ALWAYS_DENY and self.effect != 'deny':
             raise ValueError(f'{self.name} is always denied.')
+        names = [item.name for item in self.path_args] + list(self.not_paths) + list(self.blocked_args)
+        if len(set(names)) != len(names):
+            raise ValueError('A path argument is listed twice.')
+        if any(item.mode == 'write' for item in self.path_args) and self.effect in ('read', 'auto'):
+            raise ValueError('A tool that writes files needs confirm or deny.')
         return self
 
 
@@ -92,6 +177,7 @@ class ServerConfig(Strict):
     env_names: tuple[str, ...] = Field(default=(), max_length=16)
     state: Literal['pending', 'approved'] = 'pending'
     tools: tuple[ToolPin, ...] = Field(default=(), max_length=64)
+    roots: tuple[str, ...] = Field(default=(), max_length=MAX_ROOTS)   # workspace folders path arguments may use
 
     @model_validator(mode='after')
     def check(self):
@@ -114,6 +200,8 @@ class ServerConfig(Strict):
             raise ValueError('Server options may not be passed through the environment.')
         if len({tool.name for tool in self.tools}) != len(self.tools):
             raise ValueError('Duplicate tool pin.')
+        if not all(valid_root(root) for root in self.roots) or len(set(self.roots)) != len(self.roots):
+            raise ValueError('A root must be a folder inside the workspace (not the workspace itself or a dot folder).')
         return self
 
 
@@ -189,8 +277,14 @@ class McpSettings:
 
     def approve(self, server_id, discovered, choices):
         """Pin the chosen tools of a discovered server and mark it approved. discovered is the tool list the server
-        reported in discover(); choices maps tool name -> {family, effect, description?, timeout_s?, max_chars?}.
-        Tools not chosen stay hidden. Re-approving after a change replaces every pin of the server."""
+        reported in discover(); choices maps tool name -> {family, effect, description?, timeout_s?, max_chars?,
+        path_args?, not_paths?, blocked_args?}. Tools not chosen stay hidden. Re-approving replaces every pin.
+
+        Path arguments fail closed: a top-level property with a path-like name becomes a read path argument unless
+        the choice lists it in path_args (to set the mode), not_paths (plain text) or blocked_args (a model may not
+        set it at all, e.g. Playwright's optional filename that saves a file). A path-like name nested inside
+        an object or array cannot be checked, so such a tool can only be pinned as deny. A tool with path arguments
+        stays family local (never sent to an external model) unless the choice says public_web."""
         config = self.load()
         server = next((item for item in config.servers if item.id == server_id), None)
         if server is None:
@@ -204,15 +298,67 @@ class McpSettings:
             if name in ALWAYS_DENY:
                 choice['effect'] = 'deny'
             choice.setdefault('description', (by_name[name].get('description') or '')[:500])
-            pins.append(ToolPin(name=name, schema_sha256=schema_hash(by_name[name]), **choice))
+            schema = by_name[name].get('input_schema') or {}
+            top, nested = path_suspects(schema)
+            if nested and choice.get('effect', 'confirm') != 'deny':
+                raise McpError(f'{name}: 안쪽 인자({", ".join(nested[:3])})에 파일 경로가 들어갈 수 있어 검사할 수 '
+                               '없습니다. 이 도구는 거부로만 둘 수 있습니다.')
+            declared = [dict(item) if isinstance(item, dict) else {'name': item} for item in choice.pop('path_args', ())]
+            not_paths = tuple(choice.pop('not_paths', ()))
+            blocked = tuple(choice.pop('blocked_args', ()))
+            properties = schema.get('properties') if isinstance(schema.get('properties'), dict) else {}
+            if (any(item.get('name') not in properties for item in declared)
+                    or (set(not_paths) | set(blocked)) - set(properties)):
+                raise McpError(f'{name}: 도구에 없는 인자 이름입니다.')
+            if set(blocked) & set((schema.get('required') or [])):
+                raise McpError(f'{name}: 꼭 필요한 인자는 막을 수 없습니다.')
+            known = {item['name'] for item in declared} | set(not_paths) | set(blocked)
+            declared += [{'name': arg, 'mode': 'read'} for arg in top if arg not in known]
+            pins.append(ToolPin(name=name, schema_sha256=schema_hash(by_name[name]), path_args=tuple(declared),
+                                not_paths=not_paths, blocked_args=blocked, **choice))
         approved = server.model_copy(update={'state': 'approved', 'tools': tuple(pins)})
         ServerConfig.model_validate(approved.model_dump())
         self.save(McpConfig(servers=tuple(approved if item.id == server_id else item for item in config.servers)))
         return approved
 
+    def set_roots(self, server_id, roots):
+        """Replace the folders this server's path arguments may use. Each must be an existing folder inside the
+        workspace, reached without links; the workspace itself and dot folders (.jarvis-* state, settings) are
+        refused. Returns the resolved folders for the approval view."""
+        config = self.load()
+        server = next((item for item in config.servers if item.id == server_id), None)
+        if server is None:
+            raise McpError('Unknown server.')
+        try:
+            updated = ServerConfig.model_validate({**server.model_dump(), 'roots': tuple(roots)})
+        except ValidationError:
+            raise McpError('작업공간 안의 일반 폴더만 승인할 수 있습니다(작업공간 자체와 점(.)으로 시작하는 폴더 제외).') from None
+        resolved = root_view(self.guard, updated)
+        bad = [item for item in resolved if not item['ok']]
+        if bad:
+            raise McpError(f"폴더를 쓸 수 없습니다: {bad[0]['root']} ({bad[0]['reason']})")
+        self.save(McpConfig(servers=tuple(updated if item.id == server_id else item for item in config.servers)))
+        return resolved
+
     def remove(self, server_id):
         config = self.load()
         self.save(McpConfig(servers=tuple(item for item in config.servers if item.id != server_id)))
+
+
+def root_view(guard, server):
+    """Each root with the folder it resolves to now, for the approval view: [{root, path, ok, reason}]."""
+    result = []
+    for root in server.roots:
+        try:
+            if not valid_root(root):
+                raise GuardrailError('작업공간 안의 일반 폴더만 쓸 수 있습니다.')
+            path = guard.validate_path(root)
+            if path == guard.workspace or not path.is_dir():
+                raise GuardrailError('작업공간 안의 폴더가 아닙니다.')
+            result.append({'root': root, 'path': str(path), 'ok': True, 'reason': None})
+        except GuardrailError as exc:
+            result.append({'root': root, 'path': None, 'ok': False, 'reason': str(exc)})
+    return result
 
 
 def families(config):
@@ -345,7 +491,8 @@ class McpSession:
             changed = []
             for pin in server.tools:
                 tool = reported.get(pin.name)
-                if tool is None or schema_hash(tool) != pin.schema_sha256:
+                if (tool is None or schema_hash(tool) != pin.schema_sha256
+                        or unchecked_paths(pin, tool.get('input_schema') or {})):
                     changed.append(pin.name)
                 elif pin.effect != 'deny':
                     self.tools[qualified(server.id, pin.name)] = (server, pin, tool.get('input_schema') or {})
@@ -384,6 +531,65 @@ class McpSession:
         return [{'name': name, 'description': pin.description, 'input_schema': schema, 'family': pin.family,
                  'effect': pin.effect} for name, (_, pin, schema) in self.tools.items()]
 
+    def offered_for(self, external):
+        """offered(), without local-family tools when the answering model is external (jarvis.agents.brain)."""
+        return [tool for tool in self.offered() if not external or tool['family'] == 'public_web']
+
+    def _allowed_folders(self, server):
+        folders = [self.guard.validate_path(f'{self.SANDBOX}/{server.id}', must_exist=False)]
+        for root in server.roots:
+            if valid_root(root):
+                folder = self.guard.validate_path(root)
+                if folder != self.guard.workspace and folder.is_dir():
+                    folders.append(folder)
+        return folders
+
+    def _checked_path(self, server, value, mode):
+        if not isinstance(value, str) or value.strip().lower().startswith('file:'):
+            raise McpError('파일 경로는 작업공간 안의 경로 문자열이어야 합니다.')
+        try:
+            path = self.guard.validate_path(value.strip(), must_exist=(mode == 'read'))
+            folders = self._allowed_folders(server)
+        except GuardrailError as exc:
+            raise McpError(f'이 경로는 쓸 수 없습니다: {exc}') from None
+        if not any(path == folder or path.is_relative_to(folder) for folder in folders):
+            raise McpError('승인된 폴더 밖의 경로입니다. HUD에서 이 서버의 폴더를 승인해 주십시오.')
+        return str(path)
+
+    def checked_arguments(self, server, pin, arguments):
+        """The arguments with every declared path replaced by its checked absolute path. Raises McpError when a
+        declared path is outside the approved folders or an undeclared string looks like a path."""
+        declared = {item.name: item.mode for item in pin.path_args}
+        result = dict(arguments)
+        blocked = [name for name in pin.blocked_args if result.get(name) is not None]
+        if blocked:
+            raise McpError(f'이 도구에서는 {blocked[0]} 인자를 쓸 수 없습니다.')
+        for name, mode in declared.items():
+            if result.get(name) is None:
+                continue
+            value = result[name]
+            if isinstance(value, list):
+                if len(value) > MAX_PATH_VALUES:
+                    raise McpError('파일 경로가 너무 많습니다.')
+                result[name] = [self._checked_path(server, item, mode) for item in value]
+            else:
+                result[name] = self._checked_path(server, value, mode)
+
+        def scan(value):
+            if isinstance(value, str):
+                if looks_like_path(value):
+                    raise McpError('경로로 보이는 값은 승인된 경로 인자로만 보낼 수 있습니다.')
+            elif isinstance(value, list):
+                for item in value:
+                    scan(item)
+            elif isinstance(value, dict):
+                for item in value.values():
+                    scan(item)
+        for key, value in result.items():
+            if key not in declared and key not in pin.not_paths:     # not_paths: the user approved it as plain text
+                scan(value)
+        return result
+
     def call(self, name, arguments, *, confirmed=False):
         entry = self.tools.get(name)
         if entry is None:
@@ -393,6 +599,7 @@ class McpSession:
             raise ConfirmRequired('This action needs your confirmation first.')
         if not isinstance(arguments, dict) or len(json.dumps(arguments, ensure_ascii=False)) > 20000:
             raise McpError('Tool arguments must be a small JSON object.')
+        arguments = self.checked_arguments(server, pin, arguments)
         left = self.session_seconds - (self.clock() - self.started_at)
         if left <= 0:
             self.close()
@@ -422,4 +629,7 @@ def discover(guard, config, server_id):
     view. Nothing is saved; the HUD calls McpSettings.approve with the user's choices."""
     with McpSession(guard, config, only=server_id) as session:
         status = session.status.get(server_id, {'state': 'failed', 'reason': 'Unknown server.'})
-        return {'status': status, 'tools': session.discovered.get(server_id, [])}
+        tools = [{**tool, 'path_suspects': dict(zip(('top', 'nested'), path_suspects(tool.get('input_schema') or {})))}
+                 for tool in session.discovered.get(server_id, [])]
+        server = next((item for item in config.servers if item.id == server_id), None)
+        return {'status': status, 'tools': tools, 'roots': root_view(guard, server) if server is not None else []}

@@ -10,7 +10,8 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from jarvis.agents.brain import (LOCAL_REASON, BrainRegistry, BrainRequest, BrainSettings, OllamaProvider, Selection,
-                                 external_allowed, local_only_source, set_attached_families, spawn_chat_worker)
+                                 external_allowed, local_only_source, set_attached_families, spawn_chat_worker,
+                                 trace_external_allowed)
 from jarvis.agents.chat import ChatBusy, ChatError, ChatStore
 from jarvis.agents.runner import LocalConfig
 from jarvis.agents.team import HybridTeam
@@ -362,7 +363,7 @@ class ChatService:
         source, whose every tool result is on the external allowlist (jarvis.agents.brain.EXTERNAL_SENDS)."""
         model = turn.get('model') or {}
         return (turn.get('mode') == 'chat' and not model.get('local_reason')
-                and all(external_allowed(item.get('name')) for item in turn.get('tools') or []))
+                and all(trace_external_allowed(item) for item in turn.get('tools') or []))
 
     @classmethod
     def _history(cls, turns, request_id, external=False):
