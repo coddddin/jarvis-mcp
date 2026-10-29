@@ -14,6 +14,10 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_valida
 
 from jarvis.core.redaction import redact
 from jarvis.features.knowledge.service import KnowledgeError, KnowledgeStore
+from jarvis.features.wiki.service import WikiError, managed_note_withdrawn
+
+# Exactly the path WikiStore exports to; the folder may differ only by case on case-insensitive disks.
+_MANAGED_WIKI = re.compile(r'(?i:jarvis-vault/jarviswiki)/([0-9a-f]{32})\.md')
 
 
 class NoteMetadata(BaseModel):
@@ -119,7 +123,24 @@ class ObsidianStore(KnowledgeStore):
         checked = text.replace('\r\n', '\n')
         if '\x00' in checked or redact(checked) != checked:
             raise KnowledgeError('Vault note contains credentials or control characters.')
+        self._check_wiki_veto(relative, metadata)
         return raw
+
+    def _check_wiki_veto(self, relative, metadata):
+        """Hide a withdrawn canonical wiki note. Supplements metadata; not a global file ACL.
+
+        Only JARVIS-Vault/JarvisWiki/<id>.md with id wiki-<id> and source jarvis-wiki:<id> is checked;
+        other approved notes, including copies elsewhere, keep the metadata-only policy.
+        """
+        match = _MANAGED_WIKI.fullmatch(relative.replace('\\', '/'))
+        if match is None or metadata.id != 'wiki-' + match[1] or metadata.source != 'jarvis-wiki:' + match[1]:
+            return
+        try:
+            withdrawn = managed_note_withdrawn(self.guard, match[1])
+        except WikiError:
+            raise KnowledgeError('Managed wiki note could not be verified; it is excluded.') from None
+        if withdrawn:
+            raise KnowledgeError('Wiki note was withdrawn from search.')
 
     def index(self, directory: str = 'JARVIS-Vault') -> dict:
         result = super().index(directory)
@@ -153,9 +174,12 @@ class ObsidianStore(KnowledgeStore):
                         raise KnowledgeError('Vault changed during search.')
                     metadata = parse_frontmatter(raw.decode('utf-8-sig'))
                 except (OSError, ValueError):
+                    # A stop marker raised during the re-read is an error, never a stale document.
+                    self.guard.check_running()
                     result['stale_documents'] = sorted(set(result['stale_documents']) | {item['path']})
                     continue
                 accepted.append({**item, 'metadata': metadata.model_dump(), 'source_sha256': digest})
+            self.guard.check_running()
             return {**result, 'results': accepted, 'external_transmission': False}
 
     def prepare_context(self, query: str, max_chars: int = 6000) -> dict:

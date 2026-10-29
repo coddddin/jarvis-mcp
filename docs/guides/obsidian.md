@@ -40,6 +40,17 @@ board 작업 하나의 현재 상태와 Vault 문맥을 JSON 한 줄(ASCII 이�
 - 기존 DB가 있으면 `BoardStore`의 연결이 쓰기 잠금 트랜잭션과 스키마 확인(`CREATE ... IF NOT EXISTS`)을 내부 관리용으로 수행한다. SQLite 파일이 바이트 단위로 변하지 않는다고 보장하지 않는다.
 - `snapshot.started_at`/`finished_at`은 별도 읽기들의 시작·끝이다. 원자적 스냅샷이 아니므로 읽기 사이·이후에 상태가 바뀔 수 있다. 존재 확인과 읽기 사이의 경쟁도 같은 한계다. 중지 표식은 시작 전, 의존성 읽기 사이, 반환 직전에 확인하며 오류로 끝난다(미인덱스·누락으로 바꾸지 않음).
 
+## 위키 노트 검색 제외 (철회)
+
+위키 화면(메인 화면 지식 공간 포함)에서 승인된 위키 변경안이나 위키 소유 검색 결과의 "이 위키를 검색에서 제외" 버튼으로 시작한다. 화면은 먼저 `GET /api/wiki/sources/{source_id}/publication`으로 현재 게시 상태(candidate_id·digest·기록된 파일 해시·withdrawn)를 받고, `window.confirm`에서 확인한 경우에만 `POST /api/wiki/withdraw`에 정확히 `candidate_id`·`digest`·`expected_file_sha256`을 보낸다. 취소하면 변경 요청을 보내지 않는다. 경로는 받지 않고, 모델 호출이 없어 추론 설정이 없어도 동작한다(초안 준비만 모델이 필요). 인증·Origin·Host·Content-Type·크기 검사는 기존 위키 엔드포인트와 같고 오류는 고정 코드만 반환한다.
+
+- **범위:** 기록된 complete 게시본 하나만 철회한다. 원본·변경안·digest·게시 기록이 현재와 일치하고 Vault 파일이 기록된 해시와 정확히 같은 일반 파일(링크·하드링크 아님)일 때만 기존 `.jarvis-wiki/wiki.sqlite3`의 추가 `withdrawals` 표에 영구 거부를 기록한다. 제안 상태·대기 중 게시·다른 변경안·잘못된 digest/해시·수정되거나 없는 파일은 거부한다. 같은 요청 반복은 같은 철회 결과를 돌려준다.
+- **보존:** 원본 자료·변경안·게시 기록·Vault 파일 바이트를 지우거나 고치지 않는다. 변경안 행의 상태는 그대로 두고 조회(`get_candidate`)에서만 `withdrawn`으로 보고한다. 기존 표·CHECK 제약·트리거와 8개 필드 frontmatter는 바꾸지 않았다.
+- **검색 효과:** `ObsidianStore._read`는 `JARVIS-Vault/JarvisWiki/<32hex>.md`이면서 `id: wiki-<id>`·`source: jarvis-wiki:<id>`인 정식 위키 노트만 읽기 전용(`mode=ro`)으로 거부 기록을 확인한다. 그래서 검색·`prepare_obsidian_context`·재인덱싱이 새 인스턴스에서도 이 노트를 제외하고, 재인덱싱 전 캐시 발췌도 재검증에서 걸러진다. 위키 DB가 없거나 손상·링크됐거나 기록에 없는 정식 위키 노트는 제외되며(DB·스키마를 만들지 않음) 이 기능 이전의 스키마(`withdrawals` 표 없음)는 "아직 철회 없음"으로 읽는다. 일반 승인 노트는 기존처럼 메타데이터만으로 판단한다.
+- 철회 응답은 `indexed:false`, `index_refresh:"not_run"`이다. 인덱스를 다시 만들지 않으며, 제외는 인덱스가 아니라 검색 시 재검증에 근거한다. 성공하면 화면의 기존 검색 발췌를 지우고 승인 버튼을 비활성화한다. 실패·불명확한 응답은 성공으로 표시하지 않고 자동 재시도 없이 상태 재확인을 안내한다.
+- 게시와 철회는 같은 작업공간 게시 잠금과 위키 DB 트랜잭션으로 직렬화되며, 게시는 마지막 트랜잭션에서도 거부 기록을 다시 확인해 철회된 노트를 되살리지 않는다. 이 단계에는 **재승인 경로가 없다**.
+- **한계:** 앱 내부 검색 필터이지 파일 ACL이 아니다. Obsidian 앱·다른 도구·범용 문서 검색 등 파일을 직접 읽는 경로, 다른 위치로 복사하거나 메타데이터를 고친 사본, 이미 받은 답변·외부로 보낸 문맥, 디스크·백업 사본은 그대로 남는다. 거부 확인은 스냅샷 검사라 마지막 재검증 직후 커밋된 철회는 다음 읽기부터 반영된다. 중지 표식은 오래된 노트가 아니라 오류로 끝난다.
+
 ## 지원하는 frontmatter
 
 전체 YAML이 아닌 **평면 필드만** 지원한다. 문자열은 JSON 쌍따옴표 또는 단순 한 줄 값/작은따옴표, tags는 JSON 문자열 배열이다. 중첩 맵·블록 문자열·별칭·객체 태그·중복/미등록 필드는 거부한다. created/updated는 시간대가 있는 ISO 시각이며 updated가 created보다 빠르면 거부한다.
@@ -72,4 +83,4 @@ review_status: "approved"
 - 기존 백업 범위·설정은 바꾸지 않았다. 작업공간 내부 Vault는 기존 작업공간 백업에 포함될 가능성이 있으므로 실제 사용 전에 포함/제외 범위와 복원 정책을 확인한다. 자동으로 검증되거나 별도 백업이 보장된 것으로 간주하지 않는다.
 - 합성 Vault·실행 중 WAL SQLite를 기존 `stage_data.stage`로 staging하고 별도 임시 경로에 복원한 검사에서 Markdown 해시·SQLite 무결성·복원 후 검색을 확인했다. 기본 작업공간 내부 Vault와 인덱스가 staging에 포함됐다. 실제 restic/R2 업로드·암호화·자격증명·일정·기존 백업 복구 검증은 수행하지 않았다. 사용자 데이터로 적용 전에 포함 범위를 확인한다.
 
-모의검증은 `python -m pytest -q tests/test_obsidian.py tests/test_obsidian_context.py tests/test_resume_context.py tests/test_phase2.py tests/test_plugins.py tests/test_architecture.py`. 실제 노트·Windows 환경 검증은 별도다.
+모의검증은 `python -m pytest -q tests/test_obsidian.py tests/test_obsidian_context.py tests/test_wiki_withdrawal.py tests/test_resume_context.py tests/test_phase2.py tests/test_plugins.py tests/test_architecture.py`. 실제 노트·Windows 환경 검증은 별도다.

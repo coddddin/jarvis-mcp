@@ -1,4 +1,5 @@
-"""First LLM Wiki slice: one immutable text source -> proposed candidate -> operator-approved Vault note.
+"""First LLM Wiki slice: one immutable text source -> proposed candidate -> operator-approved Vault note,
+optionally withdrawn later by the operator as a durable search veto that keeps every record and file.
 
 No model calls, network, Vault indexing, deletes or overwrites. The caller runs the model and the
 authenticated approval step; this store only validates, records and exports bounded data.
@@ -95,6 +96,15 @@ def _canonical(value) -> bytes:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode('utf-8')
 
 
+def _check_storage_files(directory, name):
+    for suffix in ('', '-journal', '-wal', '-shm'):
+        sibling = directory / (name + suffix)
+        if os.path.lexists(sibling):
+            info = os.lstat(sibling)
+            if not stat.S_ISREG(info.st_mode) or sibling.is_junction() or info.st_nlink != 1:
+                raise WikiError('Wiki storage must be regular files without links.')
+
+
 class WikiStore:
     DIRECTORY = '.jarvis-wiki'
     DATABASE = '.jarvis-wiki/wiki.sqlite3'
@@ -124,12 +134,7 @@ class WikiStore:
         else:
             directory.mkdir()
         path = self.guard.validate_path(self.DATABASE, must_exist=False)
-        for suffix in ('', '-journal', '-wal', '-shm'):
-            sibling = directory / (path.name + suffix)
-            if os.path.lexists(sibling):
-                info = os.lstat(sibling)
-                if not stat.S_ISREG(info.st_mode) or sibling.is_junction() or info.st_nlink != 1:
-                    raise WikiError('Wiki storage must be regular files without links.')
+        _check_storage_files(directory, path.name)
         db = None
         try:
             db = sqlite3.connect(path, timeout=5, isolation_level=None)
@@ -169,6 +174,15 @@ class WikiStore:
                    "WHEN NEW.status <> 'approved' BEGIN SELECT RAISE(ABORT, 'approval cannot be undone here'); END")
         db.execute('CREATE TRIGGER IF NOT EXISTS candidates_kept BEFORE DELETE ON candidates '
                    "BEGIN SELECT RAISE(ABORT, 'wiki candidates are immutable'); END")
+        # Additive: a withdrawal is a durable search veto for one recorded complete export. Nothing
+        # above is rewritten; an older database simply has no withdrawals until this table appears.
+        db.execute('CREATE TABLE IF NOT EXISTS withdrawals (source_id TEXT PRIMARY KEY, '
+                   'candidate_id TEXT NOT NULL UNIQUE, digest TEXT NOT NULL, content_sha256 TEXT NOT NULL, '
+                   'withdrawn_at TEXT NOT NULL)')
+        db.execute('CREATE TRIGGER IF NOT EXISTS withdrawals_immutable BEFORE UPDATE ON withdrawals '
+                   "BEGIN SELECT RAISE(ABORT, 'wiki withdrawals are durable'); END")
+        db.execute('CREATE TRIGGER IF NOT EXISTS withdrawals_kept BEFORE DELETE ON withdrawals '
+                   "BEGIN SELECT RAISE(ABORT, 'wiki withdrawals are durable'); END")
 
     @staticmethod
     def _now():
@@ -251,12 +265,26 @@ class WikiStore:
                 db.execute('INSERT INTO candidates VALUES (?, ?, ?, ?, ?, ?, ?)',
                            (candidate_id, source_id, digest, summary, json.dumps(facts, ensure_ascii=False),
                             'proposed', self._now()))
-            return self._load_candidate(db, candidate_id)[1]
+            return self._effective(db, self._load_candidate(db, candidate_id)[1])
 
     def get_candidate(self, candidate_id: str) -> dict:
         candidate_id = _hex(candidate_id, _ID, 'Candidate ID')
         with self.lock, self._transaction() as db:
-            return self._load_candidate(db, candidate_id)[1]
+            return self._effective(db, self._load_candidate(db, candidate_id)[1])
+
+    def _effective(self, db, candidate):
+        """Report a withdrawal without rewriting the immutable candidate row."""
+        row = db.execute('SELECT * FROM withdrawals WHERE candidate_id=?', (candidate['id'],)).fetchone()
+        if row is None:
+            return candidate
+        if (row['source_id'] != candidate['source']['id'] or row['digest'] != candidate['digest']
+                or candidate['status'] != 'approved'):
+            raise WikiError('Stored wiki withdrawal failed its integrity check.')
+        return {**candidate, 'status': 'withdrawn'}
+
+    def _withdrawal(self, db, source_id):
+        """Return the durable veto for this source, or None. Any withdrawal blocks publishing again."""
+        return db.execute('SELECT * FROM withdrawals WHERE source_id=?', (source_id,)).fetchone()
 
     @staticmethod
     def _quote_line(text, quote):
@@ -314,6 +342,8 @@ class WikiStore:
                     raise WikiError('Candidate digest does not match the current candidate; review it again.')
                 source_id = source['id']
                 relative = f'{self.EXPORT_DIRECTORY}/{source_id}.md'
+                if self._withdrawal(db, source_id) is not None:
+                    raise WikiError('This wiki note was withdrawn; publishing it again is not supported.')
                 export = db.execute('SELECT * FROM exports WHERE source_id=?', (source_id,)).fetchone()
                 if export is not None and (export['candidate_id'] != candidate_id or export['digest'] != digest):
                     raise WikiError('A different candidate for this source is already published or pending.')
@@ -351,6 +381,8 @@ class WikiStore:
                 if (export is None or export['candidate_id'] != candidate_id or export['digest'] != digest
                         or export['content_sha256'] != content_sha):
                     raise WikiError('Publish intent changed during export; refusing to record approval.')
+                if self._withdrawal(db, source_id) is not None:
+                    raise WikiError('This wiki note was withdrawn; publishing it again is not supported.')
                 db.execute("UPDATE exports SET state='complete' WHERE source_id=?", (source_id,))
                 db.execute("UPDATE candidates SET status='approved' WHERE id=?", (candidate_id,))
             return self._result(source, candidate_id, digest, relative, content_sha)
@@ -361,6 +393,64 @@ class WikiStore:
                 'source_id': source['id'], 'note_id': 'wiki-' + source['id'],
                 'source_sha256': source['sha256'], 'digest': digest, 'file_sha256': content_sha,
                 'indexed': False}
+
+    # ---- withdrawal (explicit operator veto) ---------------------------------------------
+
+    def withdraw(self, candidate_id: str, digest: str, expected_file_sha256: str) -> dict:
+        """Durably remove one published wiki note from future app search. The caller authenticates and confirms.
+
+        Only the recorded complete export whose current file still has the exact recorded hash is accepted.
+        No source, candidate, export row or Vault file is deleted or rewritten. Repeating the same
+        withdrawal returns the same result; nothing in this slice approves the note again.
+        """
+        candidate_id = _hex(candidate_id, _ID, 'Candidate ID')
+        digest = _hex(digest, _DIGEST, 'Candidate digest')
+        expected = _hex(expected_file_sha256, _DIGEST, 'Expected file hash')
+        with self.lock, self._transaction() as db:
+            source, candidate = self._load_candidate(db, candidate_id)
+            if not hmac.compare_digest(candidate['digest'], digest):
+                raise WikiError('Candidate digest does not match the current candidate; review it again.')
+            source, published, export, withdrawal = self._recorded_export(db, source['id'])
+            if published['id'] != candidate_id:
+                raise WikiError('Only the published candidate for this source can be withdrawn.')
+            if not hmac.compare_digest(export['content_sha256'], expected):
+                raise WikiError('Expected file hash does not match the recorded wiki note.')
+            if withdrawal is None:
+                current = self._read_export(self._export_target(source['id'], create=False))
+                if current is None or _sha256(current) != export['content_sha256']:
+                    raise WikiError('Published wiki note was changed or removed; refusing to withdraw it.')
+                db.execute('INSERT INTO withdrawals VALUES (?, ?, ?, ?, ?)',
+                           (source['id'], candidate_id, digest, export['content_sha256'], self._now()))
+            return {'candidate_id': candidate_id, 'status': 'withdrawn', 'source_id': source['id'],
+                    'note_id': 'wiki-' + source['id'], 'digest': digest, 'file_sha256': export['content_sha256'],
+                    'withdrawn': True, 'indexed': False}
+
+    def publication(self, source_id: str) -> dict:
+        """Identity of the recorded complete export for one explicit source; no path, title or body."""
+        source_id = _hex(source_id, _ID, 'Source ID')
+        with self.lock, self._transaction() as db:
+            self._load_source(db, source_id)
+            source, candidate, export, withdrawal = self._recorded_export(db, source_id)
+            return {'source_id': source_id, 'note_id': 'wiki-' + source_id, 'candidate_id': candidate['id'],
+                    'digest': candidate['digest'], 'file_sha256': export['content_sha256'],
+                    'status': 'approved' if withdrawal is None else 'withdrawn', 'withdrawn': withdrawal is not None}
+
+    def _recorded_export(self, db, source_id):
+        """Re-derive the one complete owned export for a source and its veto, or refuse."""
+        export = db.execute('SELECT * FROM exports WHERE source_id=?', (source_id,)).fetchone()
+        if export is None or export['state'] != 'complete':
+            raise WikiError('No completed wiki publication is recorded for this source.')
+        source, candidate = self._load_candidate(db, export['candidate_id'])
+        if (source['id'] != source_id or candidate['status'] != 'approved' or export['digest'] != candidate['digest']
+                or export['path'] != f'{self.EXPORT_DIRECTORY}/{source_id}.md'
+                or export['content_sha256'] != _sha256(self._render(source, candidate, export['published_at']))):
+            raise WikiError('Recorded wiki publication failed its integrity check.')
+        withdrawal = self._withdrawal(db, source_id)
+        if withdrawal is not None and (withdrawal['candidate_id'] != candidate['id']
+                                       or withdrawal['digest'] != candidate['digest']
+                                       or withdrawal['content_sha256'] != export['content_sha256']):
+            raise WikiError('Stored wiki withdrawal failed its integrity check.')
+        return source, candidate, export, withdrawal
 
     def _render(self, source, candidate, published_at) -> bytes:
         source_id = source['id']
@@ -452,3 +542,59 @@ class WikiStore:
             except OSError:
                 pass
             raise
+
+
+def managed_note_withdrawn(guard: Guardrails, source_id: str) -> bool:
+    """Read-only veto lookup for one canonical managed wiki note; True means hide it from search.
+
+    Never creates the database, folder or schema. A missing, linked, corrupt or unknown record refuses
+    (WikiError) so the caller fails closed. A valid older schema without the withdrawals table means
+    nothing has been withdrawn yet. This is a lookup, not a lock: a withdrawal committed after it is
+    seen by the next read.
+    """
+    source_id = _hex(source_id, _ID, 'Source ID')
+    guard.check_running()
+    directory = guard.validate_path(WikiStore.DIRECTORY, must_exist=False)
+    if (not os.path.lexists(directory) or directory.is_symlink() or directory.is_junction()
+            or not directory.is_dir()):
+        raise WikiError('Wiki storage is unavailable for a managed wiki note.')
+    path = guard.validate_path(WikiStore.DATABASE, must_exist=False)
+    if not os.path.lexists(path):
+        raise WikiError('Wiki storage is unavailable for a managed wiki note.')
+    _check_storage_files(directory, path.name)
+    db = None
+    try:
+        db = sqlite3.connect(path.as_uri() + '?mode=ro', uri=True, timeout=5)
+        db.execute('PRAGMA query_only=ON')
+        tables = {row[0] for row in db.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name IN "
+            "('sources', 'candidates', 'exports', 'withdrawals') LIMIT 4")}
+        if not {'sources', 'candidates', 'exports'} <= tables:
+            raise WikiError('integrity')
+        export = db.execute('SELECT candidate_id, digest, path, content_sha256, state FROM exports '
+                            'WHERE source_id=? LIMIT 1', (source_id,)).fetchone()
+        if (export is None or export[4] != 'complete' or export[2] != f'{WikiStore.EXPORT_DIRECTORY}/{source_id}.md'
+                or type(export[0]) is not str or _ID.fullmatch(export[0]) is None
+                or type(export[1]) is not str or _DIGEST.fullmatch(export[1]) is None
+                or type(export[3]) is not str or _DIGEST.fullmatch(export[3]) is None):
+            raise WikiError('integrity')
+        candidate = db.execute('SELECT source_id, digest, status FROM candidates WHERE id=? LIMIT 1',
+                               (export[0],)).fetchone()
+        if candidate is None or tuple(candidate) != (source_id, export[1], 'approved'):
+            raise WikiError('integrity')
+        if db.execute('SELECT 1 FROM sources WHERE id=? LIMIT 1', (source_id,)).fetchone() is None:
+            raise WikiError('integrity')
+        if 'withdrawals' not in tables:
+            return False
+        row = db.execute('SELECT candidate_id, digest, content_sha256 FROM withdrawals WHERE source_id=? LIMIT 1',
+                         (source_id,)).fetchone()
+        if row is None:
+            return False
+        if tuple(row) != (export[0], export[1], export[3]):
+            raise WikiError('integrity')
+        return True
+    except (sqlite3.Error, WikiError):
+        raise WikiError('Managed wiki note has no verifiable publication record.') from None
+    finally:
+        if db is not None:
+            db.close()

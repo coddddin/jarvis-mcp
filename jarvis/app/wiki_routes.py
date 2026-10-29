@@ -165,17 +165,25 @@ def wiki_routes(store, *, guard, infer, valid, origins, headers):
         denied = refuse(request)
         if denied is not None:
             return denied
-        if store is None or infer is None:
+        # Only preparing a draft calls the model; reading, approving, withdrawing and searching never do.
+        if store is None:
             return response({'error': 'wiki_unavailable'}, 503)
         locked = False
         try:
             if request.method == 'GET':
+                if 'source_id' in request.path_params:
+                    source_id = request.path_params['source_id']
+                    if not re.fullmatch(r'[a-f0-9]{32}', source_id):
+                        raise ValueError('invalid_request')
+                    return response(await asyncio.to_thread(store.publication, source_id))
                 candidate_id = request.path_params['candidate_id']
                 if not re.fullmatch(r'[a-f0-9]{32}', candidate_id):
                     raise ValueError('invalid_request')
                 return response(await asyncio.to_thread(store.get_candidate, candidate_id))
             data = await body(request)
             if request.url.path == '/api/wiki/prepare':
+                if infer is None:
+                    return response({'error': 'wiki_unavailable'}, 503)
                 if not busy.acquire(blocking=False):
                     return response({'error': 'wiki_busy'}, 409)
                 locked = True
@@ -192,6 +200,16 @@ def wiki_routes(store, *, guard, infer, valid, origins, headers):
                         except Exception:
                             return {**saved, 'indexed': False, 'index_error': 'saved_index_unavailable'}
                 return response(await asyncio.to_thread(publish_and_index))
+            if request.url.path == '/api/wiki/withdraw':
+                if set(data) != {'candidate_id', 'digest', 'expected_file_sha256'}:
+                    raise ValueError('invalid_request')
+                def withdraw():
+                    # Same workspace lock as publish+index. The index is not rebuilt: search re-reads every
+                    # hit and the veto fails closed, so stale index rows are hidden, not served.
+                    with ledger.publication():
+                        saved = store.withdraw(data['candidate_id'], data['digest'], data['expected_file_sha256'])
+                        return {**saved, 'indexed': False, 'index_refresh': 'not_run'}
+                return response(await asyncio.to_thread(withdraw))
             if set(data) != {'query'} or not isinstance(data['query'], str) or not 1 <= len(data['query'].strip()) <= 300:
                 raise ValueError('invalid_request')
             return response(await asyncio.to_thread(search, data['query'].strip()))
@@ -209,5 +227,7 @@ def wiki_routes(store, *, guard, infer, valid, origins, headers):
 
     return [Route('/api/wiki/prepare', endpoint, methods=['POST']),
             Route('/api/wiki/candidates/{candidate_id}', endpoint, methods=['GET']),
+            Route('/api/wiki/sources/{source_id}/publication', endpoint, methods=['GET']),
             Route('/api/wiki/approve', endpoint, methods=['POST']),
+            Route('/api/wiki/withdraw', endpoint, methods=['POST']),
             Route('/api/wiki/search', endpoint, methods=['POST'])]
