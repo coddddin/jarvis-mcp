@@ -136,3 +136,61 @@ test('reset forgets the selection after a disconnect', async () => {
   assert.equal(h.panel.hidden, true);
   assert.equal(h.brain.state, null);
 });
+
+// --- brain P3: API providers with a key --------------------------------------------------------------------------
+const KEYED = (connected, models = []) => ({...LISTING, providers: [...LISTING.providers,
+  {provider_id: 'openai-api', label: 'GPT (API)', external: true, needs_key: true, connected, custom_model: true, models}]});
+const forms = (h, name) => all(h.panel).filter(item => item.className === name);
+
+test('a provider without a key shows a password field and the key leaves the page once', async () => {
+  let connected = false;
+  const h = harness((path, body) => {
+    if (path === '/api/brain/key') { connected = true; return [200, {provider_id: body.provider_id, connected: true}]; }
+    return [200, KEYED(connected, connected ? [{model_id: 'gpt-x', label: 'gpt-x', available: true, reason: null}] : [])];
+  });
+  await h.button.events.click(); await flush();
+  const [form] = forms(h, 'model-key');
+  const input = all(form).find(item => item.tagName === 'INPUT');
+  assert.equal(input.type, 'password');
+  assert.equal(input.autocomplete, 'off');
+  assert.match(text(h.panel), /자격 증명 관리자/);
+  input.value = '  sk-secret-value-123  ';
+  form.events.submit({preventDefault() {}}); await flush();
+  assert.equal(input.value, '');                                                // cleared before the request
+  const sent = h.requests.find(item => item.path === '/api/brain/key');
+  assert.deepEqual(sent.body, {provider_id: 'openai-api', key: 'sk-secret-value-123'});
+  assert.match(text(h.panel), /키를 연결했어요/);
+  assert.ok(h.byText('gpt-x'));
+  assert.doesNotMatch(text(h.panel), /sk-secret/);
+});
+
+test('a rejected key shows the reason and an empty field sends nothing', async () => {
+  const h = harness(path => path === '/api/brain/key' ? [400, {error: 'key_rejected', reason: 'OpenAI 키가 거부되었습니다.'}]
+    : [200, KEYED(false)]);
+  await h.button.events.click(); await flush();
+  let [form] = forms(h, 'model-key');
+  form.events.submit({preventDefault() {}}); await flush();
+  assert.equal(h.requests.filter(item => item.path === '/api/brain/key').length, 0);
+  assert.match(text(h.panel), /키를 입력해 주세요/);
+  [form] = forms(h, 'model-key');
+  all(form).find(item => item.tagName === 'INPUT').value = 'sk-wrong-key-000';
+  form.events.submit({preventDefault() {}}); await flush();
+  assert.match(text(h.panel), /처리하지 못했어요.*키가 거부되었습니다/);
+});
+
+test('a connected provider takes a typed model id and can delete its key', async () => {
+  const h = harness((path, body) => path === '/api/brain' ? [200, KEYED(true)]
+    : path === '/api/brain/key/delete' ? [200, {provider_id: body.provider_id, connected: false}]
+    : [409, {error: 'confirm_required', provider: 'GPT (API)', sends: [], never_sends: []}]);
+  await h.button.events.click(); await flush();
+  assert.equal(forms(h, 'model-key').length, 0);
+  const [form] = forms(h, 'model-custom');
+  all(form).find(item => item.tagName === 'INPUT').value = ' gpt-new-model ';
+  form.events.submit({preventDefault() {}}); await flush();
+  assert.deepEqual(h.requests.at(-1).body, {provider_id: 'openai-api', model_id: 'gpt-new-model'});
+  assert.match(text(h.panel), /처음 쓰는 외부 모델: GPT \(API\)/);
+  await h.byText('취소').events.click(); await flush();
+  await h.byText('키 삭제').events.click(); await flush();
+  assert.deepEqual(h.requests.find(item => item.path === '/api/brain/key/delete').body, {provider_id: 'openai-api'});
+  assert.match(text(h.panel), /키를 지웠어요/);
+});

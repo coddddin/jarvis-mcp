@@ -481,7 +481,8 @@ class BrainRegistry:
         selection = saved['selection']
         provider = self.providers.get(selection.provider_id) if selection is not None else None
         if (provider is None or (provider.external and selection.provider_id not in saved['external_confirmed'])
-                or (selection.connection_ref is not None and not getattr(provider, 'uses_connection_ref', False))):
+                or (selection.connection_ref is not None and not getattr(provider, 'uses_connection_ref', False))
+                or selection.connection_ref != getattr(provider, 'connection_ref', selection.connection_ref)):
             return self.default_choice()
         return self._choice(selection, provider)
 
@@ -489,14 +490,23 @@ class BrainRegistry:
         current = self.current()
         providers = []
         for provider in self.providers.values():
+            reason = None
             try:
                 models = [info.public() for info in provider.models()]
             except GuardrailError:
                 raise
+            except BrainError as exc:
+                models, reason = [], str(exc)
             except Exception:
                 models = []
-            providers.append({'provider_id': provider.provider_id, 'label': provider.label,
-                              'external': provider.external, 'models': models})
+            entry = {'provider_id': provider.provider_id, 'label': provider.label,
+                     'external': provider.external, 'models': models}
+            if callable(getattr(provider, 'set_key', None)):
+                # An API provider: the HUD shows whether a key is stored (never the key) and a free-text model id.
+                entry.update(needs_key=True, connected=bool(provider.connected()), custom_model=True)
+            if reason:
+                entry['reason'] = reason
+            providers.append(entry)
         return {'selection': {**current.selection.public(), 'label': current.label, 'external': current.external},
                 'default': {**self.default.public(), 'label': self.default_choice().label, 'external': False},
                 'scope': ['chat', 'voice'], 'providers': providers}
@@ -509,11 +519,26 @@ class BrainRegistry:
         if connection_ref is not None and not getattr(provider, 'uses_connection_ref', False):
             # Checked before anything is saved: a key pasted into this field must never reach brain.json.
             raise BrainError('unavailable', '이 제공자는 연결 이름을 쓰지 않습니다. 비밀값은 여기에 넣지 마십시오.')
+        fixed_ref = getattr(provider, 'connection_ref', None)
+        if fixed_ref is not None:
+            # API providers keep one key per company under a fixed credential name; anything else is refused.
+            if connection_ref not in (None, fixed_ref):
+                raise BrainError('unavailable', '연결 이름이 이 제공자와 맞지 않습니다. 비밀값은 여기에 넣지 마십시오.')
+            connection_ref = fixed_ref
         info = provider.check(model_id)
         if not info.available:
             raise BrainError('unavailable', info.reason or '이 모델을 쓸 수 없습니다.')
         if not info.capabilities.json_schema:
             raise BrainError('unavailable', '이 모델은 자비스 답변 형식(JSON)을 지원하지 않습니다.')
+        with self.lock:
+            saved = self.settings.load() if self.settings is not None else {'selection': None, 'external_confirmed': []}
+            if provider.external and provider_id not in saved['external_confirmed'] and not confirm_external:
+                raise ConfirmRequired(info)
+        # Only after the confirmation: a provider may run one tiny paid check that the model keeps the answer format
+        # (API providers whose model listing does not say so). A failure keeps the old selection.
+        verify = getattr(provider, 'verify', None)
+        if callable(verify):
+            verify(model_id)
         with self.lock:
             saved = self.settings.load() if self.settings is not None else {'selection': None, 'external_confirmed': []}
             confirmed = list(saved['external_confirmed'])
@@ -525,3 +550,17 @@ class BrainRegistry:
             if self.settings is not None:
                 self.settings.save(selection, confirmed)
         return self._choice(selection, provider)
+
+    def _keyed(self, provider_id):
+        provider = self.providers.get(provider_id)
+        if provider is None or not callable(getattr(provider, 'set_key', None)):
+            raise BrainError('unavailable', '키를 쓰는 제공자가 아닙니다.')
+        return provider
+
+    def set_key(self, provider_id, secret):
+        """Store an API key for one company after the company accepts it. Returns nothing about the key."""
+        self._keyed(provider_id).set_key(secret)
+
+    def delete_key(self, provider_id):
+        """Remove the stored key. A selection that used it falls back to the default model on the next request."""
+        return self._keyed(provider_id).delete_key()
