@@ -335,3 +335,20 @@ def test_mcp_tools_share_stop_and_budget(collector):
         asyncio.run(server.create_server(Guardrails(collector.guard.workspace)).call_tool('list_web_sources', {}))
     with pytest.raises(ToolError, match='stopped'):
         asyncio.run(server.create_server(Guardrails(collector.guard.workspace)).call_tool('search_public_web', {'query': 'Python documentation'}))
+
+
+def test_unrelated_search_has_typed_no_results_without_relaxing_relevance(collector):
+    with pytest.raises(web_information.WebNoResults):
+        collector.search('Python documentation')
+
+
+def test_invalid_public_query_is_typed_blocked(collector):
+    with pytest.raises(web_information.WebBlocked):
+        collector.search('password=private-example')
+
+
+def test_missing_trusted_worker_is_unavailable_not_no_results(collector, monkeypatch, tmp_path):
+    monkeypatch.setattr(collector, 'WORKER', tmp_path / 'missing-worker.py')
+    registry = collector._registry()
+    with pytest.raises(web_information.WebUnavailable):
+        WebCollector._fetch(collector, registry.sources['news'], registry)

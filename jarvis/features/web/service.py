@@ -23,7 +23,28 @@ from jarvis.workers.web_https import MAX_BYTES, FetchError, validate_url
 
 
 class WebError(ValueError):
-    pass
+    """outcome is a trusted failure category set by the raising code, never derived from message text."""
+    outcome = 'failed'
+
+
+class WebNoResults(WebError):
+    """The provider answered, but nothing matched the request."""
+    outcome = 'no_results'
+
+
+class WebBlocked(WebError):
+    """Refused by input or URL policy, or the page demanded verification; nothing usable was fetched."""
+    outcome = 'blocked'
+
+
+class WebUnavailable(WebError):
+    """The trusted HTTPS worker could not be started."""
+    outcome = 'unavailable'
+
+
+class WebTimeout(WebError):
+    """The HTTPS worker did not finish within its deadline."""
+    outcome = 'timeout'
 
 
 class StrictModel(BaseModel):
@@ -185,7 +206,7 @@ class WebCollector:
         self.guard.check_running()
         if (not request.query.strip() or redact(request.query) != request.query
                 or any(ord(char) < 32 or ord(char) == 127 for char in request.query)):
-            raise WebError('Search requires a public query without credentials or control characters.')
+            raise WebBlocked('Search requires a public query without credentials or control characters.')
         source = Source(label='Bing search excerpts', kind='feed',
             url='https://www.bing.com/search?' + urlencode({'format': 'rss', 'q': request.query}),
             link_hosts=['www.bing.com'])
@@ -197,11 +218,11 @@ class WebCollector:
             '공식', '사이트', '검색', '알려줘', '찾아줘'}
         terms = [term for term in re.findall(r'[a-z0-9가-힣]{2,}', request.query.casefold()) if term not in ignored]
         if not terms:
-            raise WebError('Use a specific public search topic.')
+            raise WebBlocked('Use a specific public search topic.')
         items = [item for item in items if terms[0] in
             (item.title + ' ' + item.summary + ' ' + item.url).casefold()]
         if not items:
-            raise WebError('Search returned no excerpts matching query terms; reformulate the query.')
+            raise WebNoResults('Search returned no excerpts matching query terms; reformulate the query.')
         return {'status': 'ok', 'backend': 'Bing RSS', 'query': request.query,
                 'retrieved_at': datetime.now(timezone.utc).isoformat(),
                 'untrusted_content': True, 'items': [item.model_dump() for item in items],
@@ -211,13 +232,19 @@ class WebCollector:
         request = PageRequest(url=url)
         self.guard.check_running()
         host = urlsplit(request.url).hostname or ''
+        try:
+            if not re.fullmatch(r'(?:[a-z0-9][a-z0-9-]*\.)+[a-z]{2,63}', host) or len(host) > 253:
+                raise FetchError('Invalid public host.')
+            validate_url(request.url, [host])
+        except FetchError:
+            raise WebBlocked('Page URL is not an allowed public HTTPS address.') from None
         source = Source(label='Public page excerpt', kind='html', url=request.url, link_hosts=[host])
         registry = Registry(version=1, allowed_hosts=[host], sources={'page': source})
         mime, text = self._fetch(source, registry)
         if mime.split(';', 1)[0].strip() not in {'text/html', 'text/plain'}:
             raise WebError('Only public HTML/plain text pages are supported.')
         if re.search(r'<title[^>]*>\s*(?:Just a moment|Access denied)|verify you are human|cf-chl-|g-recaptcha', text, re.I):
-            raise WebError('Page requires verification; no page content was confirmed.')
+            raise WebBlocked('Page requires verification; no page content was confirmed.')
         parser = VisibleText()
         parser.feed(text)
         excerpt = normalize(parser.parts, 3001)
@@ -243,21 +270,27 @@ class WebCollector:
         return source, text
 
     def _fetch(self, source, registry):
-        validate_url(source.url, registry.allowed_hosts)
+        try:
+            validate_url(source.url, registry.allowed_hosts)
+        except FetchError:
+            raise WebBlocked('Only registered HTTPS origins are allowed.') from None
         script = self.WORKER
-        if script.is_symlink() or script.is_junction() or script.stat().st_nlink != 1:
-            raise WebError('Invalid trusted HTTPS worker.')
         env = {key: value for key, value in os.environ.items() if key.upper() in {'SYSTEMROOT', 'WINDIR', 'TEMP', 'TMP'}}
-        process = subprocess.Popen([sys.executable, '-I', str(script)], stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=env,
-            creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
+        try:
+            if script.is_symlink() or script.is_junction() or script.stat().st_nlink != 1:
+                raise WebUnavailable('Invalid trusted HTTPS worker.')
+            process = subprocess.Popen([sys.executable, '-I', str(script)], stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=env,
+                creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
+        except OSError:
+            raise WebUnavailable('Trusted HTTPS worker could not start.') from None
         payload = json.dumps({'url': source.url, 'allowed_hosts': registry.allowed_hosts}).encode()
         deadline, sent = time.monotonic() + self.WORKER_TIMEOUT, False
         try:
             while True:
                 self.guard.check_running()
                 if time.monotonic() >= deadline:
-                    raise WebError('HTTPS worker deadline exceeded.')
+                    raise WebTimeout('HTTPS worker deadline exceeded.')
                 try:
                     output, _ = process.communicate(input=None if sent else payload, timeout=.2)
                     break
