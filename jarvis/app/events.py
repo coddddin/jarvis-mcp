@@ -278,6 +278,12 @@ def create_event_app(tasks, *, token, task_ids, origins, chat=None, processes=No
             data = json.loads(raw)
             if not isinstance(data, dict):
                 raise ChatError('Expected a JSON object.')
+            if request.url.path == '/api/chat/warm':
+                # The user started typing or opened the browser mic: load the model now. Nothing is generated.
+                if data:
+                    raise ChatError('No warm-up parameters accepted.')
+                await asyncio.to_thread(chat.warm_up)
+                return JSONResponse({'warming': True}, status_code=202, headers=response_headers)
             if request.url.path == '/api/chat/conversations':
                 if data:
                     raise ChatError('No creation parameters accepted.')
@@ -365,6 +371,7 @@ def create_event_app(tasks, *, token, task_ids, origins, chat=None, processes=No
         Route('/assets/assistant/knowledge.js', asset),
         Route('/assets/assistant/presence.js', asset), Route('/assets/assistant/voice.js', asset),
         Route('/api/chat/conversations', chat_api, methods=['GET', 'POST']),
+        Route('/api/chat/warm', chat_api, methods=['POST']),
         Route('/api/chat/conversations/{conversation_id}', chat_api, methods=['GET']),
         Route('/api/chat/conversations/{conversation_id}/messages', chat_api, methods=['POST']),
         Route('/api/connect', connect_api, methods=['POST']),

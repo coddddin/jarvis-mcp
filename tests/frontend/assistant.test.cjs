@@ -184,23 +184,24 @@ test('a failed turn is reported without a fake answer and pagehide stops polling
   assert.equal(g.elements.reply.hidden, true);
 });
 
-test('releasing Space only says voice input is not ready; nothing is sent', async () => {
+test('releasing Space only says voice input is not ready; only the chat warm-up is sent', async () => {
   const h = await harness({stored: 's'.repeat(43), handler: async () => listing});
-  const posts = () => h.requests.filter(request => request.options.method === 'POST').length;
+  const posts = path => h.requests.filter(request => request.options.method === 'POST' && (request.path === '/api/chat/warm') === !!path).length;
   h.docEvents.keydown({code: 'Space', key: ' ', repeat: false, preventDefault() {}});
   h.docEvents.keyup({code: 'Space'}); await flush();
   assert.equal(posts(), 0);
+  assert.equal(posts('warm'), 1);                         // only the chat model warm-up (ADR 0001)
   assert.match(h.elements.caption.textContent, /마이크를 쓸 수 없어요|음성 입력은 준비 중이에요/);
   assert.ok(!fs.readFileSync('frontend/assistant/assistant.js', 'utf8').includes('SAMPLES'));
 });
 
-test('with a working mic, releasing Space says voice input is coming and sends nothing', async () => {
+test('with a working mic, releasing Space says voice input is coming and sends only the chat warm-up', async () => {
   const h = await harness({stored: 's'.repeat(43), handler: async () => listing, mic: true});
   h.docEvents.keydown({code: 'Space', key: ' ', repeat: false, preventDefault() {}}); await flush();
   assert.equal(h.elements.caption.textContent, '듣고 있어요');
   h.docEvents.keyup({code: 'Space'}); await flush();
   assert.equal(h.elements.caption.textContent, '음성 입력은 준비 중이에요. 입력창에 적어 주세요.');
-  assert.equal(h.requests.filter(request => request.options.method === 'POST').length, 0);
+  assert.deepEqual(h.requests.filter(request => request.options.method === 'POST').map(request => request.path), ['/api/chat/warm']);
 });
 
 const space = h => ({code: 'Space', key: ' ', repeat: false, prevented: false, preventDefault() {this.prevented = true;}});
@@ -444,4 +445,19 @@ test('a voice service that is still loading keeps typing as the way in', async (
   assert.match(h.elements.hint.textContent, /음성 엔진을 준비하고 있어요/);
   talkKey(h).down(); await flush();
   assert.deepEqual(h.sockets[0].ops(), []);
+});
+
+test('typing asks the server to load the chat model at most once a minute; a failed warm-up changes nothing', async () => {
+  const h = await harness({stored: 's'.repeat(43), handler: async path =>
+    path === '/api/chat/warm' ? [503, {error: 'down'}] : listing});
+  h.elements.input.events.input();
+  h.elements.input.events.input();
+  await flush();
+  const warms = h.requests.filter(request => request.path === '/api/chat/warm');
+  assert.equal(warms.length, 1);
+  assert.equal(warms[0].options.method, 'POST'); assert.equal(warms[0].options.body, '{}');
+  assert.equal(h.elements.send.disabled, false);
+  const off = await harness({handler: async () => assert.fail('no request without a token')});
+  off.elements.input.events.input();
+  await flush();
 });

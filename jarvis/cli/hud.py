@@ -91,6 +91,7 @@ def main():
     def on_start():
         chat.warm_up()
         if voice is not None:
+            prefetch_on_listen(voice, chat)
             voice.start()                                   # speech models load in the background
     try:
         HUDServer(config, open_url=target if args.open else None, on_start=on_start,
@@ -98,6 +99,18 @@ def main():
     finally:
         if voice is not None:
             voice.close()                                   # closes the mic and ends the speech worker
+
+
+def prefetch_on_listen(voice, chat):
+    """Load the chat model again when the mic opens, so a model Ollama unloaded after 5 idle minutes (ADR 0001) is
+    loading while the user speaks. Best effort: a failed warm-up never reaches the voice service."""
+    def listener(event):
+        if event.get('type') == 'state' and event.get('state') == 'listening':
+            try:
+                chat.warm_up()
+            except Exception:
+                pass
+    return voice.subscribe(listener)
 
 
 if __name__ == '__main__':
