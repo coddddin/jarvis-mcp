@@ -551,6 +551,7 @@ class VoiceService:
         # is woken in the background while the fallback speaks; tts_lifecycle keeps a release and a wake apart.
         self.last_used = self.clock()
         self.tts_awake, self.tts_waking = True, False
+        self.tts_wake_failed = False                        # a released engine could not start again this run
         self.tts_lifecycle = threading.Lock()
         self.stopping = threading.Event()
         self.worker = threading.Thread(target=self._synthesis_loop, daemon=True, name='voice-tts')
@@ -579,7 +580,8 @@ class VoiceService:
         return {'state': self.state, 'error': self.error, 'device': self.transcriber.device,
                 'model': self.transcriber.model_name, 'compute': getattr(self.transcriber, 'compute', None),
                 'voice': self.synthesizer.name, 'precision': getattr(self.synthesizer, 'precision', None),
-                'stt_loaded': getattr(self.transcriber, 'loaded', True), 'tts_awake': self.tts_awake}
+                'stt_loaded': getattr(self.transcriber, 'loaded', True), 'tts_awake': self.tts_awake,
+                'tts_wake_failed': self.tts_wake_failed}
 
     # loading
     def start(self):
@@ -848,18 +850,23 @@ class VoiceService:
                            and self.fallback is not None and engine is not self.fallback
                            and hasattr(engine, 'warm_up') and hasattr(engine, 'close'))
             if release_tts:
+                # Taken before the service lock is let go, so a wake that starts now waits for this close and
+                # does not have its new worker ended by it. _warm_tts never asks for the service lock while holding
+                # tts_lifecycle, so this order cannot deadlock.
+                self.tts_lifecycle.acquire()
                 self.tts_awake = False
+        if release_tts:
+            try:
+                engine.close()
+            except Exception:
+                pass
+            finally:
+                self.tts_lifecycle.release()
         if release_stt:
             releaser = getattr(self.transcriber, 'release', None)
             if releaser is not None:
                 try:
                     releaser()
-                except Exception:
-                    pass
-        if release_tts:
-            with self.tts_lifecycle:
-                try:
-                    engine.close()
                 except Exception:
                     pass
 
@@ -896,6 +903,7 @@ class VoiceService:
                 self.tts_awake = True
             elif not ok and self.synthesizer is engine and self.fallback is not None:
                 self.synthesizer = self.fallback            # a reload that fails is a broken engine, as in #69
+                self.tts_wake_failed = True
         if closed or not ok:
             try:
                 engine.close()

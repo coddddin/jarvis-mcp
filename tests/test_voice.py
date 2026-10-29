@@ -644,6 +644,57 @@ def test_a_voice_engine_that_fails_to_reload_hands_over_to_the_fallback():
     voice.listen()
     wait(lambda: voice.synthesizer is heami)
     assert engine.closes == 2 and voice.status()['voice'] == 'heami'
+    assert voice.status()['tts_wake_failed'] is True
+    voice.close()
+
+
+class WorkerEngine(FakeSynth):
+    """Like CosyVoiceSynthesizer: warm_up starts a worker, close ends it, synthesize needs a running worker."""
+    def __init__(self):
+        super().__init__('cosyvoice3')
+        self.process = None
+
+    def warm_up(self):
+        self.process = object()
+
+    def close(self):
+        self.process = None
+
+    def synthesize(self, text):
+        if self.process is None:
+            raise VoiceError('tts_unavailable')
+        return super().synthesize(text)
+
+
+class SlowRelease(ReleasableTranscriber):
+    """An STT unload that takes a moment, as unload_model does on CUDA."""
+    def __init__(self):
+        super().__init__()
+        self.entered, self.go = threading.Event(), threading.Event()
+
+    def release(self):
+        self.entered.set()
+        self.go.wait(3)
+        super().release()
+
+
+def test_a_wake_during_release_keeps_the_new_worker():
+    # Both models are released on the same tick (for example the first tick after the PC wakes from sleep) and the
+    # mic opens while the STT unload is still running. The wake must not lose its worker to the release.
+    voice, events, audio, clock, module = idle_service(transcriber=SlowRelease(), synthesizer=WorkerEngine())
+    stt, engine, heami = voice.transcriber, voice.synthesizer, voice.fallback
+    clock.now += module.TTS_IDLE_SECONDS
+    releasing = threading.Thread(target=voice.release_idle)
+    releasing.start()
+    assert stt.entered.wait(3)
+    voice.listen()
+    wait(lambda: voice.status()['tts_awake'])
+    stt.go.set()
+    releasing.join(3)
+    voice.cancel()
+    assert voice.status()['tts_awake'] is True and engine.process is not None
+    finish_reply(voice, audio, '안녕하세요.')
+    assert voice.synthesizer is engine and engine.spoken == ['안녕하세요.'] and heami.spoken == []
     voice.close()
 
 
