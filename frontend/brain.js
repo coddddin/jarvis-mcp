@@ -71,8 +71,8 @@
     function renderConfirm(body, payload) {
       const box = make('div', 'model-confirm');
       box.setAttribute('role', 'alertdialog');
-      box.append(make('p', 'model-confirm-title', (payload.provider || '외부 모델') + '을(를) 처음 사용합니다.'),
-        make('p', '', '이 모델은 이 PC 밖에서 답을 만듭니다. 보내는 것과 보내지 않는 것을 확인해 주세요.'));
+      box.append(make('p', 'model-confirm-title', '처음 쓰는 외부 모델: ' + (payload.provider || '외부 모델')),
+        make('p', '', '이 모델은 이 PC 밖에서 답을 만들어요. 보내는 것과 보내지 않는 것을 확인해 주세요.'));
       const sends = make('ul', 'model-list'), never = make('ul', 'model-list');
       for (const item of payload.sends || []) sends.append(make('li', '', item));
       for (const item of payload.never_sends || []) never.append(make('li', '', item));
@@ -82,7 +82,9 @@
       yes.type = no.type = 'button';
       yes.addEventListener('click', () => choose(body.provider_id, body.model_id, true));
       no.addEventListener('click', () => renderList());
-      box.append(yes, no);
+      const actions = make('div', 'model-confirm-actions');   // stays at the panel's bottom edge while the list scrolls
+      actions.append(yes, no);
+      box.append(actions);
       show(box);
     }
 
@@ -100,7 +102,7 @@
         state = {...state, selection: data.selection};
         button.textContent = label(data.selection);
         onChange(data.selection);
-        renderList('다음 질문부터 ' + data.selection.label + '이(가) 답해요.');
+        renderList('다음 질문부터 답하는 모델: ' + data.selection.label);
       } catch (error) {
         if (mine !== version) return;
         busy = false;
@@ -132,6 +134,13 @@
       show(notice('모델 목록을 불러오고 있어요.'));
       await refresh();
       if (open) renderList();
+    });
+    // Escape or a click outside the button and the panel closes it, like a menu.
+    document.addEventListener('keydown', event => {
+      if (open && event.key === 'Escape') {setOpen(false); button.focus();}
+    });
+    document.addEventListener('pointerdown', event => {
+      if (open && !button.contains(event.target) && !panel.contains(event.target)) setOpen(false);
     });
     setOpen(false);
     return {refresh, reset, get state() {return state;}};
