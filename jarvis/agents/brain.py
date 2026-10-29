@@ -111,8 +111,13 @@ TOOL_FAMILIES = {
     # Both read only approved, non-secret notes (ObsidianStore checks review_status).
     'search_obsidian_vault': 'approved_notes', 'prepare_obsidian_context': 'approved_notes',
 }
+# Allowed sources whose MCP tool is not read-only: collect_web_information saves a report file by default. Chat
+# calls it with save_report=False, so its results may still reach an external answer, but an external provider
+# never gets the tool itself.
+NOT_READ_ONLY = frozenset({'collect_web_information'})
 # The jarvis MCP tool names an external provider may call (P2 builds its read-only MCP allowlist from this).
-EXTERNAL_TOOLS = tuple(sorted(name for name, family in TOOL_FAMILIES.items() if family in EXTERNAL_FAMILIES))
+EXTERNAL_TOOLS = tuple(sorted(name for name, family in TOOL_FAMILIES.items()
+                              if family in EXTERNAL_FAMILIES and name not in NOT_READ_ONLY))
 
 
 def external_allowed(tool_name):
@@ -122,6 +127,29 @@ def external_allowed(tool_name):
 
 def consent_payload(info):
     return {'provider': info.label, 'sends': [label for _, label in EXTERNAL_SENDS], 'never_sends': list(NEVER_SENT)}
+
+
+# Requests that name a local-only source. With an external model selected, these turns are answered by the local
+# default model instead, with LOCAL_REASON shown. Wording that is missed here still cannot reach local-only data:
+# the external answer gets only the tools in EXTERNAL_TOOLS and a history without local-only turns.
+LOCAL_ONLY_REQUESTS = (
+    ('메일', re.compile(r'메일|이메일|편지함|받은\s*편지|gmail|(?<![a-z])e?-?mails?(?![a-z])|inbox', re.I)),
+    ('일정', re.compile(r'일정|캘린더|달력|약속|스케줄|(?<![a-z])(?:calendar|schedule|appointments?)(?![a-z])', re.I)),
+    ('브리핑', re.compile(r'브리핑|(?<![a-z])briefing(?![a-z])', re.I)),
+    ('로컬 문서', re.compile(r'로컬|내\s*(?:문서|파일|폴더)|제\s*(?:문서|파일|폴더)|(?<![a-z])local(?![a-z])'
+                             r'|(?<![a-z])my\s+(?:documents?|files?|folders?)(?![a-z])', re.I)),
+    ('프로그램 분석', re.compile(r'projects/|정적\s*분석|(?<![A-Za-z])REA(?![A-Za-z])|(?<![a-z])static\s+analysis', re.I)),
+    ('승인되지 않은 노트', re.compile(r'미승인|승인\s*(?:안|되지\s*않|전)|초안\s*노트|노트\s*초안|unapproved|draft\s+notes?', re.I)),
+)
+LOCAL_REASON = '{source} 내용은 외부 모델에 보내지 않아서 로컬 모델이 답했습니다.'
+
+
+def local_only_source(message):
+    """The label of the first local-only source this request names, or None."""
+    for label, pattern in LOCAL_ONLY_REQUESTS:
+        if pattern.search(message):
+            return label
+    return None
 
 
 # --- local Ollama ------------------------------------------------------------------------------------------------

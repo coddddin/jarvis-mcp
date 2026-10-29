@@ -16,6 +16,7 @@ from starlette.websockets import WebSocketDisconnect
 from jarvis.agents.events import AsyncEventBus, EventError
 from jarvis.agents.store import TaskNotFound
 from jarvis.agents.chat import ChatError, ChatBusy
+from jarvis.app.brain_routes import brain_routes
 from jarvis.app.briefing_routes import briefing_routes
 from jarvis.app.wiki_routes import wiki_routes
 from jarvis.features.wiki.service import WikiStore
@@ -358,6 +359,9 @@ def create_event_app(tasks, *, token, task_ids, origins, chat=None, processes=No
         extra += briefing_routes(briefing, valid=valid, origins=origins, headers=response_headers)
     # Ollama card: last /api/tags observation for the configured chat model (same gate; no chat => 503).
     extra += model_status_routes(observer_for(chat), valid=valid, origins=origins, headers=response_headers)
+    # Model-name button: list models and change the chat/voice model (same gate; no chat => 503).
+    extra += brain_routes(chat if hasattr(chat, 'brain') else None, valid=valid, origins=origins,
+                          headers=response_headers)
     # Local voice (hud --voice): push-to-talk and spoken replies over one WebSocket (same token, Origin and Host).
     if voice is not None:
         from jarvis.app.voice_routes import voice_routes
