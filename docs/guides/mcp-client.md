@@ -12,7 +12,8 @@
 - 도구 고정(`ToolPin`): `family`(`public_web` 또는 `local`), `effect`(`read`/`auto`/`confirm`/`deny`), 시간 한도(최대 120초), 글자 한도, 모델에게 보일 **사용자 승인 설명**, 그리고 서버가 알려 준 이름·설명·입력 스키마의 sha256.
 - 서버가 도구 설명이나 스키마를 바꾸면 해시가 달라져 그 도구는 "변경됨"으로 빠지고, 사용자가 다시 승인할 때까지 쓰이지 않습니다. 세션은 설정 파일을 고치지 않습니다.
 - 항상 거부: `browser_run_code_unsafe`, `browser_evaluate`, `browser_file_upload`, `browser_install`.
-- 금지 플래그: `--allow-unrestricted-file-access`, `--ignore-robots-txt`, `--allow-private-ips`. Playwright MCP는 `--no-webmcp --isolated --headless`가 반드시 있어야 합니다(웹 페이지가 등록한 도구가 모델에 노출되지 않게).
+- 금지 플래그: `--allow-unrestricted-file-access`, `--ignore-robots-txt`, `--allow-private-ips`. 서버 옵션을 환경 변수로 넘기는 `PLAYWRIGHT_MCP_*` 이름도 거부합니다.
+- Playwright MCP: 실행 파일이나 인자에 `playwright`가 들어가면(npm bin `playwright-mcp.cmd` 포함) Playwright로 보고, 시작할 때 서버가 스스로 Playwright라고 알리는데 그렇게 등록되지 않았으면 시작하지 않습니다. `--no-webmcp --isolated --headless`가 반드시 있어야 하고(웹 페이지가 등록한 도구가 모델에 노출되지 않게), 허용 목록의 플래그만 쓸 수 있습니다: `--browser`, `--output-dir`, `--output-max-size`, `--image-responses`, `--block-service-workers`, `--timeout-action`, `--timeout-navigation`, `--timeout-settle`, `--user-agent`, `--viewport-size`, `--snapshot-mode`, `--proxy-server`, `--proxy-bypass`, `--allowed-origins`, `--blocked-origins`, `--idle-timeout`. 그래서 사용자의 실제 브라우저 연결(`--extension`, `--cdp-endpoint`), 프로필·쿠키·스크립트(`--user-data-dir`, `--storage-state`, `--init-script`), 설정 파일(`--config`), 네트워크 대기(`--host`, `--port`)는 막힙니다.
 
 ## 작업별 격리 세션
 

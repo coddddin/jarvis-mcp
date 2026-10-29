@@ -72,6 +72,42 @@ def test_server_config_refuses_unsafe_settings(kwargs, message):
         ServerConfig(**{**base, **kwargs})
 
 
+NODE = r'C:\Program Files\nodejs\node.exe'
+CLI = r'C:\x\node_modules\@playwright\mcp\cli.js'
+SAFE = (CLI, '--headless', '--isolated', '--no-webmcp')
+
+
+@pytest.mark.parametrize('command, args, env_names, message', [
+    # The package's own npm bin has no '@playwright' in its path: the flag rules still apply.
+    (r'C:\x\node_modules\.bin\playwright-mcp.cmd', (), (), 'needs'),
+    (NODE, (*SAFE, '--extension'), (), 'not allowed'),                          # the user's real browser
+    (NODE, (*SAFE, '--cdp-endpoint', 'http://127.0.0.1:9222'), (), 'not allowed'),
+    (NODE, (*SAFE, '--config', r'C:\x\pw.json'), (), 'not allowed'),             # options outside the argv check
+    (NODE, (*SAFE, '--user-data-dir', r'C:\profile'), (), 'not allowed'),
+    (NODE, (*SAFE, '--storage-state=C:/cookies.json'), (), 'not allowed'),
+    (NODE, (*SAFE, '--init-script', r'C:\s.js'), (), 'not allowed'),
+    (NODE, (*SAFE, '--host', '0.0.0.0', '--port', '8931'), (), 'not allowed'),  # listening on the network
+    (NODE, SAFE, ('PLAYWRIGHT_MCP_CDP_ENDPOINT',), 'environment'),
+])
+def test_playwright_flag_bypasses_are_refused(command, args, env_names, message):
+    with pytest.raises(ValidationError, match=message):
+        ServerConfig(id='pw', label='PW', command=command, args=args, env_names=env_names)
+
+
+def test_the_recommended_playwright_launch_is_accepted():
+    args = (*SAFE, '--browser', 'msedge', '--output-dir', r'C:\w\.jarvis-mcp\pw\out', '--image-responses', 'omit',
+            '--blocked-origins', 'http://localhost;http://127.0.0.1')
+    assert ServerConfig(id='pw', label='PW', command=NODE, args=args).args == args
+
+
+def test_a_server_that_reports_itself_as_playwright_needs_the_playwright_rules(guard, settings, monkeypatch):
+    monkeypatch.setenv('FAKE_NAME', 'Playwright')
+    settings.add_server('fake', 'Fake', sys.executable, ['-I', FAKE], ('FAKE_NAME',))
+    found = discover(guard, settings.load(), 'fake')
+    assert found['status']['state'] == 'failed' and 'Playwright' in found['status']['reason']
+    assert found['tools'] == []
+
+
 def test_dangerous_tools_are_always_denied():
     with pytest.raises(ValidationError, match='always denied'):
         ToolPin(name='browser_evaluate', effect='read', schema_sha256='0' * 64)

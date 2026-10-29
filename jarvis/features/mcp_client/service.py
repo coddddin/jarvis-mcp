@@ -37,8 +37,21 @@ EFFECTS = ('read', 'auto', 'confirm', 'deny')
 # (login, forms, posting, payments, sending, uploads, installs); deny: never offered to a model.
 ALWAYS_DENY = frozenset({'browser_run_code_unsafe', 'browser_evaluate', 'browser_file_upload', 'browser_install'})
 FORBIDDEN_ARGS = frozenset({'--allow-unrestricted-file-access', '--ignore-robots-txt', '--allow-private-ips'})
-# Playwright MCP must never expose tools that a web page registers (WebMCP): that is page text turned into tools.
-REQUIRED_ARGS = {'@playwright': ('--no-webmcp', '--isolated', '--headless')}
+# Playwright MCP: a server whose command or arguments mention playwright (the npm bin is playwright-mcp) or that
+# reports itself as Playwright. It must never expose tools a web page registers (WebMCP), keep its profile in memory
+# and stay headless; only the flags below are allowed, so it cannot attach to the user's own browser (--extension,
+# --cdp-endpoint), load a profile, cookies or scripts, read a --config file or listen on the network.
+PLAYWRIGHT_REQUIRED = frozenset({'--no-webmcp', '--isolated', '--headless'})
+PLAYWRIGHT_ALLOWED = PLAYWRIGHT_REQUIRED | {
+    '--browser', '--output-dir', '--output-max-size', '--image-responses', '--block-service-workers',
+    '--timeout-action', '--timeout-navigation', '--timeout-settle', '--user-agent', '--viewport-size',
+    '--snapshot-mode', '--proxy-server', '--proxy-bypass', '--allowed-origins', '--blocked-origins', '--idle-timeout'}
+# Option values arrive through the environment too (PLAYWRIGHT_MCP_EXTENSION, ...), so those names are refused.
+FORBIDDEN_ENV_PREFIXES = ('PLAYWRIGHT_MCP_',)
+
+
+def is_playwright(command, args):
+    return any('playwright' in str(part).lower() for part in (command, *args))
 BASE_ENV = ('SYSTEMROOT', 'WINDIR', 'TEMP', 'TMP', 'PATH', 'PATHEXT', 'APPDATA', 'LOCALAPPDATA', 'USERPROFILE',
             'HOMEDRIVE', 'HOMEPATH', 'SYSTEMDRIVE', 'USERNAME', 'PROCESSOR_ARCHITECTURE')
 
@@ -89,11 +102,16 @@ class ServerConfig(Strict):
         flags = {arg.split('=', 1)[0] for arg in self.args}
         if flags & FORBIDDEN_ARGS:
             raise ValueError('A forbidden server flag is set: ' + ', '.join(sorted(flags & FORBIDDEN_ARGS)))
-        for marker, required in REQUIRED_ARGS.items():
-            if any(marker in arg for arg in (self.command, *self.args)) and not set(required) <= flags:
-                raise ValueError('This server needs ' + ', '.join(required) + '.')
+        if is_playwright(self.command, self.args):
+            options = {flag for flag in flags if flag.startswith('-')}
+            if not PLAYWRIGHT_REQUIRED <= options:
+                raise ValueError('This server needs ' + ', '.join(sorted(PLAYWRIGHT_REQUIRED)) + '.')
+            if options - PLAYWRIGHT_ALLOWED:
+                raise ValueError('Playwright flag not allowed: ' + ', '.join(sorted(options - PLAYWRIGHT_ALLOWED)))
         if any(not re.fullmatch(r'[A-Z0-9_]{1,64}', name) for name in self.env_names):
             raise ValueError('Environment names only, never values.')
+        if any(name.startswith(FORBIDDEN_ENV_PREFIXES) for name in self.env_names):
+            raise ValueError('Server options may not be passed through the environment.')
         if len({tool.name for tool in self.tools}) != len(self.tools):
             raise ValueError('Duplicate tool pin.')
         return self
@@ -314,6 +332,12 @@ class McpSession:
                 continue
             if not report.get('ok'):
                 self.status[server.id] = {'state': 'failed', 'reason': 'The server did not start.'}
+                continue
+            if ('playwright' in str(report.get('server_name') or '').lower()
+                    and not is_playwright(server.command, server.args)):
+                # Reports itself as Playwright but was configured without the Playwright flag rules.
+                self.status[server.id] = {'state': 'failed', 'reason': 'This is a Playwright server; add it with its '
+                                                                         'Playwright package path so its flag rules apply.'}
                 continue
             reported = {tool['name']: tool for tool in report.get('tools') or [] if isinstance(tool, dict)
                         and isinstance(tool.get('name'), str)}

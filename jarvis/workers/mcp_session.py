@@ -2,7 +2,7 @@
 
 Reads one JSON command per stdin line and writes one JSON reply per stdout line:
   {"op": "start", "servers": [{"id", "command", "args", "env", "cwd", "timeout"}]}
-      -> {"ok": true, "servers": {id: {"ok": true, "tools": [{"name", "description", "input_schema"}]}
+      -> {"ok": true, "servers": {id: {"ok": true, "server_name": "...", "tools": [{"name", "description", "input_schema"}]}
                                     | {"ok": false, "error": "..."}}}
   {"op": "call", "server", "tool", "arguments", "timeout", "max_chars"}
       -> {"ok": true, "is_error": bool, "text": "...", "truncated": bool, "omitted": [kinds]}
@@ -58,11 +58,13 @@ async def start_server(stack, spec, devnull):
                                    cwd=spec.get('cwd'))
     read, write = await stack.enter_async_context(stdio_client(params, errlog=devnull))
     session = await stack.enter_async_context(ClientSession(read, write))
-    await asyncio.wait_for(session.initialize(), spec.get('timeout', 30))
+    initialized = await asyncio.wait_for(session.initialize(), spec.get('timeout', 30))
+    info = getattr(initialized, 'serverInfo', None)
+    name = str(getattr(info, 'name', '') or '')[:100]
     listed = await asyncio.wait_for(session.list_tools(), spec.get('timeout', 30))
     tools = [{'name': tool.name, 'description': (tool.description or '')[:MAX_DESCRIPTION],
               'input_schema': tool.inputSchema} for tool in listed.tools[:MAX_TOOLS]]
-    return session, tools
+    return session, tools, name
 
 
 async def main_async():
@@ -89,9 +91,9 @@ async def main_async():
                         server_id = spec.get('id')
                         own = AsyncExitStack()          # a server that fails to start is shut down at once
                         try:
-                            sessions[server_id], tools = await start_server(own, spec, devnull)
+                            sessions[server_id], tools, name = await start_server(own, spec, devnull)
                             stack.push_async_callback(own.aclose)
-                            report[server_id] = {'ok': True, 'tools': tools}
+                            report[server_id] = {'ok': True, 'tools': tools, 'server_name': name}
                         except Exception as exc:  # one failing server does not stop the others
                             try:
                                 await own.aclose()

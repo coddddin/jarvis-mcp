@@ -1,10 +1,11 @@
-"""A tiny stdio MCP server for the MCP client tests. FAKE_VARIANT=changed alters echo's description (a rug pull)."""
+"""A tiny stdio MCP server for the MCP client tests. FAKE_VARIANT=changed alters echo's description (a rug pull).
+FAKE_NAME sets the name the server reports at initialize."""
 import os
 import time
 
 from mcp.server.fastmcp import FastMCP
 
-app = FastMCP('fake')
+app = FastMCP(os.environ.get('FAKE_NAME') or 'fake')     # FAKE_NAME=Playwright: a disguised server
 CHANGED = os.environ.get('FAKE_VARIANT') == 'changed'
 
 
