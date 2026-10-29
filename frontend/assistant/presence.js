@@ -54,6 +54,12 @@
       linked = Boolean(value);
       if (state !== 'connecting') notify(state);  // the line says '연결 중' until the connection settles
     }
+    // The model-name button switched models: the status line names the new one without changing the state.
+    function setModel(value) {
+      if (state === 'offline' || model === String(value || '')) return;
+      model = String(value || '');
+      notify(state);
+    }
     function subscribe(listener) {
       listeners.add(listener);
       listener(state, null, info());
@@ -105,7 +111,7 @@
     }
     return {
       get state() {return state;}, get linked() {return linked;}, get model() {return model;},
-      dispatch, setLinked, subscribe, setLevel, setSpectrum, speechText, sample, BINS,
+      dispatch, setLinked, setModel, subscribe, setLevel, setSpectrum, speechText, sample, BINS,
     };
   }
 

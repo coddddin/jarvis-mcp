@@ -11,6 +11,7 @@
   <script src="/assets/assistant/orb.js" defer></script>
   <script src="/assets/assistant/connection.js" defer></script>
   <script src="/assets/assistant/voice.js" defer></script>
+  <script src="/assets/brain.js" defer></script>
   <script src="/assets/assistant/assistant.js" defer></script>
   <script src="/assets/assistant/knowledge.js" defer></script>
   <script src="/assets/wiki/wiki.js" defer></script>
@@ -20,6 +21,7 @@
     <header class="presence">
       <span id="presenceDot" class="presence-dot" data-state="offline" aria-hidden="true"></span>
       <span id="presenceText">연결 전</span>
+      <span class="model-picker"><button id="modelButton" class="model-button" type="button" aria-haspopup="true" aria-expanded="false" aria-controls="modelPanel" title="답하는 모델 바꾸기">모델 확인 필요</button><div id="modelPanel" class="model-panel" role="region" aria-label="답하는 모델 고르기" hidden></div></span>
     </header>
 
     <section class="core" aria-live="polite">

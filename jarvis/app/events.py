@@ -85,7 +85,7 @@ def create_event_app(tasks, *, token, task_ids, origins, chat=None, processes=No
 
     async def asset(request):
         filename = {'/wiki': 'wiki/index.html', '/assets/wiki/wiki.css': 'wiki/wiki.css', '/assets/wiki/wiki.js': 'wiki/wiki.js', '/': 'index.html', '/assets/hud.css': 'hud.css', '/assets/hud.js': 'hud.js',
-                    '/assets/task-stream.js': 'task-stream.js', '/assets/chat.js': 'chat.js', '/assets/sources.js': 'sources.js',
+                    '/assets/task-stream.js': 'task-stream.js', '/assets/chat.js': 'chat.js', '/assets/sources.js': 'sources.js', '/assets/brain.js': 'brain.js',
                     '/assets/collaboration.js': 'collaboration.js', '/assets/collaboration.css': 'collaboration.css',
                     '/assets/dispatcher.js': 'dispatcher.js', '/assets/briefing.js': 'briefing.js',
                     # Assistant view: the default page opened by `hud --open`; the HUD above is the developer screen.
@@ -369,7 +369,7 @@ def create_event_app(tasks, *, token, task_ids, origins, chat=None, processes=No
     if chat is not None:
         extra += wiki_routes(WikiStore(tasks.guard), guard=tasks.guard, infer=getattr(chat, '_infer', None), valid=valid, origins=origins, headers=response_headers)
     return Starlette(routes=extra + [Route('/wiki', asset), Route('/assets/wiki/wiki.css', asset), Route('/assets/wiki/wiki.js', asset), Route('/', asset), Route('/assets/dispatcher.js', asset), Route('/assets/briefing.js', asset), Route('/assets/hud.css', asset), Route('/assets/hud.js', asset),
-        Route('/assets/task-stream.js', asset), Route('/assets/chat.js', asset), Route('/assets/sources.js', asset),
+        Route('/assets/task-stream.js', asset), Route('/assets/chat.js', asset), Route('/assets/sources.js', asset), Route('/assets/brain.js', asset),
         Route('/assistant', asset), Route('/assets/assistant/assistant.css', asset), Route('/assets/assistant/assistant.js', asset),
         Route('/assets/assistant/orb.js', asset), Route('/assets/assistant/connection.js', asset),
         Route('/assets/assistant/knowledge.js', asset),

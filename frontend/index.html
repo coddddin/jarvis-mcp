@@ -10,6 +10,7 @@
   <script src="/assets/task-stream.js" defer></script>
   <script src="/assets/hud.js" defer></script>
   <script src="/assets/sources.js" defer></script>
+  <script src="/assets/brain.js" defer></script>
   <script src="/assets/chat.js" defer></script>
   <script src="/assets/collaboration.js" defer></script>
   <script src="/assets/dispatcher.js" defer></script>
@@ -38,7 +39,7 @@
       <div id="briefingHost"></div>
       <section id="chatPanel" class="chat-layout" aria-label="자비스 채팅" hidden>
         <aside class="chat-sidebar"><button id="newChat" class="button secondary" type="button">+ 새 대화</button><p class="eyebrow">MY CONVERSATIONS</p><div id="chatConversations" class="conversation-list" aria-label="이전 대화"></div><p class="muted small">대화 기록은 이 PC에 보관됩니다.<br>비밀번호나 인증 키는 보내지 마세요.</p></aside>
-        <div class="chat-main"><header class="chat-heading"><div><h2>J.A.R.V.I.S.</h2><span id="chatModel" class="muted small">로컬 모델</span></div><span class="status completed">내 PC에서 대화</span></header>
+        <div class="chat-main"><header class="chat-heading"><div><h2>J.A.R.V.I.S.</h2><span class="model-picker"><button id="chatModel" class="model-button" type="button" aria-haspopup="true" aria-expanded="false" aria-controls="chatModelPanel" title="답하는 모델 바꾸기">모델 확인 필요</button><div id="chatModelPanel" class="model-panel" role="region" aria-label="답하는 모델 고르기" hidden></div></span></div><span id="chatWhere" class="status completed">내 PC에서 대화</span></header>
           <div id="chatMessages" class="chat-messages" role="log" aria-label="대화 내용" aria-live="polite"><div class="chat-greeting"><span class="brand-mark">J</span><h3>무엇을 도와드릴까요?</h3><p class="muted">이야기를 나누거나, PC 상태와 로컬 자료를 물어보세요.</p></div></div>
           <p class="chat-footnote">필요한 도구와 로컬 협업은 자비스가 진행해요. 웹 검색 시 검색어를 Bing에 보내며, 외부 AI 협업은 자동으로 선택하지 않아요.</p>
           <p id="chatNotice" class="chat-notice" role="status" hidden></p>
