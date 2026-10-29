@@ -285,6 +285,28 @@ def test_send_streams_the_final_step_and_clears_a_tool_step_draft(service, monke
     assert turn['status'] == 'completed' and turn['draft'] == ''
 
 
+def test_a_round_that_must_call_a_tool_streams_no_draft(service, monkeypatch):
+    saved, callbacks = [], []
+    original = service.store.draft
+    monkeypatch.setattr(service.store, 'draft', lambda *args: (saved.append(args[2]), original(*args)))
+    monkeypatch.setattr(service, '_infer', lambda *args: {'mode': 'chat', 'evidence': 'local',
+                                                         'web_action': 'none', 'unsupported': False})
+    steps = iter([ChatDecision(reply='P', tool='get_system_status', argument=''),
+                  ChatDecision(reply='CPU는 여유', tool='none', argument='', basis='tool', evidence_ids=['e1'])])
+
+    def worker(messages, schema, deadline, on_delta=None):
+        decision = next(steps)
+        callbacks.append(on_delta is not None)
+        if on_delta is not None:
+            on_delta(decision.reply)
+        return decision
+    monkeypatch.setattr(service, '_worker', worker)
+    service.tools['get_system_status'] = lambda: {'cpu': 1}
+    turn = service.send(service.store.create()['id'], uuid4().hex, '오늘 PC 상태 한 줄로', mode='auto')['turns'][0]
+    assert callbacks == [False, True]                               # the forced status round streams nothing
+    assert 'P' not in saved and turn['status'] == 'completed'
+
+
 # --- warm-up: load the model once when the HUD starts, generate nothing ---
 
 def test_worker_warm_up_only_loads_the_model_with_the_chat_options(step, monkeypatch):

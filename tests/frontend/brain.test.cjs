@@ -12,6 +12,8 @@ class Element {
   replaceChildren(...children) { this.children = children; }
   addEventListener(name, fn) { this.events[name] = fn; }
   setAttribute(name, value) { this.attributes[name] = value; }
+  contains(other) { return other === this || this.children.some(child => child.contains(other)); }
+  focus() { this.focused = true; }
 }
 const all = (value, out = []) => { out.push(value); value.children.forEach(child => all(child, out)); return out; };
 const text = value => all(value).map(item => item.textContent).join(' ');
@@ -29,9 +31,9 @@ const LISTING = {
 };
 
 function harness(respond) {
-  const requests = [], changes = [];
+  const requests = [], changes = [], listeners = {};
   const context = {
-    document: {createElement: tag => new Element(tag)},
+    document: {createElement: tag => new Element(tag), addEventListener: (name, fn) => { listeners[name] = fn; }},
     window: {},
     fetch: async (path, options) => {
       const body = options.body ? JSON.parse(options.body) : undefined;
@@ -45,7 +47,7 @@ function harness(respond) {
   const brain = context.window.JarvisBrain.create({button, panel, token: () => 't', onChange: value => changes.push(value)});
   const choices = () => all(panel).filter(item => item.className.startsWith('model-choice'));
   const byText = label => all(panel).find(item => item.tagName === 'BUTTON' && item.textContent === label);
-  return {context, brain, button, panel, requests, changes, choices, byText};
+  return {context, brain, button, panel, requests, changes, choices, byText, listeners};
 }
 
 test('the button names the current model and lists models with reasons', async () => {
@@ -70,7 +72,7 @@ test('the first external switch shows what is sent and is confirmed explicitly',
   await h.button.events.click(); await flush();
   await h.byText('sonnet').events.click(); await flush();
   assert.equal(h.requests.at(-1).body.confirm_external, undefined);
-  assert.match(text(h.panel), /처음 사용합니다/);
+  assert.match(text(h.panel), /처음 쓰는 외부 모델: Claude \(구독\)/);
   assert.match(text(h.panel), /로컬 문서/);
   assert.match(text(h.panel), /자동 전환하지 않아요/);
   assert.equal(h.button.textContent, 'qwen3.5:9b · 로컬');            // nothing changed yet
@@ -78,7 +80,21 @@ test('the first external switch shows what is sent and is confirmed explicitly',
   assert.equal(h.requests.at(-1).body.confirm_external, true);
   assert.equal(h.button.textContent, 'Claude (구독) · sonnet · 외부');
   assert.equal(h.changes.at(-1).external, true);
-  assert.match(text(h.panel), /다음 질문부터/);
+  assert.match(text(h.panel), /다음 질문부터 답하는 모델: Claude \(구독\) · sonnet/);
+});
+
+test('Escape or a click outside closes the panel; a click inside keeps it open', async () => {
+  const h = harness(() => [200, LISTING]);
+  await h.button.events.click(); await flush();
+  h.listeners.pointerdown({target: h.byText('sonnet')});
+  assert.equal(h.panel.hidden, false);
+  h.listeners.pointerdown({target: new Element()});
+  assert.equal(h.panel.hidden, true);
+  assert.equal(h.button.attributes['aria-expanded'], 'false');
+  await h.button.events.click(); await flush();
+  h.listeners.keydown({key: 'Escape'});
+  assert.equal(h.panel.hidden, true);
+  assert.equal(h.button.focused, true);
 });
 
 test('cancelling the confirmation sends nothing more', async () => {

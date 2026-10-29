@@ -651,7 +651,9 @@ class ChatService:
                                if name in {'get_system_status', 'search_local_documents', 'analyze_program_static'}]
                 if iteration == 0 and plan is not None and plan.evidence == 'local' and local_tools:
                     schema['properties']['tool']['enum'] = local_tools
-                decision = self._worker(messages, schema, deadline, drafts.add)
+                # A round that must call a tool cannot be the answer, so its text is never shown as a draft.
+                forced = 'none' not in schema['properties']['tool']['enum']
+                decision = self._worker(messages, schema, deadline, None if forced else drafts.add)
                 if decision.tool != 'none':
                     drafts.clear()  # a tool step's text is not the answer; for the final step, finish() clears it
                 if decision.tool not in schema['properties']['tool']['enum']:

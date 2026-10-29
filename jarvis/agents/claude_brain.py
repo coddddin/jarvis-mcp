@@ -28,7 +28,7 @@ from jarvis.core.redaction import redact
 
 PROVIDER_ID = 'claude-cli'
 # CLI aliases for the latest model of each family (`claude --help`, 2.1.302). Opus answered the smoke test on Pro.
-MODELS = {'sonnet': 'Claude Sonnet (구독)', 'opus': 'Claude Opus (구독)'}
+MODELS = {'sonnet': 'Claude (구독) · sonnet', 'opus': 'Claude (구독) · opus'}   # same name as the button shows
 CAPABILITIES = Capabilities(json_schema=True, streaming=True, tools=False)
 MAX_TURNS = 2                 # one answer: the StructuredOutput call and its result (num_turns 2 in the smoke run)
 MAX_OUTPUT = 256 * 1024       # same cap as the local chat worker
