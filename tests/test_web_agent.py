@@ -325,3 +325,49 @@ def test_a_repeated_search_opens_the_best_result_instead(guard, tmp_path):
                   Collector({'https://www.weather.go.kr/w/index.do': text})).run('제주 날씨')
     assert [t['tool'] for t in result['traces']] == ['search', 'open']          # JARVIS opened the best result
     assert result['calls'] == 2 and 'https://www.weather.go.kr/w/index.do' in result['sources']
+
+def test_a_saved_file_carries_the_mark_of_the_web(tmp_path):
+    (tmp_path / 'r.csv').write_text('a\n', encoding='utf-8')
+    record = store_download(tmp_path / 'r.csv', tmp_path / 'downloads', scan=lambda p: True,
+                            source_url='https://files.example.org/r.csv')
+    assert record['marked'] is True
+    mark = open(record['path'] + ':Zone.Identifier', encoding='ascii').read()
+    assert 'ZoneId=3' in mark and 'HostUrl=https://files.example.org/r.csv' in mark
+
+
+def test_extra_new_files_are_deleted_not_left_unscanned(guard, tmp_path):
+    out = tmp_path / 'out'
+    out.mkdir()
+
+    class Many(FakeSession):
+        def call(self, name, arguments):
+            if arguments.get('url', '').endswith('.csv'):
+                for i in range(5):
+                    (out / f'f{i}.csv').write_text('a\n', encoding='utf-8')
+            return super().call(name, arguments)
+
+    decide = scripted({'tool': 'open', 'number': 1}, {'tool': 'download', 'number': 3}, {'tool': 'answer', 'answer': 'x'})
+    b = Browser(Many({'https://example.org/a': PAGE}), 'pw', out, resolve=resolve, sleep=lambda s: None)
+    result = WebAgent(guard, Collector(), b, decide, downloads_dir=tmp_path / 'downloads',
+                      scan=lambda p: True).run('https://example.org/a csv 내려받아줘')
+    assert [f['status'] for f in result['files']] == ['saved'] * 3 + ['refused'] * 2
+    assert not [p for p in out.iterdir() if p.suffix == '.csv']
+
+
+def test_an_answer_without_an_official_page_is_sent_back_once(guard, tmp_path):
+    blog = snapshot('https://example.org/a', 'Blog', '- main:\n  - paragraph: 요금 1,550원')
+    named = agent.TaskState('요금은? example.org', pages={1: {'url': 'https://example.org/a'}})
+    assert WebAgent._official(named)                        # a host the request names counts as official
+    decide = scripted({'tool': 'search', 'query': '요금'}, {'tool': 'open', 'number': 1},
+                      {'tool': 'answer', 'answer': '1,550원'}, {'tool': 'answer', 'answer': '1,550원'})
+    bing = BING.replace(ck('https://www.weather.go.kr/w/index.do'), ck('https://example.org/a'))
+    result = make(guard, tmp_path, decide, {agent.bing_url('요금'): bing, 'https://example.org/a': blog}).run('요금은?')
+    assert result['status'] == 'completed' and len(decide.seen) == 4
+    assert '공식 출처' in decide.seen[3][0][-2]['content']
+
+
+def test_jarvis_picks_public_bodies_before_blogs(guard, tmp_path):
+    state = agent.TaskState('지하철 요금')
+    blog = state.add('result', 'b', url='https://blog.naver.com/x')
+    city = state.add('result', 'c', url='https://www.seoul.go.kr/fare')
+    assert WebAgent._best_result(state, [blog, city]) == city
