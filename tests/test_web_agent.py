@@ -191,7 +191,7 @@ def test_an_unoffered_number_or_tool_is_refused_and_the_answer_forced(guard, tmp
 
 def test_a_model_that_never_answers_ends_as_failed(guard, tmp_path):
     result = make(guard, tmp_path, scripted({'tool': 'answer', 'answer': ''})).run('질문')
-    assert result['status'] == 'failed' and 'no answer' in result['reason']
+    assert result['status'] == 'failed' and '답을 쓰지 않았' in result['reason']
 
 
 def test_an_opened_item_is_not_offered_again(guard, tmp_path):
@@ -371,3 +371,57 @@ def test_jarvis_picks_public_bodies_before_blogs(guard, tmp_path):
     blog = state.add('result', 'b', url='https://blog.naver.com/x')
     city = state.add('result', 'c', url='https://www.seoul.go.kr/fare')
     assert WebAgent._best_result(state, [blog, city]) == city
+
+def test_an_earlier_page_is_kept_as_the_models_notes(guard, tmp_path):
+    other = snapshot('https://example.org/', 'Home', '- main:\n  - paragraph: ' + '홈 본문 ' * 300)
+    decide = scripted({'tool': 'open', 'number': 1}, {'tool': 'open', 'number': 4, 'notes': '값은 42'},
+                      {'tool': 'answer', 'answer': '42'})
+    make(guard, tmp_path, decide, {'https://example.org/a': PAGE, 'https://example.org/': other}).run(
+        'https://example.org/a 값은?')
+    final = [m['content'] for m in decide.seen[2][0] if m['content'].startswith('UNTRUSTED')]
+    assert '메모: 값은 42' in final[0] and 'The value is 42.' not in final[0]
+    assert '홈 본문' in final[1]                                   # the newest page is still whole
+
+
+def test_at_most_ten_pages_and_two_link_hops(guard, tmp_path):
+    state = agent.TaskState('q')
+    for number in range(1, 11):
+        state.pages[100 + number] = {'url': f'https://example.org/{number}', 'title': '', 'status': 'ok'}
+    state.add('result', 'r', url='https://example.org/next')
+    tools, _ = WebAgent(guard, Collector(), browser({}, tmp_path), None, downloads_dir=tmp_path)._options(state, False)
+    assert 'open' not in tools
+    state = agent.TaskState('q')
+    deep = state.add('link', 'l', url='https://example.org/deep', depth=3)
+    near = state.add('link', 'l', url='https://example.org/near', depth=2)
+    tools, _ = WebAgent(guard, Collector(), browser({}, tmp_path), None, downloads_dir=tmp_path)._options(state, False)
+    assert tools['open'] == [near] and deep not in tools['open']
+
+
+def test_a_page_at_the_depth_limit_offers_no_links(guard, tmp_path):
+    decide = scripted({'tool': 'answer', 'answer': 'x'})
+    agent_ = make(guard, tmp_path, decide, {'https://example.org/a': PAGE})
+    state = agent.TaskState('q')
+    content, _ = agent_._page_result(state, parse_snapshot(PAGE), 'browser', depth=agent.MAX_DEPTH)
+    assert '링크:' not in content
+
+
+def test_the_stop_callback_ends_the_task(guard, tmp_path):
+    result = make(guard, tmp_path, scripted({'tool': 'search', 'query': 'q'}), should_stop=lambda: True).run('q')
+    assert result['status'] == 'stopped' and result['calls'] == 0
+
+
+def test_run_task_without_an_approved_playwright_server_asks_for_setup(guard):
+    with pytest.raises(agent.WebSetupRequired, match='setup_web_agent'):
+        agent.run_task(guard, 'q', None)
+
+
+def test_run_task_reports_a_missing_node(guard, tmp_path):
+    from jarvis.features.mcp_client.service import McpSettings
+    settings = McpSettings(guard)
+    node = tmp_path / 'node.exe'
+    settings.add_server('pw', 'PW', str(node), [r'C:\x\@playwright\mcp\cli.js', '--headless', '--isolated',
+                                                '--no-webmcp', '--output-dir', str(tmp_path / 'q')])
+    config = settings.load()
+    settings.save(config.model_copy(update={'servers': (config.servers[0].model_copy(update={'state': 'approved'}),)}))
+    with pytest.raises(agent.WebSetupRequired, match='Node.js'):
+        agent.run_task(guard, 'q', None)
