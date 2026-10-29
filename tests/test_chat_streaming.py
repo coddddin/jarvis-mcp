@@ -148,18 +148,19 @@ def test_streaming_infer_ignores_a_failing_draft_callback(service):
     assert service._infer_streaming(spawn(script), b'{}', time.monotonic() + 20, broken) == {'reply': 'a'}
 
 
-@pytest.mark.parametrize('script, message', [
-    ('import sys,time\nsys.stdin.buffer.read()\ntime.sleep(30)', 'timed out'),
+@pytest.mark.parametrize('script, code', [
+    ('import sys,time\nsys.stdin.buffer.read()\ntime.sleep(30)', 'timeout'),
     ('import sys,json\nsys.stdin.buffer.read()\nsys.stdout.write((json.dumps({"delta":"x"*1000})+"\\n")*300)',
-     'invalid response'),
-    ('import sys\nsys.stdin.buffer.read()\nprint("not json")', 'invalid response'),
+     'invalid_response'),
+    ('import sys\nsys.stdin.buffer.read()\nprint("not json")', 'invalid_response'),
     ('import sys,json\nsys.stdin.buffer.read()\nprint(json.dumps({"ok":False,"error":"ValueError"}))\nsys.exit(1)',
-     'invalid response'),
+     'invalid_response'),
 ])
-def test_streaming_infer_keeps_deadline_size_and_exit_checks(service, script, message):
+def test_streaming_infer_keeps_deadline_size_and_exit_checks(service, script, code):
     process = spawn(script)
-    with pytest.raises(ChatError, match=message):
+    with pytest.raises(ChatError) as caught:
         service._infer_streaming(process, b'{}', time.monotonic() + 1.5, lambda _: None)
+    assert caught.value.code == code and not str(caught.value).isascii()    # a Korean reason for the user
     assert process.poll() is not None                              # never left running
 
 
@@ -185,8 +186,9 @@ class HangingProcess:
 
 def test_streaming_infer_reports_a_worker_that_hangs_after_closing_stdout(service):
     process = HangingProcess()
-    with pytest.raises(ChatError, match='invalid response'):
+    with pytest.raises(ChatError) as caught:
         service._infer_streaming(process, b'{}', time.monotonic() + 20, lambda _: None)
+    assert caught.value.code == 'invalid_response'
     assert process.killed and process.stdout.closed and process.stdin.closed
 
 

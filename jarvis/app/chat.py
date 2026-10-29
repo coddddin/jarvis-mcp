@@ -442,7 +442,9 @@ class ChatService:
         return turns
 
     def _note_answer(self, identity, request_id, message, history):
-        """Answers from approved Vault excerpts with the local model only: no other tools, no web, no team."""
+        """Answers from approved Vault excerpts with the model this request started with (the local default, or an
+        external model the user selected: approved notes are on the external allowlist). No other tools, no web,
+        no team."""
         try:
             result = self.notes.search(self._note_query(message), limit=self.NOTE_LIMIT)
         except KnowledgeError as exc:

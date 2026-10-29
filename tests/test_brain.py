@@ -345,3 +345,45 @@ def test_button_api_without_chat_is_unavailable(tmp_path):
     task = store.create(TaskRequest(summary='task'))
     http = TestClient(create_event_app(store, token=TOKEN, task_ids=[task.task_id], origins=[ORIGIN]), base_url=ORIGIN)
     assert http.get('/api/brain', headers=AUTH).status_code == 503
+
+
+# --- follow-up: no secrets in brain.json, no leftover temporary file ---------------------------------------------
+
+SECRET = 'sk-ant-api03-' + 'x' * 40
+
+
+def test_a_connection_ref_is_refused_unless_the_provider_uses_one(tmp_path, monkeypatch):
+    service, _, _ = make_service(tmp_path, monkeypatch, select_external=False)
+    path = tmp_path / '.jarvis-settings' / 'brain.json'
+    with pytest.raises(BrainError, match='비밀값'):
+        service.brain.select('ollama', 'qwen3.5:9b', SECRET)
+    with pytest.raises(BrainError, match='비밀값'):
+        service.brain.select('claude-cli', 'sonnet', SECRET, confirm_external=True)
+    assert not path.exists()                                            # refused before anything is written
+    service.brain.select('ollama', 'qwen3.5:9b')
+    before = path.read_text(encoding='utf-8')
+    refused = client(service).post('/api/brain/selection', headers=POST,
+                                   json={'provider_id': 'ollama', 'model_id': 'qwen3.5:9b', 'connection_ref': SECRET})
+    assert refused.status_code == 400 and SECRET not in refused.text
+    assert path.read_text(encoding='utf-8') == before and SECRET not in before
+
+
+def test_a_hand_edited_connection_ref_is_ignored(tmp_path, monkeypatch):
+    service, _, _ = make_service(tmp_path, monkeypatch, select_external=False)
+    service.local.fetch = ollama_fetch(('qwen3.5:9b', 'gemma3:4b'))
+    BrainSettings(service.guard).save(Selection('ollama', 'gemma3:4b', 'something'), [])
+    assert service.brain.current().selection == service.brain.default
+
+
+def test_a_failed_save_leaves_no_temporary_file_and_keeps_the_old_selection(tmp_path, monkeypatch):
+    service, _, _ = make_service(tmp_path, monkeypatch, select_external=False)
+    service.local.fetch = ollama_fetch(('qwen3.5:9b', 'gemma3:4b'))
+    service.brain.select('ollama', 'qwen3.5:9b')
+
+    def broken(source, target):
+        raise PermissionError('file in use')
+    monkeypatch.setattr(brain.os, 'replace', broken)
+    with pytest.raises(PermissionError):
+        service.brain.select('ollama', 'gemma3:4b')
+    assert sorted(item.name for item in (tmp_path / '.jarvis-settings').iterdir()) == ['brain.json']
+    assert service.brain.current().selection == Selection('ollama', 'qwen3.5:9b')
