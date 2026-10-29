@@ -31,6 +31,7 @@
 - [파일 정리·다운로드 미리보기](guides/file-organization.md): 분류·백업·이동·기록·되돌리기와 다운로드 읽기 전용 경계.
 - [등록형 작업 환경 런처](guides/workflows.md): 프로필 등록·미리보기·기동·상태·관리 서비스 종료.
 - [에러 분석·수정 제안](guides/debug-assistant.md): 로컬 로그 진단·비밀값 가림·Python 문법 점검·읽기 전용 diff 제안.
+- [MCP 서버 연결](guides/mcp-client.md): 사용자가 승인한 MCP 서버·도구 고정(schema 해시), 작업별 격리 세션, 외부 모델 전송 범위.
 - [공개 웹 정보 수집](guides/web-information.md): 등록된 Python/BBC/서울 날씨·문서 수집, 출처·발췌·시간·로컬 보고서.
 - [웹 작업 벤치마크](guides/web-eval.md): 10과제·채점 규칙·고정한 MCP 서버, Claude/qwen 드라이버로 N/10 보고.
 - [시스템 도구](guides/system-tools.md): 서버 실행, 명령·시스템 상태·화면 캡처, 공통 제한.
