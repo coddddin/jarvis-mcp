@@ -167,3 +167,33 @@ def test_page_reads_stop_at_the_page_limit_and_then_only_the_answer_is_offered(s
     assert len(turn['tools']) == PAGES_PER_REQUEST and turn['status'] == 'completed'
     assert schemas[-1]['properties']['tool']['enum'] == ['none']
     assert len(schemas) == PAGES_PER_REQUEST + 1
+
+
+def test_pages_already_read_are_kept_when_time_runs_short(service, monkeypatch):
+    import jarvis.app.chat as chat_module
+    now = [1000.0]
+    monkeypatch.setattr(chat_module.time, 'monotonic', lambda: now[0])
+
+    class SlowPages(dict):
+        def __getitem__(self, url):
+            now[0] += 120                                               # 20 s left: less than one model round
+            return page(url, ['https://a.example/next'])
+    decisions = iter([ChatDecision(reply='', tool='read_public_web_page', argument='https://a.example/'),
+        ChatDecision(reply='x', tool='none', argument='', basis='external', evidence_ids=['e1'])])
+    turn, schemas, _ = run(service, monkeypatch, decisions, 'https://a.example/ 페이지 읽어줘', SlowPages())
+    assert turn['status'] == 'completed' and len(turn['tools']) == 1
+    assert schemas[1]['properties']['tool']['enum'] == ['none']          # no further page: answer with what was read
+    assert 'Text of https://a.example/' in turn['assistant']
+
+
+def test_an_empty_page_argument_does_not_use_up_a_page():
+    assert ChatService._can_read([{'name': 'read_public_web_page', 'status': 'error', 'url': ''}] * PAGES_PER_REQUEST)
+
+
+def test_an_article_header_is_content_but_a_sidebar_is_chrome(collector, monkeypatch):
+    html = ('<aside>' + ''.join(f'<a href="/s{i}">side {i}</a>' for i in range(3)) + '</aside>'
+            '<article><header><a href="/author">Author</a></header><p><a href="/body">Body</a></p>'
+            '<nav><a href="/toc">TOC</a></nav></article>')
+    monkeypatch.setattr(collector, '_fetch', lambda *args: ('text/html', html))
+    links = [link['text'] for link in collector.read_page('https://example.com/')['links']]
+    assert links[:2] == ['Author', 'Body'] and links.index('TOC') > links.index('Body')

@@ -135,10 +135,12 @@ class VisibleText(HTMLParser):
         if tag in ('main', 'article') or values.get('role') == 'main':
             self.regions.append((tag, 0))
         elif tag in self.CHROME or values.get('role') in ('navigation', 'banner', 'contentinfo', 'complementary'):
-            self.regions.append((tag, 2))
+            # An article's own header or footer is content; menus and sidebars stay chrome.
+            inside_main = any(rank == 0 for _, rank in self.regions)
+            self.regions.append((tag, 0 if inside_main and tag in ('header', 'footer') else 2))
         if tag == 'a' and not any(name in self.NO_LINKS for name in self.hidden):
             href = values.get('href')
-            rank = 2 if any(r == 2 for _, r in self.regions) else 0 if self.regions else 1
+            rank = self.regions[-1][1] if self.regions else 1        # the innermost region decides
             self.anchor = [href, [], rank] if href else None
             if self.anchor:
                 self.anchors.append(self.anchor)

@@ -221,6 +221,7 @@ class ChatService:
             raise ChatError('REA requires an explicit project file path in your current message.')
         return self.tools[name](path=argument)
 
+    FINAL_ROUND_SECONDS = 25        # time kept for the answer round after tool rounds
     USER_URL = re.compile(r'https://[^\s<>"\'`]+')
 
     @classmethod
@@ -250,7 +251,7 @@ class ChatService:
     @staticmethod
     def _can_read(traces):
         """Pages left in this request: PAGES_PER_REQUEST attempts and REQUEST_BYTES of page content."""
-        reads = [trace for trace in traces if trace.get('name') == 'read_public_web_page']
+        reads = [trace for trace in traces if trace.get('name') == 'read_public_web_page' and trace.get('url')]
         size = sum((trace.get('page') or {}).get('bytes') or 0 for trace in reads)
         return len(reads) < PAGES_PER_REQUEST and size < REQUEST_BYTES
 
@@ -682,15 +683,16 @@ class ChatService:
             for iteration in range(2 + PAGES_PER_REQUEST):
                 if iteration >= limit:
                     break
-                last = iteration == limit - 1
+                # Also the answer round when less than one model round is left, so pages already read are kept.
+                last = iteration == limit - 1 or deadline - time.monotonic() < self.FINAL_ROUND_SECONDS
                 self.store.reserve(identity)
                 schema = ChatDecision.model_json_schema()
                 schema['required'] = list(schema.get('required', [])) + ['basis', 'evidence_ids']
                 schema['properties']['tool']['enum'] = ['none'] if last else ['none', *tools]
                 page_request = ((plan is not None and plan.web_action == 'read_page')
                                 or re.search(r'원문|본문|페이지|읽어|\bread\b', message, re.I))
-                if offline:
-                    pass  # no forced outside tool while note content is in the context
+                if offline or last:
+                    pass  # no forced outside tool while note content is in the context, nor in the answer round
                 elif iteration == 0 and typed and page_request and 'read_public_web_page' in tools:
                     schema['properties']['tool']['enum'] = ['read_public_web_page']
                     schema['properties']['argument']['enum'] = typed
@@ -728,7 +730,7 @@ class ChatService:
                         schema['properties']['evidence_ids']['minItems'] = 1
                 local_tools = [name for name in tools
                                if name in {'get_system_status', 'search_local_documents', 'analyze_program_static'}]
-                if iteration == 0 and plan is not None and plan.evidence == 'local' and local_tools:
+                if iteration == 0 and not last and plan is not None and plan.evidence == 'local' and local_tools:
                     schema['properties']['tool']['enum'] = local_tools
                 # A round that must call a tool cannot be the answer, so its text is never shown as a draft.
                 forced = 'none' not in schema['properties']['tool']['enum']
