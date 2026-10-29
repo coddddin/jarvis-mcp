@@ -57,6 +57,8 @@ DOWNLOAD_TYPES = {'.pdf': (b'%PDF',), '.csv': None, '.txt': None, '.json': None,
                   '.jpg': (b'\xff\xd8\xff',), '.jpeg': (b'\xff\xd8\xff',), '.gif': (b'GIF8',),
                   '.xlsx': (b'PK\x03\x04',), '.docx': (b'PK\x03\x04',), '.pptx': (b'PK\x03\x04',),
                   '.hwpx': (b'PK\x03\x04',), '.hwp': (b'\xd0\xcf\x11\xe0',), '.xls': (b'\xd0\xcf\x11\xe0',)}
+FILE_LINK = re.compile(r'내려\s*받|다운로드|다운\s*받|download|\.(csv|pdf|xlsx?|hwpx?|docx|json|txt)\b', re.I)
+PUBLIC_BODY = re.compile(r'\.(go|or|ac|re)\.kr$|\.gov(\.[a-z]{2})?$|\.int$|\.edu$')
 ARTIFACT = re.compile(r'^(page|console)-\d{4}-\d\d-\d\dT[\d-]+Z\.(yml|log|png|jpe?g)$')
 DEFENDER = Path(r'C:\Program Files\Windows Defender\MpCmdRun.exe')
 
@@ -201,6 +203,7 @@ class Browser:
     def __init__(self, session, server_id, output_dir, *, resolve=public_addresses, sleep=time.sleep):
         self.session, self.server, self.output = session, server_id, Path(output_dir)
         self.resolve, self.sleep = resolve, sleep
+        self.current = ''                                 # URL of the last page read in the browser
 
     def _call(self, tool, arguments):
         answer = self.session.call(f'mcp:{self.server}/{tool}', arguments)
@@ -216,6 +219,8 @@ class Browser:
         except WebTaskError:
             self.leave()
             raise WebTaskError('The page moved to an address that is not public; it was not read.') from None
+        if (urlsplit(page['url']).hostname or '').endswith('bing.com'):
+            raise WebTaskError('The browser is still on a search page; the page did not open.')
         return page
 
     def leave(self):
@@ -225,15 +230,23 @@ class Browser:
             pass
 
     def open(self, url):
-        self._call('browser_navigate', {'url': check_public(url, self.resolve)})
-        return self._settled_page()
+        url, before = check_public(url, self.resolve), self.current
+        self._call('browser_navigate', {'url': url})
+        page = self._settled_page()
+        if before and page['url'] == before and url != before:     # navigation failed: still the old page
+            raise WebTaskError('The page did not open.')
+        self.current = page['url']
+        return page
 
     def press(self, ref, label):
         self._call('browser_click', {'target': ref, 'element': label[:80]})
-        return self._settled_page()
+        page = self._settled_page()
+        self.current = page['url']
+        return page
 
     def search(self, query):
         self._call('browser_navigate', {'url': bing_url(query)})
+        self.current = ''
         self.sleep(SETTLE_SECONDS)
         return parse_bing(self._call('browser_snapshot', {}))
 
@@ -320,6 +333,10 @@ class TaskState:
     next_number: int = 1
 
     def add(self, kind, text, *, url='', ref='', page=None):
+        if url:                                       # one number per address, so the loop guard sees repeats
+            for number, item in self.items.items():
+                if item['url'] == url:
+                    return number
         number = self.next_number
         self.next_number += 1
         self.items[number] = {'kind': kind, 'url': url, 'ref': ref, 'text': text[:120], 'page': page}
@@ -456,7 +473,8 @@ class WebAgent:
             if not results:
                 return '검색 결과가 없다. 검색어를 바꿔라.', None
             lines = [f'[{state.add("result", r["title"], url=r["url"])}] {r["title"]} - {urlsplit(r["url"]).hostname}'
-                     f'\n    {r["snippet"]}' for r in results]
+                     + (' (공공기관)' if PUBLIC_BODY.search(urlsplit(r['url']).hostname or '') else '')
+                     + f'\n    {r["snippet"]}' for r in results]
             return f'검색 "{query}" 결과:\n' + '\n'.join(lines), None
         item = state.items[number]
         state.tried.add((tool, number))
@@ -494,8 +512,10 @@ class WebAgent:
         state.traces.append({'tool': 'open', 'url': page['url'], 'status': 'ok', 'source': source, 'page': number})
         if source == 'browser':
             state.browser_page = number
-        links = sorted((link for link in page['links'] if link.get('url')), key=lambda link: link['rank'])
-        shown, seen = [], {page['url']}
+        wanted = (lambda text: 0 if FILE_LINK.search(text) else 1) if DOWNLOAD_REQUEST.search(state.request) else (lambda text: 0)
+        links = sorted((link for link in page['links'] if link.get('url')),
+                       key=lambda link: (wanted(link['text'] + ' ' + link['url']), link['rank']))
+        shown, seen = [], {page['url'], *(item['url'] for item in state.pages.values())}
         for link in links:
             target = bing_target(link['url']).split('#', 1)[0]
             if not target.startswith('https://') or target in seen or not link['text']:
@@ -506,7 +526,7 @@ class WebAgent:
                 break
         buttons = [f'[{state.add("button", b["text"], ref=b["ref"], page=number)}] {b["text"][:60]}'
                    for b in sorted((b for b in page['buttons'] if not BLOCKED_PRESS.search(b['text'])),
-                                  key=lambda b: b['rank'])[:BUTTONS]] if source == 'browser' else []
+                                  key=lambda b: (wanted(b['text']), b['rank']))[:BUTTONS]] if source == 'browser' else []
         text = page['text'][:PAGE_CHARS]
         return (f'페이지 [{number}] {page["title"]}\n주소: {page["url"]}\n본문: {text}'
                 + ('…(잘림)' if len(page['text']) > PAGE_CHARS else '')

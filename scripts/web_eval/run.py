@@ -236,7 +236,8 @@ def jarvis_task(task, folder):
     for trace in result['traces']:
         url = trace.get('url') or (trace.get('from') if str(trace.get('from', '')).startswith('https://') else '')
         calls.append({'name': trace['tool'], 'args': {'url': url} if url else {'query': trace.get('query', '')},
-                      'status': trace.get('status'), 'source': trace.get('source')})
+                      'status': trace.get('status'), 'source': trace.get('source'),
+                      'from': str(trace.get('from') or '')[:120]})
     notes = [result['status']] + ([result['reason']] if result['reason'] else [])
     return {'answer': result['answer'], 'calls': calls, 'turns': result['calls'], 'notes': notes,
             'searches': result['searches'], 'agent_files': result['files']}

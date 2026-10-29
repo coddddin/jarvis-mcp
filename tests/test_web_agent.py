@@ -274,3 +274,45 @@ def test_the_download_action_scans_and_reports_the_file(guard, tmp_path):
                       scan=lambda p: True).run('https://example.org/a 에서 csv 내려받아줘')
     assert [f['status'] for f in result['files']] == ['saved']
     assert (tmp_path / 'downloads' / 'report.csv').exists() and '내려받은 파일' in result['answer']
+
+
+def test_one_address_keeps_one_number_and_opened_pages_are_not_linked_again(guard, tmp_path):
+    state = agent.TaskState('q')
+    assert state.add('result', 'a', url='https://example.org/a') == state.add('link', 'a', url='https://example.org/a')
+    decide = scripted({'tool': 'open', 'number': 1}, {'tool': 'answer', 'answer': 'x'})
+    make(guard, tmp_path, decide, {'https://example.org/a': PAGE}).run('https://example.org/a')
+    assert '[1]' not in decide.seen[1][0][-2]['content'].split('링크:', 1)[1]
+
+
+def test_a_failed_navigation_does_not_reread_the_old_page(tmp_path):
+    class Stuck(FakeSession):
+        def call(self, name, arguments):
+            if arguments.get('url') == 'https://example.org/broken':
+                return {'text': 'navigated', 'is_error': False}          # but the browser stayed where it was
+            return super().call(name, arguments)
+    b = Browser(Stuck({'https://example.org/a': PAGE}), 'pw', tmp_path, resolve=resolve, sleep=lambda s: None)
+    b.open('https://example.org/a')
+    with pytest.raises(WebTaskError, match='did not open'):
+        b.open('https://example.org/broken')
+
+
+def test_a_search_page_is_never_read_as_a_source(tmp_path):
+    b = browser({'https://example.org/x': snapshot('https://www.bing.com/search?q=x', 'x', '- main:\n  - paragraph: x')},
+                tmp_path)
+    with pytest.raises(WebTaskError, match='search page'):
+        b.open('https://example.org/x')
+
+
+def test_download_tasks_list_file_links_and_buttons_first(guard, tmp_path):
+    many = '\n'.join(f'  - button "메뉴 {i}" [ref=m{i}]' for i in range(12))
+    page = snapshot('https://example.org/a', 'Data', f'- main:\n  - paragraph: data\n{many}\n  - button "다운로드" [ref=d1]')
+    decide = scripted({'tool': 'open', 'number': 1}, {'tool': 'answer', 'answer': 'x'})
+    make(guard, tmp_path, decide, {'https://example.org/a': page}).run('https://example.org/a 파일 내려받아줘')
+    buttons = decide.seen[1][0][-2]['content'].split('버튼:', 1)[1]
+    assert buttons.split('|')[0].strip().endswith('다운로드')
+
+
+def test_public_body_hosts_are_marked_in_results(guard, tmp_path):
+    decide = scripted({'tool': 'search', 'query': '제주 날씨'}, {'tool': 'answer', 'answer': 'x'})
+    make(guard, tmp_path, decide, {agent.bing_url('제주 날씨'): BING}).run('제주 날씨')
+    assert 'www.weather.go.kr (공공기관)' in decide.seen[1][0][-2]['content']
