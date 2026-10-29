@@ -282,7 +282,10 @@ class Browser:
         return page
 
     def press(self, ref, label):
-        self._call('browser_click', {'target': ref, 'element': label[:80]})
+        # The label only describes the button; path-like text (C:\, \\, file:, ..\) is removed so it never looks
+        # like a file argument to the MCP client's path checks.
+        label = ' '.join(re.sub(r'\\|file:', ' ', label, flags=re.I).split())[:80] or 'button'
+        self._call('browser_click', {'target': ref, 'element': label})
         page = self._settled_page()
         self.current = page['url']
         return page
