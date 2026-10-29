@@ -10,7 +10,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from jarvis.agents.brain import (LOCAL_REASON, BrainRegistry, BrainRequest, BrainSettings, OllamaProvider, Selection,
-                                 external_allowed, local_only_source, spawn_chat_worker)
+                                 external_allowed, local_only_source, set_attached_families, spawn_chat_worker)
 from jarvis.agents.chat import ChatBusy, ChatError, ChatStore
 from jarvis.agents.runner import LocalConfig
 from jarvis.agents.team import HybridTeam
@@ -21,6 +21,7 @@ from jarvis.core.guardrails import GuardrailError
 from jarvis.core.redaction import redact
 from jarvis.cli.worker_view import open_worker_view
 from jarvis.features.knowledge.service import KnowledgeError
+from jarvis.features.mcp_client.service import McpSettings, families as mcp_families
 from jarvis.features.obsidian.service import ObsidianStore
 from jarvis.features.web.service import FOLLOW_DEPTH, PAGES_PER_REQUEST, REQUEST_BYTES
 
@@ -113,6 +114,8 @@ class ChatService:
                                    BrainSettings(guard))
         self._turn_choice = None                             # the model the request in flight answers with
         self.store = ChatStore(guard)
+        # Families of approved MCP tools, so their results follow the external-model rules (jarvis.agents.brain).
+        set_attached_families(mcp_families(McpSettings(guard).load()))
         self.tools = {function.__name__: function for function in collect_tools(ToolContext.create(guard))
                       if function.__name__ in TOOLS}
         self.lock = threading.Lock()

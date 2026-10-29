@@ -122,9 +122,26 @@ EXTERNAL_TOOLS = tuple(sorted(name for name, family in TOOL_FAMILIES.items()
                               if family in EXTERNAL_FAMILIES and name not in NOT_READ_ONLY))
 
 
+# MCP tools the user attached and approved (jarvis.features.mcp_client), as 'mcp:<server>/<tool>' -> family. The app
+# layer sets it from the approved config; a tool gets public_web only by the user's choice, anything else is local.
+_ATTACHED = {}
+
+
+def set_attached_families(mapping):
+    """Replace the attached-tool families. Names outside 'mcp:' and families other than public_web/local are dropped."""
+    _ATTACHED.clear()
+    _ATTACHED.update({name: family for name, family in dict(mapping).items()
+                      if isinstance(name, str) and name.startswith('mcp:') and family in ('public_web', 'local')})
+
+
+def family_of(tool_name):
+    """The source family of a tool's results: built-in JARVIS tools first, then attached MCP tools; None if unknown."""
+    return TOOL_FAMILIES.get(tool_name) or _ATTACHED.get(tool_name)
+
+
 def external_allowed(tool_name):
     """True when results of this tool may reach an external model. Unknown names are local-only."""
-    return TOOL_FAMILIES.get(tool_name) in EXTERNAL_FAMILIES
+    return family_of(tool_name) in EXTERNAL_FAMILIES
 
 
 def consent_payload(info):
