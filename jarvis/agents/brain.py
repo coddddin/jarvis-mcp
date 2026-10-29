@@ -86,6 +86,8 @@ class Provider(Protocol):
     provider_id: str
     label: str
     external: bool
+    uses_connection_ref: bool     # False unless the provider reads a named credential entry; then connection_ref is
+                                  # that entry's name. Providers without it never accept one (no pasted secrets).
 
     def models(self) -> list[ModelInfo]: ...
     def check(self, model_id: str) -> ModelInfo: ...
@@ -159,6 +161,11 @@ MAX_OUTPUT = 262144
 MAX_INPUT = 65536
 MAX_MODELS = 32
 OLLAMA_CAPABILITIES = Capabilities(json_schema=True, streaming=True, tools=False)
+# Shown to the user as the failure reason (BrainError text).
+TOO_LARGE = '대화가 너무 길어 로컬 모델에 보낼 수 없습니다. 새 대화에서 다시 물어봐 주십시오.'
+TIMED_OUT = '로컬 모델이 제한 시간 안에 답하지 못했습니다.'
+INVALID = '로컬 모델이 응답하지 않았거나 올바르지 않은 응답을 보냈습니다. Ollama 상태를 확인해 주십시오.'
+FAILED = '로컬 모델이 답을 만들지 못했습니다. Ollama와 모델 설치 상태를 확인해 주십시오.'
 
 
 def spawn_chat_worker():
@@ -198,6 +205,7 @@ class OllamaProvider:
     provider_id = 'ollama'
     label = '로컬 Ollama'
     external = False
+    uses_connection_ref = False
 
     def __init__(self, guard, *, spawn=None, fetch=None):
         self.guard = guard
@@ -267,7 +275,7 @@ class OllamaProvider:
             body['stream'] = True
         payload = json.dumps(body, ensure_ascii=False)
         if len(payload.encode()) > MAX_INPUT:
-            raise BrainError('too_large', 'Chat context limit reached.')
+            raise BrainError('too_large', TOO_LARGE)
         process = self.spawn()
         if request.on_delta is not None:
             return self.stream(process, payload.encode(), request.deadline, request.on_delta)
@@ -276,17 +284,17 @@ class OllamaProvider:
             while True:
                 self.guard.check_running()
                 if time.monotonic() > request.deadline:
-                    raise BrainError('timeout', 'Local model response timed out.')
+                    raise BrainError('timeout', TIMED_OUT)
                 try:
                     output, _ = process.communicate(pending, timeout=0.2)
                     break
                 except subprocess.TimeoutExpired:
                     pending = None
             if len(output) > MAX_OUTPUT or process.returncode:
-                raise BrainError('invalid_response', 'Local model unavailable or returned an invalid response.')
+                raise BrainError('invalid_response', INVALID)
             value = json.loads(output)
             if value.get('ok') is not True:
-                raise BrainError('unavailable', 'Local model response failed.')
+                raise BrainError('unavailable', FAILED)
             return value['result']
         finally:
             if process.poll() is None:
@@ -298,7 +306,6 @@ class OllamaProvider:
         reads the worker's lines as they arrive and passes each reply delta to on_delta. A failing on_delta only
         loses the draft; the answer itself still comes from the final line."""
         lines = queue.Queue()
-        invalid = 'Local model unavailable or returned an invalid response.'
 
         def write():
             try:
@@ -323,7 +330,7 @@ class OllamaProvider:
             while True:
                 self.guard.check_running()
                 if time.monotonic() > deadline:
-                    raise BrainError('timeout', 'Local model response timed out.')
+                    raise BrainError('timeout', TIMED_OUT)
                 try:
                     line = lines.get(timeout=0.2)
                 except queue.Empty:
@@ -332,11 +339,11 @@ class OllamaProvider:
                     break
                 total += len(line)
                 if total > MAX_OUTPUT:
-                    raise BrainError('invalid_response', invalid)
+                    raise BrainError('invalid_response', INVALID)
                 try:
                     value = json.loads(line)
                 except ValueError:
-                    raise BrainError('invalid_response', invalid) from None
+                    raise BrainError('invalid_response', INVALID) from None
                 if isinstance(value, dict) and set(value) == {'delta'} and isinstance(value['delta'], str):
                     try:
                         on_delta(value['delta'])
@@ -347,11 +354,11 @@ class OllamaProvider:
             try:
                 process.wait(timeout=5)
             except subprocess.TimeoutExpired:
-                raise BrainError('invalid_response', invalid) from None
+                raise BrainError('invalid_response', INVALID) from None
             if process.returncode or not isinstance(final, dict):
-                raise BrainError('invalid_response', invalid)
+                raise BrainError('invalid_response', INVALID)
             if final.get('ok') is not True:
-                raise BrainError('unavailable', 'Local model response failed.')
+                raise BrainError('unavailable', FAILED)
             return final['result']
         finally:
             if process.poll() is None:
@@ -408,8 +415,15 @@ class BrainSettings:
         text = json.dumps({'version': 1, 'selection': selection.public(),
                            'external_confirmed': sorted(set(external_confirmed))[:16]}, ensure_ascii=False, indent=2)
         temporary = path.with_name(path.name + '.tmp')
-        temporary.write_text(text, encoding='utf-8')
-        os.replace(temporary, path)
+        try:
+            temporary.write_text(text, encoding='utf-8')
+            os.replace(temporary, path)
+        except BaseException:
+            try:
+                temporary.unlink()
+            except OSError:
+                pass
+            raise
 
 
 # --- registry ------------------------------------------------------------------------------------------------------
@@ -449,7 +463,8 @@ class BrainRegistry:
         saved = self.settings.load() if self.settings is not None else {'selection': None, 'external_confirmed': []}
         selection = saved['selection']
         provider = self.providers.get(selection.provider_id) if selection is not None else None
-        if provider is None or (provider.external and selection.provider_id not in saved['external_confirmed']):
+        if (provider is None or (provider.external and selection.provider_id not in saved['external_confirmed'])
+                or (selection.connection_ref is not None and not getattr(provider, 'uses_connection_ref', False))):
             return self.default_choice()
         return self._choice(selection, provider)
 
@@ -474,6 +489,9 @@ class BrainRegistry:
         provider = self.providers.get(provider_id)
         if provider is None:
             raise BrainError('unavailable', '등록되지 않은 제공자입니다.')
+        if connection_ref is not None and not getattr(provider, 'uses_connection_ref', False):
+            # Checked before anything is saved: a key pasted into this field must never reach brain.json.
+            raise BrainError('unavailable', '이 제공자는 연결 이름을 쓰지 않습니다. 비밀값은 여기에 넣지 마십시오.')
         info = provider.check(model_id)
         if not info.available:
             raise BrainError('unavailable', info.reason or '이 모델을 쓸 수 없습니다.')
