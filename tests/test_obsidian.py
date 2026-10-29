@@ -68,12 +68,12 @@ def test_revocation_hides_cached_excerpt(tmp_path):
 
 def test_secrets_links_hidden_folders_and_non_markdown_excluded(tmp_path):
     store, vault, path = setup(tmp_path)
-    (vault / 'secret.md').write_text(note() + '\npassword: private-data')
-    (vault / 'ignored.txt').write_text(note())
+    (vault / 'secret.md').write_text(note() + '\npassword: private-data', encoding='utf-8')
+    (vault / 'ignored.txt').write_text(note(), encoding='utf-8')
     (vault / '.obsidian').mkdir()
-    (vault / '.obsidian/plugin.md').write_text(note())
+    (vault / '.obsidian/plugin.md').write_text(note(), encoding='utf-8')
     outside = tmp_path.parent / (tmp_path.name + '-outside.md')
-    outside.write_text(note())
+    outside.write_text(note(), encoding='utf-8')
     os.link(outside, vault / 'hard.md')
     assert store.index()['indexed_files'] == 1
     assert [x['path'] for x in store.search('검색')['results']] == ['JARVIS-Vault/note.md']
