@@ -54,7 +54,9 @@ SETTLE_SECONDS = 2              # wait after a navigation or click before the sn
 BROWSER_USER_AGENT = ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) '
                       'Chrome/130.0.0.0 Safari/537.36 Edg/130.0.0.0')   # Bing serves spam results to "Headless"
 BLOCKED_ORIGINS = 'http://localhost;https://localhost;http://127.0.0.1;https://127.0.0.1;http://[::1];https://[::1]'
-DOWNLOAD_REQUEST = re.compile(r'내려\s*받|다운로드|다운\s*받|\bdownload', re.I)
+# A request to fetch a file. The Downloads folder, its list or files already downloaded are local, not this.
+DOWNLOAD_REQUEST = re.compile(r'(?:내려\s*받|다운\s*받)(?!은|았던|았|은\s*파일)|다운로드(?!\s*(?:폴더|목록|한|된|받은|파일\s*정리))'
+                              r'|\bdownload\b(?!s?\s*folder)', re.I)
 BLOCKED_PRESS = re.compile(r'로그인|로그아웃|회원\s*가입|가입|결제|구매|주문|장바구니|신청|삭제|등록|전송|보내기|제출|댓글|글쓰기|'
                            r'구독|좋아요|공유|log\s*in|log\s*out|sign\s*(in|up)|register|buy|pay|order|checkout|cart|'
                            r'submit|delete|send|post|comment|subscribe|share', re.I)
