@@ -15,7 +15,7 @@
 ## 드라이버
 - `claude`: Claude Code CLI(구독)에 `--mcp-config`로 아래 두 서버만 붙입니다. 내장 도구는 없고(`--tools ""`), 단계마다 확인하지 않습니다(`--permission-mode dontAsk`). 품질 기준선입니다.
 - `qwen-raw`: Ollama `qwen3.5:9b`가 최소 MCP 클라이언트로 같은 서버를 직접 씁니다. 자비스 쪽 도움(스냅숏 줄이기, 단계 계획, 재시도)은 없습니다.
-- 자비스 에이전트 고리가 생기면 `jarvis` 드라이버를 추가해 같은 방식으로 점수를 냅니다.
+- `jarvis`: 자비스 웹 작업 에이전트([웹 작업 에이전트](web-agent.md))가 qwen3.5:9b(로컬 채팅 일꾼)로 돕니다. Playwright는 자비스 MCP 클라이언트로 붙이며 HUD 승인과 같은 방식으로 도구를 고정합니다. 저장소 venv의 python으로 실행합니다.
 
 ## 서버와 경계
 - `@playwright/mcp@0.0.83`: `--headless --isolated --browser msedge --no-webmcp --image-responses omit --output-dir <과제 폴더>\downloads`. 페이지 스크립트 실행·업로드·브라우저 설치 도구는 모델에게 주지 않습니다.
@@ -28,6 +28,7 @@
 python scripts/web_eval/run.py --setup
 %LOCALAPPDATA%\JarvisWorktrees\web-eval\fetch-venv\Scripts\python.exe scripts/web_eval/run.py --driver qwen-raw
 python scripts/web_eval/run.py --driver claude t01 t05
+<저장소>\.venv\Scripts\python.exe scripts/web_eval/run.py --driver jarvis --repeat 3
 python scripts/web_eval/run.py --rescore <결과 폴더>
 ```
 결과 폴더마다 과제별 `record.json`(답, 도구 호출, 턴, 시간, 메모, 점수)과 `summary.json`(N/총수)이 남습니다. 과제당 상한은 10분과 25턴입니다.
@@ -37,4 +38,5 @@ qwen은 실행마다 결과가 달라서(같은 과제가 한 번은 실패, 다
 ## 기준 점수 (2026-10-29, 처음 측정)
 - `claude`: 9/10. t10은 파일을 받았지만(Defender 통과), 그 뒤 Playwright 탭 닫기 호출이 멈춰 10분 상한에 걸렸습니다.
 - `qwen-raw`: 2/10. 생각만 하고 빈 답 내기, 스냅숏 ref 없이 클릭하기, 같은 호출 반복, 거대한 스냅숏(17만~48만 자)으로 문맥이 가득 차는 문제, 공식이 아닌 출처 사용이 주요 실패입니다.
+- `jarvis`(M2, 724ea03): 중앙값 6/10(5, 6, 7). 남은 실패는 모델 쪽입니다. 운임 과제(t03, t06)는 공식이 아닌 출처로 답하고, 버전 과제(t07, t09)는 오래된 페이지를 읽고, 내려받기(t10)는 3번 중 2번 통과했습니다.
 - 자세한 분석은 게시판 작업 "Web surfing: research"에 있습니다.
