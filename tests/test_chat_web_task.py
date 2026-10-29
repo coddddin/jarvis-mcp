@@ -132,3 +132,42 @@ def test_a_web_task_turn_gets_the_longer_deadline(service, monkeypatch):
     monkeypatch.setattr(web_agent, 'run_task', run_task)
     send(service, '제주 날씨 찾아줘')
     assert seen['span'] == pytest.approx(660, abs=1)
+
+
+@pytest.mark.parametrize('message', ['다운로드 폴더 정리해줘', '다운로드 폴더에 뭐 있어?', '바탕화면 파일 찾아줘',
+                                     '내 PC에서 사진 찾아줘', r'C:\work 폴더에서 보고서 찾아줘', '다운받은 파일 정리해줘',
+                                     'projects/demo 에서 함수 찾아줘'])
+def test_local_place_requests_stay_with_local_tools(service, message):
+    assert not service._wants_web_task(message, None)
+
+
+@pytest.mark.parametrize('message', ['다운로드 폴더 정리해줘', '다운로드 목록 보여줘', '다운로드한 파일 정리', '다운받은 파일 정리해줘'])
+def test_the_downloads_folder_is_not_a_download_request(message):
+    assert not web_agent.DOWNLOAD_REQUEST.search(message)
+
+
+@pytest.mark.parametrize('message', ['파이썬 최신 버전 찾아줘', 'Node LTS 설치파일 다운받아줘',
+                                     '공공데이터 사이트에서 폴더 구조 문서 찾아줘', 'https://example.org 폴더 안내 페이지 찾아줘'])
+def test_web_requests_still_become_web_tasks(service, message):
+    assert service._wants_web_task(message, None)
+    assert web_agent.DOWNLOAD_REQUEST.search('Node LTS 설치파일 다운받아줘')
+
+
+def test_a_web_task_uses_one_budget_unit_and_the_daily_cap(service, monkeypatch):
+    configured(monkeypatch)
+    reserved = []
+    real = service.store.reserve
+    monkeypatch.setattr(service.store, 'reserve', lambda identity: (reserved.append(identity), real(identity)))
+
+    def run_task(guard, request, decide, *, on_progress, should_stop):
+        for _ in range(5):
+            decide([], {}, 0)
+        return fake_result()
+    monkeypatch.setattr(web_agent, 'run_task', run_task)
+    monkeypatch.setattr(service, '_answer', lambda *a: {'tool': 'answer'})
+    send(service, '제주 날씨 찾아줘')
+    assert len(reserved) == 1
+    monkeypatch.setattr(ChatService, 'WEB_TASKS_PER_DAY', 2)
+    send(service, '부산 날씨 찾아줘')
+    _, turn = send(service, '서울 날씨 찾아줘')
+    assert '한도(2회)' in turn['assistant']

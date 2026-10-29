@@ -557,6 +557,12 @@ class ChatService:
     WEB_TASK = re.compile(r'찾아\s*(?:줘|주|봐|서)|찾고|알아\s*보고|검색해\s*(?:서|줘|주|봐)|알아\s*봐|조사해|다운\s*받|내려\s*받|다운로드'
                           r'|(?<![a-z])(?:look\s+up|search\s+(?:the\s+)?web|find\s+(?:out|me)|download)(?![a-z])', re.I)
     WEB_TASK_SECONDS = 660            # the agent's 10 minutes plus the answer and the browser shutdown
+    WEB_TASKS_PER_DAY = 100           # web tasks per local day; each task also has its own 30-call cap
+    # Wording about places on this PC: such requests stay with the local tools unless they also name the web.
+    LOCAL_PLACE = re.compile(r'다운로드\s*(?:폴더|목록)|다운로드한\s*파일|(?:다운|내려)\s*받은|폴더|바탕\s*화면|문서\s*폴더|'
+                             r'내\s*(?:PC|컴퓨터|파일|드라이브)|드라이브|로컬|파일\s*탐색기|projects/|[A-Za-z]:[\\/]|\\\\|'
+                             r'(?<![a-z])(?:desktop|downloads\s+folder|my\s+(?:pc|computer|files?))(?![a-z])', re.I)
+    NAMES_WEB = re.compile(r'웹|인터넷|사이트|온라인|https?://|(?<![a-z])(?:web|internet|online|site)(?![a-z])', re.I)
     WEB_TRACE = {'search': 'search_public_web', 'open': 'read_public_web_page', 'press': 'read_public_web_page',
                  'download': 'web_download'}   # web_download is not on the external allowlist: files stay local
 
@@ -565,7 +571,28 @@ class ChatService:
             return False
         if self.STATUS_REQUEST.search(message) and not re.search(r'웹|인터넷|\bweb\b', message, re.I):
             return False
+        if self.LOCAL_PLACE.search(message) and not self.NAMES_WEB.search(message):
+            return False
         return bool(self.WEB_TASK.search(message) or (plan is not None and plan.web_action != 'none'))
+
+    WEB_COUNT = '.jarvis-chat/web_tasks.json'
+
+    def _take_web_task(self):
+        """Count one web task for today (local date); False when today's cap is reached. Runs under self.lock."""
+        path = self.guard.validate_path(self.WEB_COUNT, must_exist=False)
+        today = datetime.now().date().isoformat()
+        try:
+            data = json.loads(path.read_text(encoding='utf-8')) if path.is_file() and not path.is_symlink() else {}
+        except (OSError, ValueError):
+            data = {}
+        count = data.get('count', 0) if data.get('date') == today and isinstance(data.get('count'), int) else 0
+        if count >= self.WEB_TASKS_PER_DAY:
+            return False
+        path.parent.mkdir(exist_ok=True)
+        temporary = path.with_name(path.name + '.tmp')
+        temporary.write_text(json.dumps({'date': today, 'count': count + 1}), encoding='utf-8')
+        temporary.replace(path)
+        return True
 
     def stop_web(self):
         """The chat stop button: the running web task ends before its next step."""
@@ -603,6 +630,11 @@ class ChatService:
             return None
         self.store.extend(identity, request_id, self.WEB_TASK_SECONDS)
         self._turn_choice, local_reason = self._choose(choice, message, plan)
+        if not self._take_web_task():
+            self.store.finish(identity, request_id, model=self._turn_choice.record(local_reason),
+                              reply=f'오늘 웹 작업 한도({self.WEB_TASKS_PER_DAY}회)에 닿았습니다. 내일 다시 요청해 주십시오.')
+            return self.store.get(identity)
+        self.store.reserve(identity)                         # one conversation budget unit per web task
         answered_by = self._turn_choice.record(local_reason)
         lines = []
 
@@ -612,8 +644,7 @@ class ChatService:
                 lines.append(redact(line))
                 self.store.draft(identity, request_id, '\n'.join(lines[-12:]))
 
-        def decide(messages, schema, deadline):
-            self.store.reserve(identity)
+        def decide(messages, schema, deadline):            # counted by the task's own 30-call cap
             return self._answer(messages, schema, deadline)
 
         self._web_stop.clear()
