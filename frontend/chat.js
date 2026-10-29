@@ -8,6 +8,12 @@
   const statusText = value => statusLabels[value] || '상태 확인 필요';
   let token = null, current = null, pending = false, generation = 0, selection = 0, mode = 'chat';
   let conversations = [];
+  // Model-name button (brain.js): the badge says whether answers are made on this PC or outside it.
+  const brain = window.JarvisBrain?.create({button: byId('chatModel'), panel: byId('chatModelPanel'), token: () => token,
+    onChange: selection => {
+      byId('chatWhere').textContent = selection.external ? '외부 모델로 대화' : '내 PC에서 대화';
+      byId('chatWhere').className = 'status ' + (selection.external ? 'needs_user_input' : 'completed');
+    }});
   const POLL_MS = 400;  // while a reply is pending only: it carries the streamed draft
   const node = (tag, className, text) => {
     const value = document.createElement(tag);
@@ -188,6 +194,7 @@
         list.append(team);
       }
       if (turn.assistant) list.append(bubble('assistant', turn.assistant));
+      const answered = window.JarvisBrain?.answeredBy(turn); if (answered) list.append(node('p', 'chat-turn-model', answered));
       else if (turn.status === 'pending' && turn.draft) list.append(draftBubble(turn.draft));
       const sources = window.JarvisSources?.render(turn); if (sources) list.append(sources);
       if (turn.tools?.length) {
@@ -204,7 +211,6 @@
   async function refreshList() {
     const data = await api('/api/chat/conversations');
     conversations = data.conversations;
-    byId('chatModel').textContent = data.model + ' · 로컬';
   }
   async function newConversation() {
     const result = await api('/api/chat/conversations', {});
@@ -216,13 +222,13 @@
     token = next; current = null; conversations = []; const version = ++generation;
     byId('workspaceTabs').hidden = !token; byId('chatPanel').hidden = !token;
     busy(false); say();
-    if (!token) {byId('chatMessages').replaceChildren(); byId('chatConversations').replaceChildren(); byId('chatInput').value = ''; return;}
+    if (!token) {brain?.reset(); byId('chatMessages').replaceChildren(); byId('chatConversations').replaceChildren(); byId('chatInput').value = ''; return;}
     mode = 'chat'; view(mode); busy(true);
     try {
       await refreshList(); if (version !== generation) return;
       current = conversations.length ? await api('/api/chat/conversations/' + conversations[0].id) : await api('/api/chat/conversations', {});
       if (version !== generation) return;
-      await refreshList(); render(); busy(false);
+      await refreshList(); render(); busy(false); brain?.refresh();
     } catch (error) {if (version === generation) {say(error.message); busy(false);}}
   });
   byId('chatTab').addEventListener('click', () => view('chat'));

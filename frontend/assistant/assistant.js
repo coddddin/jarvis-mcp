@@ -10,6 +10,9 @@
   const caption = $('caption'), reply = $('reply'), sources = $('sources'), input = $('input'), mic = $('mic');
   const send = $('send'), presence = $('presenceText'), dot = $('presenceDot'), connectLink = $('connectLink');
   const hint = $('hint');
+  // Model-name button: the model that answers chat and voice (brain.js; the status line follows a switch).
+  const brain = window.JarvisBrain?.create({button: $('modelButton'), panel: $('modelPanel'), token: () => token,
+    onChange: selection => presenceState.setModel(selection.label)});
   const CAPTIONS = {connecting: '연결하고 있어요', idle: '무엇을 도와드릴까요?', listening: '듣고 있어요',
     thinking: '생각하고 있어요', speaking: ''};
   const POLL_MS = 400;  // only while a reply is pending: it carries the streamed draft
@@ -82,6 +85,7 @@
     voice?.close(); voice = null; voiceReady = false; voiceListening = false;
     hint.textContent = HINTS.off;
     token = null; conversation = null; generation++;
+    brain?.reset();
     window.JarvisConnection.forget();
     setBusy(false);
     go('disconnected', DISCONNECTED);
@@ -218,7 +222,9 @@
   }
   function showTurn(turn) {
     showText(turn.assistant, false);
-    const line = sourceLine(turn.sources);
+    // Name the model only when it is not the plain local default: an external answer, or a local takeover.
+    const model = turn.model?.external || turn.model?.local_reason ? window.JarvisBrain?.answeredBy(turn) : '';
+    const line = [sourceLine(turn.sources), model].filter(Boolean).join(' · ');
     sources.hidden = !line;
     sources.textContent = line;
   }
@@ -304,7 +310,8 @@
       if (version !== generation) return;
       conversation = chosen;
       setBusy(false);
-      go('connected', undefined, {model: listing.model});
+      go('connected', undefined, {model: listing.brain?.label || listing.model});
+      brain?.refresh();
       window.JarvisConnection.publish?.(token);
       startVoice();
     } catch (error) {

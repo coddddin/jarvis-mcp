@@ -16,6 +16,7 @@ from starlette.websockets import WebSocketDisconnect
 from jarvis.agents.events import AsyncEventBus, EventError
 from jarvis.agents.store import TaskNotFound
 from jarvis.agents.chat import ChatError, ChatBusy
+from jarvis.app.brain_routes import brain_routes
 from jarvis.app.briefing_routes import briefing_routes
 from jarvis.app.wiki_routes import wiki_routes
 from jarvis.features.wiki.service import WikiStore
@@ -84,7 +85,7 @@ def create_event_app(tasks, *, token, task_ids, origins, chat=None, processes=No
 
     async def asset(request):
         filename = {'/wiki': 'wiki/index.html', '/assets/wiki/wiki.css': 'wiki/wiki.css', '/assets/wiki/wiki.js': 'wiki/wiki.js', '/': 'index.html', '/assets/hud.css': 'hud.css', '/assets/hud.js': 'hud.js',
-                    '/assets/task-stream.js': 'task-stream.js', '/assets/chat.js': 'chat.js', '/assets/sources.js': 'sources.js',
+                    '/assets/task-stream.js': 'task-stream.js', '/assets/chat.js': 'chat.js', '/assets/sources.js': 'sources.js', '/assets/brain.js': 'brain.js',
                     '/assets/collaboration.js': 'collaboration.js', '/assets/collaboration.css': 'collaboration.css',
                     '/assets/dispatcher.js': 'dispatcher.js', '/assets/briefing.js': 'briefing.js',
                     # Assistant view: the default page opened by `hud --open`; the HUD above is the developer screen.
@@ -358,6 +359,9 @@ def create_event_app(tasks, *, token, task_ids, origins, chat=None, processes=No
         extra += briefing_routes(briefing, valid=valid, origins=origins, headers=response_headers)
     # Ollama card: last /api/tags observation for the configured chat model (same gate; no chat => 503).
     extra += model_status_routes(observer_for(chat), valid=valid, origins=origins, headers=response_headers)
+    # Model-name button: list models and change the chat/voice model (same gate; no chat => 503).
+    extra += brain_routes(chat if hasattr(chat, 'brain') else None, valid=valid, origins=origins,
+                          headers=response_headers)
     # Local voice (hud --voice): push-to-talk and spoken replies over one WebSocket (same token, Origin and Host).
     if voice is not None:
         from jarvis.app.voice_routes import voice_routes
@@ -365,7 +369,7 @@ def create_event_app(tasks, *, token, task_ids, origins, chat=None, processes=No
     if chat is not None:
         extra += wiki_routes(WikiStore(tasks.guard), guard=tasks.guard, infer=getattr(chat, '_infer', None), valid=valid, origins=origins, headers=response_headers)
     return Starlette(routes=extra + [Route('/wiki', asset), Route('/assets/wiki/wiki.css', asset), Route('/assets/wiki/wiki.js', asset), Route('/', asset), Route('/assets/dispatcher.js', asset), Route('/assets/briefing.js', asset), Route('/assets/hud.css', asset), Route('/assets/hud.js', asset),
-        Route('/assets/task-stream.js', asset), Route('/assets/chat.js', asset), Route('/assets/sources.js', asset),
+        Route('/assets/task-stream.js', asset), Route('/assets/chat.js', asset), Route('/assets/sources.js', asset), Route('/assets/brain.js', asset),
         Route('/assistant', asset), Route('/assets/assistant/assistant.css', asset), Route('/assets/assistant/assistant.js', asset),
         Route('/assets/assistant/orb.js', asset), Route('/assets/assistant/connection.js', asset),
         Route('/assets/assistant/knowledge.js', asset),

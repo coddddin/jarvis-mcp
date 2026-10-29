@@ -1,11 +1,7 @@
 """Authenticated chat orchestration through existing guarded, explicitly selected tools."""
 import hashlib
 import json
-import os
-import queue
 import re
-import subprocess
-import sys
 import threading
 import time
 from datetime import datetime, timezone
@@ -13,6 +9,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from jarvis.agents.brain import (LOCAL_REASON, BrainRegistry, BrainRequest, BrainSettings, OllamaProvider, Selection,
+                                 external_allowed, local_only_source, spawn_chat_worker)
 from jarvis.agents.chat import ChatBusy, ChatError, ChatStore
 from jarvis.agents.runner import LocalConfig
 from jarvis.agents.team import HybridTeam
@@ -20,7 +18,6 @@ from jarvis.app.plugins import collect_tools
 from jarvis.app.runtime import ToolContext
 from jarvis.app.dispatch import FreeDispatcher
 from jarvis.core.guardrails import GuardrailError
-from jarvis.core.paths import WORKERS_ROOT
 from jarvis.core.redaction import redact
 from jarvis.cli.worker_view import open_worker_view
 from jarvis.features.knowledge.service import KnowledgeError
@@ -103,9 +100,16 @@ class DraftWriter:
 
 
 class ChatService:
-    def __init__(self, guard, *, model='qwen3.5:9b', provider_candidates=(), provider_executors=None):
+    def __init__(self, guard, *, model='qwen3.5:9b', provider_candidates=(), provider_executors=None, brains=()):
+        """brains: extra Provider objects (jarvis.agents.brain) the model-name button may select, next to local
+        Ollama. The selection answers chat and voice only; everything else here uses the local default model."""
         self.guard = guard
         self.model = LocalConfig(model=model).model
+        # The lambda looks _spawn_worker up on each call, so tests that replace it still reach the worker path.
+        self.local = OllamaProvider(guard, spawn=lambda: self._spawn_worker())
+        self.brain = BrainRegistry([self.local, *brains], Selection(self.local.provider_id, self.model),
+                                   BrainSettings(guard))
+        self._turn_choice = None                             # the model the request in flight answers with
         self.store = ChatStore(guard)
         self.tools = {function.__name__: function for function in collect_tools(ToolContext.create(guard))
                       if function.__name__ in TOOLS}
@@ -117,33 +121,27 @@ class ChatService:
         self.notes = ObsidianStore(guard)
 
     def metadata(self):
-        return {'model': self.model, 'local_only': True, 'tools': list(self.tools),
+        choice = self.brain.current()
+        return {'model': self.model, 'local_only': not choice.external,
+                'brain': {**choice.selection.public(), 'label': choice.label, 'external': choice.external},
+                'tools': list(self.tools),
                 'conversations': self.store.listing(), 'team': self.team.metadata(),
                 'dispatch': self.dispatcher.metadata()}
 
     @staticmethod
     def _spawn_worker():
-        return subprocess.Popen([sys.executable, '-I', str(WORKERS_ROOT / 'chat_step.py')],
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-            env={key: value for key, value in os.environ.items() if key.upper() in {'SYSTEMROOT', 'WINDIR', 'TEMP', 'TMP'}},
-            creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+        return spawn_chat_worker()
 
     def warm_up(self):
-        """Ask the worker to load the local model in the background so the first reply starts sooner. Best effort:
-        returns at once, generates nothing, and ignores every failure (the first chat then just loads it).
+        """Ask the selected model's provider to get ready in the background so the first reply starts sooner. Best
+        effort: returns at once, generates nothing, and ignores every failure (the first chat then just loads it).
         While one warm-up is still running, a new call returns that same thread instead of starting another."""
         def run():
-            process = None
             try:
-                self.guard.check_running()
-                process = self._spawn_worker()
-                process.communicate(json.dumps({'model': self.model, 'warm': True}).encode(), timeout=120)
+                choice = self.brain.current()
+                choice.provider.warm_up(choice.selection.model_id)
             except Exception:
                 pass
-            finally:
-                if process is not None and process.poll() is None:
-                    process.kill()
-                    process.communicate()
         with self._warm_lock:
             if self._warm_thread is not None and self._warm_thread.is_alive():
                 return self._warm_thread
@@ -153,108 +151,33 @@ class ChatService:
         return thread
 
     def _infer(self, messages, schema, deadline, on_delta=None):
-        self.guard.check_running()
-        body = {'model': self.model, 'messages': messages, 'schema': schema}
-        if on_delta is not None:
-            body['stream'] = True
-        payload = json.dumps(body, ensure_ascii=False)
-        if len(payload.encode()) > 65536:
-            raise ChatError('Chat context limit reached.')
-        process = self._spawn_worker()
-        if on_delta is not None:
-            return self._infer_streaming(process, payload.encode(), deadline, on_delta)
-        try:
-            pending = payload.encode()
-            while True:
-                self.guard.check_running()
-                if time.monotonic() > deadline:
-                    raise ChatError('Local model response timed out.')
-                try:
-                    output, _ = process.communicate(pending, timeout=0.2)
-                    break
-                except subprocess.TimeoutExpired:
-                    pending = None
-            if len(output) > 262144 or process.returncode:
-                raise ChatError('Local model unavailable or returned an invalid response.')
-            value = json.loads(output)
-            if value.get('ok') is not True:
-                raise ChatError('Local model response failed.')
-            return value['result']
-        finally:
-            if process.poll() is None:
-                process.kill()
-            process.communicate()
+        """The local default model. Classification, search-query translation, team, lead judge and Wiki use this
+        and never the selection (user decision 2026-10-28)."""
+        return self.local.infer(self.model, BrainRequest(messages, schema, deadline, on_delta))
 
     def _infer_streaming(self, process, payload, deadline, on_delta):
-        """Same guards as the blocking path (stop marker, deadline, 256 KB output cap, exit code, ok flag), but
-        reads the worker's lines as they arrive and passes each reply delta to on_delta. A failing on_delta only
-        loses the draft; the answer itself still comes from the final line."""
-        lines = queue.Queue()
+        return self.local.stream(process, payload, deadline, on_delta)
 
-        def write():
-            try:
-                process.stdin.write(payload)
-                process.stdin.close()
-            except (OSError, ValueError):  # worker gone or pipe already closed
-                pass
+    def _answer(self, messages, schema, deadline, on_delta=None):
+        """One answer step with the model this request started with."""
+        choice = self._turn_choice
+        if choice is None or choice.selection == self.brain.default:
+            return self._infer(messages, schema, deadline, on_delta)
+        return choice.provider.infer(choice.selection.model_id, BrainRequest(messages, schema, deadline, on_delta))
 
-        def read():
-            try:
-                for line in iter(process.stdout.readline, b''):
-                    lines.put(line)
-            except (OSError, ValueError):  # pipe closed by the finally below
-                pass
-            finally:
-                lines.put(None)
-
-        threading.Thread(target=write, daemon=True).start()
-        threading.Thread(target=read, daemon=True).start()
-        total, final = 0, None
-        try:
-            while True:
-                self.guard.check_running()
-                if time.monotonic() > deadline:
-                    raise ChatError('Local model response timed out.')
-                try:
-                    line = lines.get(timeout=0.2)
-                except queue.Empty:
-                    continue
-                if line is None:
-                    break
-                total += len(line)
-                if total > 262144:
-                    raise ChatError('Local model unavailable or returned an invalid response.')
-                try:
-                    value = json.loads(line)
-                except ValueError:
-                    raise ChatError('Local model unavailable or returned an invalid response.') from None
-                if isinstance(value, dict) and set(value) == {'delta'} and isinstance(value['delta'], str):
-                    try:
-                        on_delta(value['delta'])
-                    except Exception:
-                        pass
-                else:
-                    final = value
-            try:
-                process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                raise ChatError('Local model unavailable or returned an invalid response.') from None
-            if process.returncode or not isinstance(final, dict) or final.get('ok') is not True:
-                raise ChatError('Local model unavailable or returned an invalid response.'
-                                if process.returncode or not isinstance(final, dict) else 'Local model response failed.')
-            return final['result']
-        finally:
-            if process.poll() is None:
-                process.kill()
-            process.wait()
-            for pipe in (process.stdin, process.stdout):
-                try:
-                    pipe.close()
-                except (OSError, ValueError):
-                    pass
+    def _choose(self, choice, message, plan):
+        """The model for this answer and, when the local model takes over from an external one, why."""
+        if not choice.external:
+            return choice, None
+        source = local_only_source(message)
+        if source is None and plan is not None and plan.evidence == 'local' and not self.STATUS_REQUEST.search(message):
+            source = '로컬 문서'
+        if source is None:
+            return choice, None
+        return self.brain.default_choice(), LOCAL_REASON.format(source=source)
 
     def _worker(self, messages, schema, deadline, on_delta=None):
-        result = self._infer(messages, schema, deadline, on_delta)
+        result = self._answer(messages, schema, deadline, on_delta)
         if not isinstance(result, dict) or not {'basis', 'evidence_ids'} <= result.keys():
             raise ChatError('Model omitted answer evidence metadata.')
         if result.get('tool') in {'none', 'get_system_status', 'list_web_sources'} and result.get('argument') == 'none':
@@ -365,19 +288,36 @@ class ChatService:
     HISTORY_TURNS = 8
     HISTORY_CHARACTERS = 6000
 
+    OMITTED_USER = '[로컬 전용 대화라 생략]'
+    OMITTED_ASSISTANT = '[로컬 전용 답변이라 생략]'
+    # PC-status wording: a plan that says "local evidence" for these is the allowed system status, not documents.
+    STATUS_REQUEST = re.compile(r'CPU|메모리|디스크|컴퓨터|PC|시스템\s*상태|바빠|느려|(?<![a-z])(?:memory|disk|system\s+status)(?![a-z])', re.I)
+
+    @staticmethod
+    def _external_safe(turn):
+        """True when an external model may see this turn: a chat turn, not answered locally for a local-only
+        source, whose every tool result is on the external allowlist (jarvis.agents.brain.EXTERNAL_SENDS)."""
+        model = turn.get('model') or {}
+        return (turn.get('mode') == 'chat' and not model.get('local_reason')
+                and all(external_allowed(item.get('name')) for item in turn.get('tools') or []))
+
     @classmethod
-    def _history(cls, turns, request_id):
+    def _history(cls, turns, request_id, external=False):
         """Recent completed turns of this conversation as chat messages, oldest first. Skips the current request,
         failed, interrupted or pending turns (their drafts were never confirmed) and empty replies; keeps at most
-        HISTORY_TURNS turns and HISTORY_CHARACTERS characters, dropping the oldest first."""
+        HISTORY_TURNS turns and HISTORY_CHARACTERS characters, dropping the oldest first. For an external model,
+        a turn that is not external-safe is replaced by a placeholder: neither its question nor its answer is sent."""
         history, used = [], 0
         for turn in reversed(turns):
             if turn['id'] == request_id or turn['status'] != 'completed' or not turn['assistant'].strip():
                 continue
-            size = len(turn['user']) + len(turn['assistant'])
+            user, assistant = turn['user'], turn['assistant']
+            if external and not cls._external_safe(turn):
+                user, assistant = cls.OMITTED_USER, cls.OMITTED_ASSISTANT
+            size = len(user) + len(assistant)
             if len(history) >= 2 * cls.HISTORY_TURNS or used + size > cls.HISTORY_CHARACTERS:
                 break
-            history[0:0] = [{'role': 'user', 'content': turn['user']}, {'role': 'assistant', 'content': turn['assistant']}]
+            history[0:0] = [{'role': 'user', 'content': user}, {'role': 'assistant', 'content': assistant}]
             used += size
         return history
 
@@ -547,11 +487,13 @@ class ChatService:
     def send(self, identity, request_id, message, mode='chat'):
         if not self.lock.acquire(blocking=False):
             raise ChatBusy('자비스가 답변 중입니다. 잠시 후 다시 보내 주십시오.')
-        begun, traces = False, []
+        begun, traces, answered_by = False, [], None
+        self._turn_choice = None
         try:
             begun = self.store.begin(identity, request_id, message, time.time() + (660 if mode != 'chat' else 150), mode=mode)
             if not begun:
                 return self.store.get(identity)
+            choice = self.brain.current()                   # fixed for this request, whatever is selected meanwhile
             plan = None
             recall = self._recall_reply(message, self.store.get(identity)['turns'], request_id) if mode in {'chat', 'auto'} else None
             if recall is not None:
@@ -570,8 +512,12 @@ class ChatService:
                     self.store.finish(identity, request_id, reply=self.NOTE_EXTERNAL_REPLY)
                     return self.store.get(identity)
                 turns = self._current_notes(self.store.get(identity)['turns'])
-                answer, traces, sources = self._note_answer(identity, request_id, message, self._history(turns, request_id))
-                self.store.finish(identity, request_id, reply=answer, tools=traces, sources=sources)
+                # Approved notes may go to an external model (user decision 2026-10-28), so no plan is passed here.
+                self._turn_choice, local_reason = self._choose(choice, message, None)
+                answered_by = self._turn_choice.record(local_reason)
+                history = self._history(turns, request_id, external=self._turn_choice.external)
+                answer, traces, sources = self._note_answer(identity, request_id, message, history)
+                self.store.finish(identity, request_id, reply=answer, tools=traces, sources=sources, model=answered_by)
                 return self.store.get(identity)
             if mode == 'auto' and re.search(r'무료\s*(?:API|에이전트|모델).{0,15}(?:로|사용|써|맡)', message, re.I):
                 plan = RequestPlan(mode='chat' if '요약' in message else 'team-local', evidence='general',
@@ -630,9 +576,14 @@ class ChatService:
             web_turn = bool((plan is not None and (plan.web_action != 'none' or plan.evidence == 'external'))
                             or re.search(self.WEB_REQUEST, message, re.I))
             notes_in_context = any(turn['id'] != request_id and turn['status'] == 'completed' for turn in tainted)
-            history = self._history(clean if web_turn else clean + tainted, request_id)
+            self._turn_choice, local_reason = self._choose(choice, message, plan)
+            answered_by = self._turn_choice.record(local_reason)
+            external = self._turn_choice.external
+            history = self._history(clean if web_turn else clean + tainted, request_id, external=external)
             offline = notes_in_context and not web_turn
-            tools = [name for name in self.tools if not (offline and name in self.EXTERNAL_TOOLS)]
+            # An external model gets only allowlisted tools, so local-only results never enter its context.
+            tools = [name for name in self.tools if not (offline and name in self.EXTERNAL_TOOLS)
+                     and (not external or external_allowed(name))]
             system = (PERSONA +
                 '대화를 기억하되 실제로 관찰하거나 도구로 확인하지 않은 실행/설치/분석 성공을 주장하지 마라. '
                 '사용 가능 기능은 일반 대화, PC 상태 확인, 로컬 문서 검색, 승인된 노트 검색(노트를 언급한 질문), 등록된 공개 피드 읽기, 명시한 파일의 정적 분석이다. '
@@ -694,9 +645,10 @@ class ChatService:
                     if keys:
                         schema['properties']['evidence_ids']['items']['enum'] = keys
                         schema['properties']['evidence_ids']['minItems'] = 1
-                if iteration == 0 and plan is not None and plan.evidence == 'local':
-                    schema['properties']['tool']['enum'] = [name for name in self.tools
-                        if name in {'get_system_status', 'search_local_documents', 'analyze_program_static'}]
+                local_tools = [name for name in tools
+                               if name in {'get_system_status', 'search_local_documents', 'analyze_program_static'}]
+                if iteration == 0 and plan is not None and plan.evidence == 'local' and local_tools:
+                    schema['properties']['tool']['enum'] = local_tools
                 decision = self._worker(messages, schema, deadline, drafts.add)
                 if decision.tool != 'none':
                     drafts.clear()  # a tool step's text is not the answer; for the final step, finish() clears it
@@ -707,7 +659,7 @@ class ChatService:
                         raise ChatError('Model returned an empty reply.')
                     answer = self._verified_reply(message, decision, traces,
                         plan.evidence if plan is not None else 'general')
-                    self.store.finish(identity, request_id, reply=answer, tools=traces)
+                    self.store.finish(identity, request_id, reply=answer, tools=traces, model=answered_by)
                     return self.store.get(identity)
                 if iteration == 2 or time.monotonic() > deadline:
                     raise ChatError('Chat tool-round limit reached.')
@@ -745,9 +697,10 @@ class ChatService:
             raise ChatError('No final response.')
         except Exception as exc:
             if begun:
-                self.store.finish(identity, request_id, status='failed', tools=traces)
+                self.store.finish(identity, request_id, status='failed', tools=traces, model=answered_by)
             if isinstance(exc, (ChatError, ChatBusy)):
                 raise
             raise ChatError('자비스 응답을 완료하지 못했습니다. 로컬 모델과 중단 상태를 확인하세요.') from exc
         finally:
+            self._turn_choice = None
             self.lock.release()
