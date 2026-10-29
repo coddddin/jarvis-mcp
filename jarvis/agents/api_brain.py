@@ -234,7 +234,8 @@ class ApiProvider:
             return BrainError('unavailable', f'{self.company}에서 이 모델을 찾지 못했습니다.{suffix}')
         if probing and status in (400, 422):
             return BrainError('unavailable', f'이 모델은 자비스 답변 형식(JSON 스키마) 또는 스트리밍을 지원하지 않습니다.{suffix}')
-        return BrainError('unavailable', f'{self.company} 요청이 실패했습니다(HTTP {status}).{suffix}')
+        code = f'(HTTP {status})' if status else ''
+        return BrainError('unavailable', f'{self.company} 요청이 실패했습니다{code}.{suffix}')
 
     def _get_json(self, key, path):
         connection = self.connect(self.host, LIST_TIMEOUT)
@@ -448,7 +449,7 @@ class ApiProvider:
         try:
             for line in iter(lambda: response.readline(MAX_OUTPUT + 1), b''):
                 lines.put(line)
-        except (OSError, ValueError, http.client.HTTPException) as exc:
+        except Exception as exc:          # the connection was closed under us, or the stream broke
             lines.put(exc)
             return
         lines.put(None)
@@ -513,7 +514,7 @@ class AnthropicApiProvider(ApiProvider):
         if kind == 'error':
             error = data.get('error') or {}
             status = {'authentication_error': 401, 'permission_error': 403, 'rate_limit_error': 429,
-                      'not_found_error': 404}.get(error.get('type'), 503)
+                      'not_found_error': 404}.get(error.get('type'))
             raise self._fail(status, error.get('message') or error.get('type') or '')
         if kind == 'content_block_delta':
             delta = data.get('delta') or {}
@@ -581,7 +582,7 @@ class ChatCompletionsProvider(ApiProvider):
         if not isinstance(data, dict):
             return ''
         if 'error' in data:
-            raise self._fail(503, error_message(data))
+            raise self._fail(None, error_message(data))
         text = ''
         for choice in data.get('choices') or []:
             if not isinstance(choice, dict) or choice.get('index', 0) != 0:
@@ -675,7 +676,7 @@ class GeminiApiProvider(ApiProvider):
         if not isinstance(data, dict):
             return ''
         if 'error' in data:
-            raise self._fail(503, error_message(data))
+            raise self._fail(None, error_message(data))
         feedback = data.get('promptFeedback') or {}
         if feedback.get('blockReason'):
             state['stop'] = 'BLOCKED:' + str(feedback['blockReason'])

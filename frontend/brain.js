@@ -3,6 +3,8 @@
 // with POST /api/brain/selection. The server keeps a request in flight on its starting model, keeps the old selection
 // when a switch fails, and answers 409 before the first switch to an external provider; this file only shows what
 // the server says. Text nodes only, no HTML strings. Used by the HUD chat (chat.js) and the assistant view.
+// API providers (brain P3) carry needs_key/connected/custom_model: a key typed here goes once to POST /api/brain/key,
+// the field is cleared at once, and the key is never kept in this page or shown again.
 (() => {
   const make = (tag, className, text) => {
     const value = document.createElement(tag);
@@ -52,6 +54,12 @@
       for (const provider of state?.providers || []) {
         const group = make('div', 'model-group');
         group.append(make('p', 'model-provider', provider.label + (provider.external ? ' · 외부로 보냄' : ' · 이 PC')));
+        if (provider.needs_key && !provider.connected) {
+          group.append(keyForm(provider));
+          items.push(group);
+          continue;
+        }
+        if (provider.reason) group.append(make('p', 'model-reason', provider.reason));
         if (!provider.models?.length) group.append(make('p', 'model-reason', '선택할 수 있는 모델이 없어요.'));
         for (const model of provider.models || []) {
           const current = state.selection?.provider_id === provider.provider_id && state.selection?.model_id === model.model_id;
@@ -63,9 +71,83 @@
           group.append(choice);
           if (!model.available && model.reason) group.append(make('p', 'model-reason', model.reason));
         }
+        if (provider.custom_model) group.append(customModel(provider));
+        if (provider.needs_key) {
+          const remove = make('button', 'model-key-delete', '키 삭제');
+          remove.type = 'button';
+          remove.disabled = busy;
+          remove.addEventListener('click', () => keyAction('/api/brain/key/delete', {provider_id: provider.provider_id},
+            '키를 지웠어요.'));
+          group.append(remove);
+        }
         items.push(group);
       }
       show(...items);
+    }
+
+    // The key field: password type, no autofill, cleared before the request leaves.
+    function keyForm(provider) {
+      const form = make('form', 'model-key');
+      const input = make('input', 'model-input');
+      input.type = 'password';
+      input.autocomplete = 'off';
+      input.spellcheck = false;
+      input.placeholder = provider.label + ' API 키';
+      input.setAttribute('aria-label', provider.label + ' API 키');
+      const save = make('button', 'model-key-save', '키 연결');
+      save.type = 'submit';
+      save.disabled = busy;
+      form.append(make('p', 'model-reason', '키는 이 PC의 Windows 자격 증명 관리자에만 저장되고 다시 보여 주지 않아요.'),
+        input, save);
+      form.addEventListener('submit', event => {
+        event?.preventDefault?.();
+        const key = String(input.value || '').trim();
+        input.value = '';
+        if (!key) return renderList('키를 입력해 주세요.');
+        keyAction('/api/brain/key', {provider_id: provider.provider_id, key}, '키를 연결했어요. 모델을 골라 주세요.');
+      });
+      return form;
+    }
+
+    // Any model id the company offers, also ones not in the fetched list; the server checks the format and the model.
+    function customModel(provider) {
+      const form = make('form', 'model-custom');
+      const input = make('input', 'model-input');
+      input.type = 'text';
+      input.autocomplete = 'off';
+      input.spellcheck = false;
+      input.maxLength = 120;
+      input.placeholder = '모델 ID 직접 입력';
+      input.setAttribute('aria-label', provider.label + ' 모델 ID');
+      const use = make('button', 'model-custom-use', '이 모델 쓰기');
+      use.type = 'submit';
+      use.disabled = busy;
+      form.append(input, use);
+      form.addEventListener('submit', event => {
+        event?.preventDefault?.();
+        const modelId = String(input.value || '').trim();
+        if (modelId) choose(provider.provider_id, modelId, false);
+      });
+      return form;
+    }
+
+    async function keyAction(path, body, done) {
+      if (busy) return;
+      busy = true;
+      const mine = version;
+      show(notice(body.key ? '키를 확인하고 있어요.' : '키를 지우고 있어요.'));
+      let message;
+      try {
+        const {status, data} = await request(path, body);
+        message = status === 200 ? done : '처리하지 못했어요. ' + (data.reason || '');
+      } catch (error) {
+        message = '처리하지 못했어요. ' + error.message;
+      }
+      body.key = undefined;
+      if (mine !== version) return;
+      busy = false;
+      await refresh();
+      if (mine + 1 === version) renderList(message);
     }
 
     function renderConfirm(body, payload) {
@@ -93,6 +175,7 @@
       busy = true;
       const mine = version;
       const body = {provider_id: providerId, model_id: modelId, ...(confirmExternal ? {confirm_external: true} : {})};
+      if (confirmExternal) show(notice('모델을 확인하고 있어요. 처음 한 번은 아주 짧은 확인 요청을 보내요.'));
       try {
         const {status, data} = await request('/api/brain/selection', body);
         if (mine !== version) return;

@@ -45,7 +45,7 @@ HUD가 포트를 연 직후 채팅 모델을 백그라운드에서 한 번 미�
 - 외부 모델이 실패하면(한도, 로그인, 시간 초과 등) 그 질문은 실패로 남고 이유를 보여 줍니다. 다른 모델(로컬 포함)로 자동 전환하지 않습니다.
 - 질문 문구 판별은 표현 목록 기반이라 빠지는 말이 있을 수 있습니다. 그래도 외부 모델은 허용 도구와 걸러진 문맥만 받으므로 로컬 전용 자료가 전달되지는 않습니다.
 
-이 단계(P1)에서 고를 수 있는 것은 로컬 Ollama 모델뿐입니다. 첫 외부 제공자(구독 Claude Code CLI)는 별도 단계에서 같은 버튼에 추가됩니다.
+고를 수 있는 외부 모델은 [Claude 구독 두뇌](#claude-구독-두뇌)와 [API 키 두뇌](#api-키-두뇌)(Claude·GPT·Gemini·Grok·DeepSeek)입니다.
 
 ## 가능한 기능
 
@@ -99,6 +99,19 @@ Bearer 인증·정확한 로컬 Host와 Origin을 검사하고 POST에는 Origin
 - 실패는 짧은 이유로 표시하고 그 턴은 실패로 남습니다. 미설치·실행 실패(unavailable, 알 수 없는 실패는 종료 코드와 정리된 오류 한 줄), 로그인 필요(auth), 구독 사용 한도(rate_limited), 턴 초과(max_turns), 시간 초과(timeout), 형식 오류(invalid_response), 너무 큼(too_large). 다른 외부 모델로 자동 전환하지 않습니다.
 - 구독 사용량: 답변 하나가 구독 한도(5시간 창 등)를 씁니다. 한도에 닿으면 풀릴 때까지 로컬 모델을 고르면 됩니다. 2026-10-29 시험 호출(짧은 인사, 도구 없음)은 API 시간 약 2.2초, 2턴이었습니다.
 - 안정성 주의: 공식 문서는 `--bare`가 앞으로 `-p`의 기본값이 될 수 있다고 안내합니다. 그렇게 바뀌면 구독 로그인이 읽히지 않아 로그인 필요(auth)로 표시됩니다.
+
+## API 키 두뇌
+
+모델 이름 버튼에는 회사별 API 제공자 다섯 개가 있습니다: `Claude (API)`(Anthropic), `GPT (API)`(OpenAI), `Gemini (API)`(Google), `Grok (API)`(xAI), `DeepSeek (API)`. 사용자 본인의 API 키로 쓰며 **요금은 그 회사 계정에 청구됩니다**. 외부로 보내는 범위와 처음 고를 때의 확인은 [답하는 모델 고르기](#답하는-모델-고르기)와 같습니다. 구현은 `jarvis/agents/api_brain.py`, 키 저장은 `jarvis/core/credentials.py`입니다.
+
+- 키 연결: 키가 없는 회사에는 비밀번호 입력칸과 **키 연결** 버튼이 보입니다. 키는 그 회사의 모델 목록 주소로 한 번 확인한 뒤 받아들여질 때만 Windows 자격 증명 관리자(이 PC, 현재 사용자, 이름 `JARVIS/brain/<제공자>`)에 저장됩니다. 화면·응답·로그·`brain.json` 어디에도 키를 다시 쓰지 않으며, 입력칸은 보내기 전에 비웁니다. `brain.json`에는 연결 이름만 남습니다. **키 삭제**는 자격 증명 관리자에서 지웁니다(그 모델을 고른 상태였다면 다음 질문은 실패로 남고 이유를 보여 줍니다).
+- 모델 목록: 고정 목록이 없습니다. 키가 연결되면 회사의 모델 목록(Anthropic `GET /v1/models`, OpenAI `GET /v1/models`, Google `GET /v1beta/models`, xAI `GET /v1/language-models`, DeepSeek `GET /models`)을 10분 동안 기억해 보여 줍니다. OpenAI 목록에서는 임베딩·음성·이미지처럼 대화용이 아닌 이름을 뺍니다. 목록에 없는 모델은 **모델 ID 직접 입력**으로 고를 수 있습니다(영문·숫자·`._:/-`, 120자 이하).
+- 형식 확인: 자비스 답변은 정해진 JSON 형식이어야 합니다. Anthropic 목록이 구조화 출력 미지원이라고 하는 모델은 고를 수 없습니다. 목록이 이를 알려 주지 않는 모델(OpenAI·xAI·DeepSeek·Gemini, 목록에 없는 직접 입력 모델)은 외부 사용 확인을 누른 **뒤에** 아주 짧은 확인 요청을 한 번 보내(스트리밍 + 한 칸짜리 JSON, 대화 내용 없음, 최대 1024 토큰) 통과해야 선택됩니다. 결과는 서버가 켜져 있는 동안 모델별로 기억하고, 시작할 때 자동으로 보내지 않습니다. 실패하면 이유를 보여 주고 지금 모델을 유지합니다.
+- 답변: 모든 회사에 스트리밍으로 요청하고 답이 오는 대로 초안을 보여 줍니다. 회사마다 받는 JSON 스키마 기능이 달라(글자 수·항목 수 제한 미지원 등) 공통 부분만 보내고, **모든 답을 자비스가 원래 스키마 전체로 다시 검사**합니다. 맞지 않으면 형식 오류로 실패합니다. DeepSeek는 스키마 모드가 없어(JSON 모드만 있음) 스키마를 지시문에 넣고, 형식이 틀리면 초안 없이 **한 번만** 다시 요청합니다.
+- 연결: 회사별 고정 주소(`api.anthropic.com`, `api.openai.com`, `generativelanguage.googleapis.com`, `api.x.ai`, `api.deepseek.com`)에만 HTTPS로 연결하고 인증서를 확인합니다. 리다이렉트와 환경 변수 프록시는 따르지 않습니다. 응답은 256KB, 대화는 64KB까지이고 요청 시간 제한과 중지 표시를 지킵니다. 새 패키지를 쓰지 않습니다(표준 라이브러리 `http.client`, `ctypes`).
+- 실패: 키 거부(auth), 사용 한도(rate_limited), 모델 없음·거절·안전 중단(unavailable), 길이 제한에서 잘림(too_large), 형식 오류(invalid_response), 시간 초과(timeout). 회사가 보낸 오류 문장은 비밀값을 가린 한 줄(120자)만 붙입니다. 다른 모델로 자동 전환하지 않습니다.
+- 사용한 공식 형식(2026-10-29 확인): Anthropic Messages `output_config.format`(`json_schema`) + SSE `text_delta`, 헤더 `x-api-key`·`anthropic-version: 2023-06-01`. OpenAI·xAI Chat Completions `response_format`(`json_schema`, `strict`) + SSE `choices[].delta.content`·`data: [DONE]`, 헤더 `Authorization: Bearer`; OpenAI 지시문은 `developer` 역할. Gemini `streamGenerateContent?alt=sse` + `generationConfig.responseMimeType`·`responseJsonSchema`, 헤더 `x-goog-api-key`, 생각 파트(`thought`)는 답에서 뺍니다. DeepSeek Chat Completions `response_format: json_object`.
+- 나중 단계 후보: OpenAI·xAI의 Responses API, Gemini Interactions API(기본으로 서버에 저장하므로 지금은 쓰지 않음), 회사별 도구 호출.
 
 ## 실행 상태 수집기와 상황판
 

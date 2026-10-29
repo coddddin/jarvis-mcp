@@ -6,7 +6,7 @@
 ## 2. Directory Structure (actual project root)
 - server.py / google_auth_setup.py: stable launcher wrappers; existing client commands unchanged.
 - jarvis/app/: server.py, runtime.py (shared context/admission), plugins.py (feature tool discovery).
-- jarvis/core/: guardrails.py (windowed call budget + tiers/stop), paths.py (stable roots), redaction.py.
+- jarvis/core/: guardrails.py (windowed call budget + tiers/stop), paths.py (stable roots), redaction.py, credentials.py (API keys in Windows Credential Manager).
 - jarvis/features/<feature>/service.py + tools/: co-located service and one-file-per-tool adapters.
 - Features: system(3), knowledge(3), obsidian(3), google(2), snapshots(4), files(6), workflows(6), development(1), web(4), integrations(2), board(9); 43 tools (27 original contracts preserved).
 - jarvis/workers/: standalone subprocess implementations; jarvis/cli/: OAuth, GitHub inbox preview/apply, task control/runner.

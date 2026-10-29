@@ -50,6 +50,11 @@ body {
 .model-list { margin: 4px 0 8px; padding-left: 18px; }
 .model-confirm-actions { position: sticky; bottom: -12px; display: flex; gap: 8px; margin: 8px -12px -12px; padding: 8px 12px 12px; background: #0b1220; border-top: 1px solid rgba(255,255,255,.1); }
 .model-confirm-actions button { flex: 1; text-align: center; }
+.model-key, .model-custom { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0; }
+.model-key p { flex-basis: 100%; margin: 0; }
+.model-input { flex: 1; min-width: 0; font: inherit; color: inherit; background: rgba(0,0,0,.25); border: 1px solid rgba(255,255,255,.12); border-radius: 8px; padding: 6px 8px; }
+.model-key-save, .model-custom-use, .model-key-delete { font: inherit; color: inherit; background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.12); border-radius: 8px; padding: 6px 10px; cursor: pointer; }
+.model-key-delete { display: block; margin-top: 6px; font-size: 12px; color: var(--muted); }
 .model-confirm-yes { border-color: var(--ion); }
 .presence-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ion); box-shadow: 0 0 10px var(--ion); }
 .presence-dot[data-state="offline"] { background: var(--muted); box-shadow: none; }
