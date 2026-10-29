@@ -43,6 +43,7 @@ MIN_TEXT = 400                  # shorter HTTPS text means the page needs the br
 MESSAGE_CHARS = 12000           # prompt budget: the local brain runs with an 8192-token context
 DOWNLOAD_BYTES = 20 * 1024 * 1024
 DOWNLOAD_SECONDS = 60
+MAX_FILES = 3                   # files kept from one download action; extra new files are deleted
 SETTLE_SECONDS = 2              # wait after a navigation or click before the snapshot
 
 BROWSER_USER_AGENT = ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) '
@@ -59,6 +60,9 @@ DOWNLOAD_TYPES = {'.pdf': (b'%PDF',), '.csv': None, '.txt': None, '.json': None,
                   '.hwpx': (b'PK\x03\x04',), '.hwp': (b'\xd0\xcf\x11\xe0',), '.xls': (b'\xd0\xcf\x11\xe0',)}
 FILE_LINK = re.compile(r'내려\s*받|다운로드|다운\s*받|download|\.(csv|pdf|xlsx?|hwpx?|docx|json|txt)\b', re.I)
 PUBLIC_BODY = re.compile(r'\.(go|or|ac|re)\.kr$|\.gov(\.[a-z]{2})?$|\.int$|\.edu$')
+# Blog, Q&A and aggregator hosts: tried after other results when JARVIS picks one.
+AGGREGATOR = re.compile(r'(^|\.)(blog\.naver\.com|tistory\.com|brunch\.co\.kr|velog\.io|medium\.com|kin\.naver\.com|'
+                        r'cafe\.naver\.com|cafe\.daum\.net|namu\.wiki|quora\.com|reddit\.com|blogspot\.com|wordpress\.com)$')
 ARTIFACT = re.compile(r'^(page|console)-\d{4}-\d\d-\d\dT[\d-]+Z\.(yml|log|png|jpe?g)$')
 DEFENDER = Path(r'C:\Program Files\Windows Defender\MpCmdRun.exe')
 
@@ -295,7 +299,20 @@ def check_download(path):
     return None if head.startswith(magic) else 'the content does not match its extension'
 
 
-def store_download(path, downloads_dir, scan=defender_scan):
+def mark_of_the_web(path, source_url=''):
+    """Tag a saved file as from the Internet (Zone.Identifier, zone 3), so Windows warns before it is opened."""
+    lines = ['[ZoneTransfer]', 'ZoneId=3']
+    if source_url.startswith('https://'):
+        lines += ['ReferrerUrl=' + source_url, 'HostUrl=' + source_url]
+    try:
+        with open(str(path) + ':Zone.Identifier', 'w', encoding='ascii', errors='replace', newline='\r\n') as stream:
+            stream.write('\n'.join(lines) + '\n')
+        return True
+    except OSError:                                    # not NTFS: the file is still saved, the record says so
+        return False
+
+
+def store_download(path, downloads_dir, scan=defender_scan, source_url=''):
     """Check, scan and move one quarantined file. Returns a public record; never opens or runs the file."""
     record = {'name': safe_name(path.name), 'bytes': path.stat().st_size}
     problem = check_download(path)
@@ -315,7 +332,7 @@ def store_download(path, downloads_dir, scan=defender_scan):
         target = downloads_dir / f'{Path(record["name"]).stem}-{number}{Path(record["name"]).suffix}'
         number += 1
     shutil.move(str(path), str(target))
-    return {**record, 'status': 'saved', 'path': str(target)}
+    return {**record, 'status': 'saved', 'path': str(target), 'marked': mark_of_the_web(target, source_url)}
 
 
 # --- the agent loop -----------------------------------------------------------------------------------------------
@@ -329,6 +346,7 @@ class TaskState:
     traces: list = field(default_factory=list)
     files: list = field(default_factory=list)
     browser_page: int | None = None                  # the page whose buttons are valid
+    nudged: bool = False                             # the one 'check an official source' reminder was given
     search_paused: bool = False                      # after a repeated search: open a result or answer first
     calls: int = 0
     next_number: int = 1
@@ -440,6 +458,11 @@ class WebAgent:
                     forced_answer += 1
                     messages.append({'role': 'user', 'content': 'answer가 비어 있다. 지금까지 읽은 내용으로 answer에 답을 써라.'})
                     continue
+                if not final and not state.nudged and len(state.searches) < MAX_SEARCHES and not self._official(state):
+                    state.nudged = True                        # once: check with the official site before answering
+                    messages.append({'role': 'user', 'content': '읽은 페이지에 공식 출처(운영 기관·정부·공식 사이트)가 없다. '
+                                     '운영 기관 공식 사이트를 search 해서 확인한 뒤 answer 하라.'})
+                    continue
                 cited = [n for n in decision.get('sources') or [] if n in read]
                 return self._finish(state, text, 'completed', '', cited)
             if tool == 'search' and ' '.join(str(decision.get('query') or '').split()).casefold() in {
@@ -484,8 +507,22 @@ class WebAgent:
         def score(number):
             host = (urlsplit(state.items[number]['url']).hostname or '').casefold()
             named = any(w in host or host.endswith(w) for w in words if '.' in w)
-            return (0 if named else 1, 0 if PUBLIC_BODY.search(host) else 1, number)
+            return (0 if named else 1, 0 if PUBLIC_BODY.search(host) else 1, 1 if AGGREGATOR.search(host) else 0, number)
         return min(results, key=score)
+
+    @staticmethod
+    def _named_hosts(request):
+        return {w.casefold() for w in re.findall(r'[A-Za-z0-9.-]{3,}', request) if '.' in w}
+
+    @staticmethod
+    def _official(state):
+        """True when a page read in this task is on a public-body host or a host the request names."""
+        named = WebAgent._named_hosts(state.request)
+        for page in state.pages.values():
+            host = (urlsplit(page['url']).hostname or '').casefold()
+            if PUBLIC_BODY.search(host) or any(host == w or host.endswith('.' + w) for w in named):
+                return True
+        return False
 
     # one action
     def _act(self, state, tool, decision):
@@ -591,7 +628,12 @@ class WebAgent:
         if not new:
             state.traces.append({'tool': 'download', 'status': 'none', 'from': item['text']})
             raise WebTaskError('파일이 내려받아지지 않았다.')
-        records = [store_download(path, self.downloads_dir, self.scan) for path in sorted(new)[:3]]
+        source = item.get('url') or self.browser.current
+        records = [store_download(path, self.downloads_dir, self.scan, source) for path in sorted(new)[:MAX_FILES]]
+        for path in sorted(new)[MAX_FILES:]:              # never left behind unscanned
+            path.unlink(missing_ok=True)
+            records.append({'name': safe_name(path.name), 'bytes': new[path], 'status': 'refused',
+                            'reason': f'more than {MAX_FILES} files at once; it was deleted.'})
         state.files += records
         state.traces.append({'tool': 'download', 'status': 'ok', 'from': item.get('url') or item['text'],
                              'files': records})
