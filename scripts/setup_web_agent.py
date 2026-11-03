@@ -9,7 +9,8 @@ What it does, in order:
    (headless, isolated profile in memory, no WebMCP, Edge, Edge user agent, images omitted, downloads to a
    quarantine folder, localhost blocked as a first layer). An existing 'pw' entry is replaced.
 3. Start it once, list the tools it reports and pin only browser_navigate, browser_snapshot and browser_click
-   (family public_web) after you confirm. Everything else stays hidden from the model.
+   (family public_web) after you confirm; browser_snapshot's filename (saves a file) is blocked. Everything else
+   stays hidden from the model.
 The agent reads pages with JARVIS's own HTTPS worker, so mcp-server-fetch is not needed here.
 Restart the HUD afterwards so chat picks up the approved server.
 """
@@ -26,12 +27,10 @@ sys.path.insert(0, str(ROOT))
 from jarvis.core.guardrails import Guardrails  # noqa: E402
 from jarvis.core.paths import DEFAULT_WORKSPACE  # noqa: E402
 from jarvis.features.mcp_client.service import McpSettings, discover  # noqa: E402
-from jarvis.features.web_agent.service import BLOCKED_ORIGINS, BROWSER_USER_AGENT  # noqa: E402
+from jarvis.features.web_agent.service import BLOCKED_ORIGINS, BROWSER_USER_AGENT, PLAYWRIGHT_PINS  # noqa: E402
 
 PLAYWRIGHT_MCP = '@playwright/mcp@0.0.83'         # published 2026-09-28, the version the benchmark measured
 SERVER_ID = 'pw'
-PINS = {'browser_navigate': ('auto', 60, 8000), 'browser_snapshot': ('read', 30, 50000),
-        'browser_click': ('auto', 30, 8000)}
 
 
 def main():
@@ -73,18 +72,18 @@ def main():
     if found['status'].get('state') != 'ready':
         raise SystemExit('Playwright MCP did not start: ' + str(found['status']))
     names = {tool['name'] for tool in found['tools']}
-    missing = set(PINS) - names
+    missing = set(PLAYWRIGHT_PINS) - names
     if missing:
         raise SystemExit('The server did not report: ' + ', '.join(sorted(missing)))
     print(f'The server reports {len(names)} tools. Only these are pinned (family public_web):')
-    for name, (effect, timeout, chars) in PINS.items():
-        print(f'  {name}: effect={effect}, timeout {timeout}s, up to {chars} characters')
+    for name, pin in PLAYWRIGHT_PINS.items():
+        blocked = f", model may not set {', '.join(pin['blocked_args'])}" if pin.get('blocked_args') else ''
+        print(f"  {name}: effect={pin['effect']}, timeout {pin['timeout_s']}s, up to {pin['max_chars']} characters"
+              + blocked)
     if not args.yes and input('Approve these three tools? [y/N] ').strip().lower() != 'y':
         settings.remove(SERVER_ID)
         raise SystemExit('Not approved; the server entry was removed.')
-    settings.approve(SERVER_ID, found['tools'], {name: {'family': 'public_web', 'effect': effect, 'timeout_s': timeout,
-                                                        'max_chars': chars}
-                                                 for name, (effect, timeout, chars) in PINS.items()})
+    settings.approve(SERVER_ID, found['tools'], PLAYWRIGHT_PINS)
     print('Approved. Restart the HUD; then ask in chat, for example "제주 날씨 찾아줘".')
 
 

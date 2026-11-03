@@ -54,6 +54,14 @@ SETTLE_SECONDS = 2              # wait after a navigation or click before the sn
 BROWSER_USER_AGENT = ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) '
                       'Chrome/130.0.0.0 Safari/537.36 Edg/130.0.0.0')   # Bing serves spam results to "Headless"
 BLOCKED_ORIGINS = 'http://localhost;https://localhost;http://127.0.0.1;https://127.0.0.1;http://[::1];https://[::1]'
+# The three Playwright tools the agent uses, as McpSettings.approve choices (setup script and benchmark runner).
+# browser_snapshot's optional filename saves the snapshot to a file, so a model may never set it.
+PLAYWRIGHT_PINS = {
+    'browser_navigate': {'family': 'public_web', 'effect': 'auto', 'timeout_s': 60, 'max_chars': 8000},
+    'browser_snapshot': {'family': 'public_web', 'effect': 'read', 'timeout_s': 30, 'max_chars': 50000,
+                         'blocked_args': ['filename']},
+    'browser_click': {'family': 'public_web', 'effect': 'auto', 'timeout_s': 30, 'max_chars': 8000},
+}
 # A request to fetch a file. The Downloads folder, its list or files already downloaded are local, not this.
 DOWNLOAD_REQUEST = re.compile(r'(?:내려\s*받|다운\s*받)(?!은|았던|았|은\s*파일)|다운로드(?!\s*(?:폴더|목록|한|된|받은|파일\s*정리))'
                               r'|\bdownload\b(?!s?\s*folder)', re.I)

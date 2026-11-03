@@ -216,10 +216,7 @@ def jarvis_task(task, folder):
     found = discover(guard, settings.load(), 'pw')
     if found['status'].get('state') != 'ready':
         return {'answer': '', 'calls': [], 'turns': None, 'notes': ['playwright: ' + json.dumps(found['status'])]}
-    pins = {'browser_navigate': ('auto', 60, 8000), 'browser_snapshot': ('read', 30, 50000),
-            'browser_click': ('auto', 30, 8000)}
-    settings.approve('pw', found['tools'], {name: {'family': 'public_web', 'effect': effect, 'timeout_s': timeout,
-                                                   'max_chars': chars} for name, (effect, timeout, chars) in pins.items()})
+    settings.approve('pw', found['tools'], web_agent.PLAYWRIGHT_PINS)
     provider = OllamaProvider(guard)
 
     decisions = []

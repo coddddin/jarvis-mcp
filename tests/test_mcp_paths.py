@@ -306,3 +306,21 @@ def test_playwright_snapshot_filename_can_be_blocked_so_the_pin_stays_read():
     assert unchecked_paths(plain, schema) == ['filename']          # an M1-era pin: changed until approved again
     blocked = ToolPin(name='browser_snapshot', schema_sha256=HASH, effect='read', blocked_args=('filename',))
     assert unchecked_paths(blocked, schema) == []
+
+
+def test_shared_playwright_pins_approve_with_snapshot_filename_blocked(guard, settings):
+    # Property names as @playwright/mcp 0.0.83 reports them (checked against the installed server).
+    from jarvis.features.mcp_client.service import unchecked_paths
+    from jarvis.features.web_agent.service import PLAYWRIGHT_PINS
+    def tool(name, props, required):
+        return {'name': name, 'description': name, 'input_schema': {
+            'type': 'object', 'properties': {prop: {'type': 'string'} for prop in props}, 'required': required}}
+    tools = [tool('browser_navigate', ['url'], ['url']),
+             tool('browser_snapshot', ['target', 'filename', 'depth', 'boxes'], []),
+             tool('browser_click', ['element', 'target', 'doubleClick', 'button', 'modifiers'], ['target'])]
+    settings.add_server('pw', 'Playwright', sys.executable, ['-I', PATHS])
+    pins = {pin.name: pin for pin in settings.approve('pw', tools, PLAYWRIGHT_PINS).tools}
+    assert pins['browser_snapshot'].blocked_args == ('filename',) and pins['browser_snapshot'].effect == 'read'
+    assert all(pin.path_args == () and pin.family == 'public_web' for pin in pins.values())
+    assert all(unchecked_paths(pins[item['name']], item['input_schema']) == [] for item in tools)
+    assert PLAYWRIGHT_PINS['browser_snapshot']['blocked_args'] == ['filename']     # approve did not change it
