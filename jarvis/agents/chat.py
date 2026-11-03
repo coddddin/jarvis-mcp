@@ -58,6 +58,9 @@ class ChatStore:
             # The model that answered (provider, model, label, external, local_reason); "{}" before brain P1.
             if 'model' not in columns:
                 db.execute('ALTER TABLE turns ADD COLUMN model TEXT NOT NULL DEFAULT "{}"')
+            # What a running task is doing (a web task's step, pages, hosts); never reply text, cleared on finish.
+            if 'progress' not in columns:
+                db.execute('ALTER TABLE turns ADD COLUMN progress TEXT NOT NULL DEFAULT "{}"')
 
     @contextmanager
     def connection(self):
@@ -115,11 +118,13 @@ class ChatStore:
                 turn['dispatch'] = json.loads(turn['dispatch'])
                 turn['sources'] = json.loads(turn['sources'])
                 turn['model'] = json.loads(turn['model'])
+                turn['progress'] = json.loads(turn['progress'])
                 # A dead process is visible as interrupted; never fabricate an answer or replay tools.
                 if turn['status'] == 'pending' and time.time() > turn['deadline']:
                     turn['status'] = 'interrupted'
                 if turn['status'] != 'pending':
                     turn['draft'] = ''
+                    turn['progress'] = {}
                 turns.append(turn)
             return {**dict(row), 'turns': turns}
 
@@ -213,6 +218,30 @@ class ChatStore:
             db.execute('UPDATE turns SET draft=? WHERE conversation=? AND id=? AND status="pending"',
                        (redact(text)[:6000], identity, request_id))
 
+    PROGRESS_BYTES = 4096
+
+    def task_progress(self, identity, request_id, value):
+        """Save what a pending turn's task is doing now: a small object, not reply text (finish clears it)."""
+        self.identifier(identity)
+        self.identifier(request_id)
+        if not isinstance(value, dict):
+            raise ChatError('Progress must be an object.')
+
+        def clean(item):                                 # redact each string, so the JSON itself stays valid
+            if isinstance(item, str):
+                return redact(item)
+            if isinstance(item, list):
+                return [clean(entry) for entry in item]
+            if isinstance(item, dict):
+                return {key: clean(entry) for key, entry in item.items()}
+            return item
+        encoded = json.dumps(clean(value), ensure_ascii=False)
+        if len(encoded.encode()) > self.PROGRESS_BYTES:
+            raise ChatError('Progress exceeds storage limit.')
+        with self.connection() as db:
+            db.execute('UPDATE turns SET progress=? WHERE conversation=? AND id=? AND status="pending"',
+                       (encoded, identity, request_id))
+
     def reserve(self, identity):
         with self.connection() as db:
             row = db.execute('SELECT reserved FROM conversations WHERE id=?', (identity,)).fetchone()
@@ -230,6 +259,6 @@ class ChatStore:
         if len(answered_by.encode()) > 1024:
             raise ChatError('Model record exceeds storage limit.')
         with self.connection() as db:
-            db.execute('UPDATE turns SET assistant=?,status=?,tools=?,sources=?,model=?,draft="" WHERE conversation=? AND id=? AND status="pending"',
+            db.execute('UPDATE turns SET assistant=?,status=?,tools=?,sources=?,model=?,draft="",progress="{}" WHERE conversation=? AND id=? AND status="pending"',
                        (redact(reply)[:6000], status, json.dumps(tools, ensure_ascii=True), encoded, answered_by, identity, request_id))
             db.execute('UPDATE conversations SET updated=? WHERE id=?', (time.time(), identity))

@@ -139,6 +139,23 @@ test('an unclosed fence keeps the rest as code, and user text is never parsed',a
   assert.equal(body.textContent,'**mine** `raw`');
 });
 
+test('a pending task shows its progress line as a status, not as a draft answer',async()=>{
+  const h=await harness(), post=deferred();
+  h.elements.chatInput.value='question';
+  const pendingTurn={id:'c1',turns:[{user:'question',assistant:'',status:'pending',draft:'',progress:{kind:'web',line:'검색 중: 제주 날씨',pages_read:0,page_limit:10}}]};
+  h.setHandler((path,options)=>options.method==='POST'?post.promise:path.endsWith('/conversations')?{model:'local',conversations:[]}:pendingTurn);
+  const sending=h.elements.chatForm.events.submit({preventDefault(){}});
+  await h.timers[0].fn();
+  const kids=h.elements.chatMessages.children;
+  assert.ok(!kids.some(child=>String(child.className).includes('chat-draft')),'no draft bubble for progress');
+  const status=kids.find(child=>String(child.className).includes('chat-progress'));
+  assert.ok(status,'progress status shown');
+  assert.equal(status.textContent,'검색 중: 제주 날씨');
+  post.resolve({id:'c1',turns:[{user:'question',assistant:'final',status:'completed',draft:'',progress:{}}]});
+  await sending;
+  assert.ok(!h.elements.chatMessages.children.some(child=>String(child.className).includes('chat-progress')));
+});
+
 test('a pending draft shows dimmed, labelled and unparsed; the final reply replaces it with Markdown',async()=>{
   const h=await harness(), post=deferred();
   h.elements.chatInput.value='question';

@@ -1,4 +1,5 @@
 """Chat wiring of the web task agent (M4a): routing, progress drafts, stop, setup message, stored traces."""
+import json
 from uuid import uuid4
 
 import pytest
@@ -6,6 +7,7 @@ from starlette.testclient import TestClient
 
 import jarvis.app.chat as chat_module
 from jarvis.agents.brain import external_allowed
+from jarvis.agents.chat import ChatError
 from jarvis.agents.store import TaskStore
 from jarvis.app.chat import ChatService
 from jarvis.app.events import create_event_app
@@ -35,21 +37,35 @@ def send(service, message):
     return identity, service.send(identity, uuid4().hex, message)['turns'][-1]
 
 
-def test_a_web_request_runs_the_agent_with_progress_lines_in_the_draft(service, monkeypatch):
+def test_a_web_request_reports_structured_progress_and_never_touches_the_draft(service, monkeypatch):
     configured(monkeypatch)
-    drafts = []
+    drafts, progress = [], []
     monkeypatch.setattr(service.store, 'draft', lambda identity, request, text: drafts.append(text))
+    monkeypatch.setattr(service.store, 'task_progress', lambda identity, request, value: progress.append(value))
 
     def run_task(guard, request, decide, *, on_progress, should_stop):
-        on_progress({'phase': 'start', 'tool': 'search', 'query': '제주 날씨'})
-        on_progress({'phase': 'start', 'tool': 'open', 'url': 'https://www.weather.go.kr/w/index.do'})
-        on_progress({'phase': 'done', 'tool': 'open', 'trace': {'status': 'failed', 'reason': 'The page did not open.'}})
+        on_progress({'phase': 'start', 'step': 1, 'tool': 'search', 'query': '제주 날씨'})
+        on_progress({'phase': 'done', 'step': 1, 'tool': 'search', 'trace': {'status': 'ok'}})
+        on_progress({'phase': 'start', 'step': 2, 'tool': 'open', 'url': 'https://www.weather.go.kr/w/index.do'})
+        on_progress({'phase': 'done', 'step': 2, 'tool': 'open', 'trace': {'status': 'ok', 'url': 'https://www.weather.go.kr/w/index.do'}})
+        on_progress({'phase': 'start', 'step': 3, 'tool': 'open', 'url': 'https://www.kma.go.kr/'})
+        on_progress({'phase': 'done', 'step': 3, 'tool': 'open', 'trace': {'status': 'failed', 'reason': 'The page did not open.'}})
         assert not should_stop()
         return fake_result()
     monkeypatch.setattr(web_agent, 'run_task', run_task)
     _, turn = send(service, '제주 날씨 찾아줘')
     assert turn['status'] == 'completed' and turn['assistant'].startswith('최고 21도')
-    assert drafts[-1] == '검색 중: 제주 날씨\n페이지 여는 중: www.weather.go.kr\n실패: The page did not open.'
+    assert drafts == []                                # progress is never reply text: not shown or spoken as one
+    assert progress[0] == {'kind': 'web', 'phase': 'search', 'line': '검색 중: 제주 날씨', 'step': 1,
+                           'step_limit': web_agent.MAX_CALLS, 'pages_read': 0, 'page_limit': web_agent.MAX_PAGES,
+                           'host': '', 'hosts': [], 'recent': ['검색 중: 제주 날씨']}
+    assert progress[2]['phase'] == 'page' and progress[2]['host'] == 'www.weather.go.kr'
+    assert progress[2]['line'] == '페이지 여는 중: www.weather.go.kr'
+    last = progress[-1]
+    assert last['phase'] == 'failed' and last['line'] == '실패: The page did not open.'
+    assert last['pages_read'] == 1 and last['hosts'] == ['www.weather.go.kr'] and last['step'] == 3
+    assert last['recent'] == ['검색 중: 제주 날씨', '페이지 여는 중: www.weather.go.kr', '페이지 여는 중: www.kma.go.kr',
+                              '실패: The page did not open.']
     assert [t['name'] for t in turn['tools']] == ['search_public_web', 'read_public_web_page']
     assert turn['sources'] == []                       # web sources never look like note sources
 
@@ -171,3 +187,32 @@ def test_a_web_task_uses_one_budget_unit_and_the_daily_cap(service, monkeypatch)
     send(service, '부산 날씨 찾아줘')
     _, turn = send(service, '서울 날씨 찾아줘')
     assert '한도(2회)' in turn['assistant']
+
+def test_progress_stays_under_the_store_limit_with_long_korean_lines_and_many_hosts():
+    from jarvis.agents.chat import ChatStore
+    from jarvis.app.chat import WebProgress
+    tracker, value = WebProgress(), None
+    for index in range(12):
+        url = f'https://{"a" * 60}{index}.example.co.kr/page'
+        tracker.update({'phase': 'start', 'step': index, 'tool': 'open', 'url': url}, '페이지 여는 중: ' + '가' * 200)
+        value = tracker.update({'phase': 'done', 'step': index, 'tool': 'open', 'trace': {'status': 'ok', 'url': url}}, None)
+    for index in range(6):
+        value = tracker.update({'phase': 'done', 'step': 20 + index, 'tool': 'download',
+                                'trace': {'status': 'ok', 'files': []}}, '받은 파일: ' + '한글파일이름' * 30)
+    assert len(json.dumps(value, ensure_ascii=False).encode()) <= WebProgress.BYTES < ChatStore.PROGRESS_BYTES
+    assert value['pages_read'] == 10 and value['line'].startswith('받은 파일: ') and len(value['line']) <= 120
+
+
+def test_a_failed_progress_write_never_ends_the_web_task(service, monkeypatch):
+    configured(monkeypatch)
+
+    def refuse(identity, request, value):
+        raise ChatError('Progress exceeds storage limit.')
+    monkeypatch.setattr(service.store, 'task_progress', refuse)
+
+    def run_task(guard, request, decide, *, on_progress, should_stop):
+        on_progress({'phase': 'start', 'step': 1, 'tool': 'search', 'query': 'jwt Bearer token'})
+        return fake_result()
+    monkeypatch.setattr(web_agent, 'run_task', run_task)
+    _, turn = send(service, 'JWT 인증 헤더 형식 찾아줘')
+    assert turn['status'] == 'completed' and turn['assistant'].startswith('최고 21도')

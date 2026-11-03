@@ -105,6 +105,47 @@ class DraftWriter:
             self.store.draft(self.identity, self.request_id, '')
 
 
+class WebProgress:
+    """What a running web task is doing, as a small object for the turn's progress field (a view shows it as a
+    status, never as reply text): phase search/page/download/failed, the current Korean line, step of the call
+    cap, pages read of the page cap, the current host, the hosts read so far and the last few lines."""
+    RECENT = 6
+    HOSTS = 10
+    LINE_CHARS = 120
+    BYTES = 3500                     # under ChatStore.PROGRESS_BYTES even after redaction markers
+
+    def __init__(self):
+        self.value = {'kind': 'web', 'phase': 'search', 'line': '', 'step': 0, 'step_limit': web_agent.MAX_CALLS,
+                      'pages_read': 0, 'page_limit': web_agent.MAX_PAGES, 'host': '', 'hosts': [], 'recent': []}
+
+    def update(self, event, line):
+        """Apply one agent progress event; returns the new value, or None when nothing visible changed."""
+        value, tool, trace = self.value, event.get('tool'), event.get('trace') or {}
+        before = value['step']
+        if isinstance(event.get('step'), int):
+            value['step'] = max(0, min(event['step'], value['step_limit']))
+        if event.get('phase') == 'start':
+            value['phase'] = {'search': 'search', 'download': 'download'}.get(tool, 'page')
+            if tool in ('open', 'press'):
+                value['host'] = (urlsplit(event.get('url') or '').hostname or '')[:100]
+        elif trace.get('status') == 'failed':
+            value['phase'] = 'failed'
+        elif trace.get('status') == 'ok' and trace.get('url') and tool in ('open', 'press'):
+            value['pages_read'] = min(value['pages_read'] + 1, value['page_limit'])
+            host = (urlsplit(trace['url']).hostname or '')[:100]
+            if host and host not in value['hosts'] and len(value['hosts']) < self.HOSTS:
+                value['hosts'].append(host)
+        elif not line and value['step'] == before:
+            return None
+        if line:
+            value['line'] = redact(line)[:self.LINE_CHARS]
+            value['recent'] = (value['recent'] + [value['line']])[-self.RECENT:]
+        # Korean text is 3 bytes a character: drop the oldest recent lines, then hosts, until it fits.
+        while len(json.dumps(value, ensure_ascii=False).encode()) > self.BYTES and (value['recent'] or value['hosts']):
+            (value['recent'] if value['recent'] else value['hosts']).pop(0)
+        return {**value, 'hosts': list(value['hosts']), 'recent': list(value['recent'])}
+
+
 class ChatService:
     def __init__(self, guard, *, model='qwen3.5:9b', provider_candidates=(), provider_executors=None, brains=()):
         """brains: extra Provider objects (jarvis.agents.brain) the model-name button may select, next to local
@@ -623,7 +664,8 @@ class ChatService:
         return None
 
     def _web_task(self, identity, request_id, message, choice, plan):
-        """One web task with the selected brain; progress lines go to the turn's draft. Returns the stored
+        """One web task with the selected brain; its progress goes to the turn's progress field, never the draft
+        (the draft is reply text a view may show or speak). Returns the stored
         conversation, or None when the browser is not set up and the request is not a download: the existing
         search path answers it then."""
         if (web_agent.configured_server(McpSettings(self.guard).load()) is None
@@ -637,13 +679,16 @@ class ChatService:
             return self.store.get(identity)
         self.store.reserve(identity)                         # one conversation budget unit per web task
         answered_by = self._turn_choice.record(local_reason)
-        lines = []
+        tracker = WebProgress()
 
         def progress(event):
-            line = self._progress_line(event)
-            if line:
-                lines.append(redact(line))
-                self.store.draft(identity, request_id, '\n'.join(lines[-12:]))
+            # Progress is a courtesy for the view: a failed write is dropped and never ends the task.
+            try:
+                value = tracker.update(event, self._progress_line(event))
+                if value is not None:
+                    self.store.task_progress(identity, request_id, value)
+            except (ChatError, ValueError, TypeError):
+                pass
 
         def decide(messages, schema, deadline):            # counted by the task's own 30-call cap
             return self._answer(messages, schema, deadline)

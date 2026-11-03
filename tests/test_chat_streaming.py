@@ -453,3 +453,51 @@ def test_hud_server_warms_the_model_only_after_a_successful_bind(monkeypatch):
     assert calls == []
     asyncio.run(HUDServer(uvicorn.Config('unused'), on_start=lambda: calls.append(1)).startup())
     assert calls == [1]
+
+
+def test_store_keeps_structured_progress_only_while_pending_and_finish_clears_it(tmp_path):
+    store = ChatStore(Guardrails(tmp_path))
+    conversation, request = store.create()['id'], uuid4().hex
+    store.begin(conversation, request, 'hi', time.time() + 60)
+    assert store.get(conversation)['turns'][0]['progress'] == {}
+    store.task_progress(conversation, request, {'kind': 'web', 'line': '검색 중: 제주', 'pages_read': 0})
+    turn = store.get(conversation)['turns'][0]
+    assert turn['progress'] == {'kind': 'web', 'line': '검색 중: 제주', 'pages_read': 0} and turn['draft'] == ''
+    store.finish(conversation, request, reply='final')
+    assert store.get(conversation)['turns'][0]['progress'] == {}
+    store.task_progress(conversation, request, {'kind': 'web', 'line': 'late'})     # a finished turn takes none
+    assert store.get(conversation)['turns'][0]['progress'] == {}
+
+
+def test_store_progress_is_a_small_redacted_object(tmp_path):
+    store = ChatStore(Guardrails(tmp_path))
+    conversation, request = store.create()['id'], uuid4().hex
+    store.begin(conversation, request, 'hi', time.time() + 60)
+    for bad in ('text', ['list'], {'line': 'x' * 5000}):
+        with pytest.raises(ChatError):
+            store.task_progress(conversation, request, bad)
+    store.task_progress(conversation, request, {'line': 'key sk-abcdefghijklmnopqrstuvwxyz0123456789'})
+    assert 'sk-abcdefghijklmnopqrstuvwxyz0123456789' not in store.get(conversation)['turns'][0]['progress']['line']
+
+
+def test_an_older_chat_database_gains_the_progress_column(tmp_path):
+    store = ChatStore(Guardrails(tmp_path))
+    path = tmp_path / ChatStore.DATABASE
+    db = sqlite3.connect(path)
+    db.execute('ALTER TABLE turns DROP COLUMN progress')
+    db.commit()
+    db.close()
+    store = ChatStore(Guardrails(tmp_path))
+    conversation, request = store.create()['id'], uuid4().hex
+    store.begin(conversation, request, 'hi', time.time() + 60)
+    assert store.get(conversation)['turns'][0]['progress'] == {}
+
+
+def test_store_progress_redacts_each_string_so_a_bearer_word_never_breaks_the_json(tmp_path):
+    store = ChatStore(Guardrails(tmp_path))
+    conversation, request = store.create()['id'], uuid4().hex
+    store.begin(conversation, request, 'hi', time.time() + 60)
+    for line in ('검색 중: jwt Bearer token', '검색 중: jwt Bearer [REDACTED]', 'Bearer'):
+        store.task_progress(conversation, request, {'line': line, 'recent': [line]})
+        saved = store.get(conversation)['turns'][0]['progress']
+        assert set(saved) == {'line', 'recent'} and 'token' not in saved['line']
