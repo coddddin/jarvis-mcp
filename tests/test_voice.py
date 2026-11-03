@@ -214,6 +214,35 @@ def test_streamed_reply_keeps_speaking_between_drafts_and_ends_after_final():
     assert len(audio.outputs) == 1                                         # one stream for the whole reply
 
 
+def test_each_sentence_reports_when_its_audio_starts_and_how_long_it_plays():
+    voice, events, audio = service()
+    assert voice.speak('첫 문장입니다. **둘째** 문장이에요.', final=True)
+    wait(lambda: audio.outputs)
+    wait(lambda: voice.synthesizing is False and voice.sentences.empty())
+    speaker = audio.outputs[0]
+    speaker.source.pull(735)
+    started = [event for event in events if event['type'] == 'sentence']
+    assert started == [{'type': 'sentence', 'index': 0, 'text': '첫 문장입니다.', 'duration_ms': 100}]
+    drain(speaker)
+    started = [event for event in events if event['type'] == 'sentence']
+    assert [event['index'] for event in started] == [0, 1]
+    assert started[1]['text'] == '둘째 문장이에요.' and started[1]['duration_ms'] == 100
+    order = [event['type'] for event in events if event['type'] in ('sentence', 'state')]
+    assert order.index('sentence') < len(order) - 1 and order[-1] == 'state'   # sentences come before 'ready'
+
+
+def test_a_hushed_reply_reports_no_further_sentences():
+    voice, events, audio = service()
+    voice.speak('하나입니다. 둘입니다. 셋입니다.', final=True)
+    wait(lambda: audio.outputs)
+    audio.outputs[0].source.pull(735)
+    voice.hush()
+    before = len([event for event in events if event['type'] == 'sentence'])
+    for _ in range(10):
+        audio.outputs[0].source.pull(735)
+    assert len([event for event in events if event['type'] == 'sentence']) == before == 1
+
+
 def test_listening_while_speaking_stops_playback_and_drops_queued_sentences():
     gate = threading.Event()
 
