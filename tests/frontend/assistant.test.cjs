@@ -170,6 +170,23 @@ test('the draft streams while pending, polling pauses while hidden and stops whe
   assert.equal(h.elements.send.disabled, false);
 });
 
+test('task progress shows as the caption while thinking, never as reply text and never spoken', async () => {
+  const answer = deferred();
+  const progress = {kind: 'web', phase: 'page', line: '페이지 여는 중: python.org', pages_read: 1, page_limit: 10};
+  const h = await harness({stored: 's'.repeat(43), handler: async (path, options) => {
+    if (options.method === 'POST' && path.endsWith('/messages')) return answer.promise;
+    if (path === '/api/chat/conversations/' + 'c'.repeat(32)) return [200, {turns: [{id: REQUEST, status: 'pending', draft: '', progress}]}];
+    return listing;
+  }});
+  h.elements.input.value = '파이썬 최신 버전 찾아줘'; h.elements.composer.events.submit({preventDefault() {}}); await flush();
+  await h.run();
+  assert.equal(h.elements.caption.textContent, '페이지 여는 중: python.org');
+  assert.equal(h.elements.reply.hidden, true, 'no reply text while only progress exists');
+  assert.equal(h.orbCalls.at(-1), 'thinking', 'the orb keeps thinking: progress is not speech');
+  answer.resolve([200, {turns: [{id: REQUEST, status: 'completed', assistant: '3.14.1 입니다.', sources: []}]}]); await flush();
+  assert.equal(h.elements.reply.textContent, '3.14.1 입니다.');
+});
+
 test('a failed turn is reported without a fake answer and pagehide stops polling', async () => {
   const answer = deferred();
   const h = await harness({stored: 's'.repeat(43), handler: async (path, options) =>

@@ -196,6 +196,12 @@
       if (turn.assistant) list.append(bubble('assistant', turn.assistant));
       const answered = window.JarvisBrain?.answeredBy(turn); if (answered) list.append(node('p', 'chat-turn-model', answered));
       else if (turn.status === 'pending' && turn.draft) list.append(draftBubble(turn.draft));
+      else if (turn.status === 'pending' && typeof turn.progress?.line === 'string' && turn.progress.line) {
+        // A running task's step (web task): a status line, not an answer.
+        const status = node('p', 'chat-progress muted', turn.progress.line);
+        status.setAttribute('role', 'status');
+        list.append(status);
+      }
       const sources = window.JarvisSources?.render(turn); if (sources) list.append(sources);
       if (turn.tools?.length) {
         const details = node('details', 'chat-tools');

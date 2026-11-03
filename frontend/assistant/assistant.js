@@ -248,6 +248,11 @@
       try {
         const snapshot = await api('/api/chat/conversations/' + identity);
         const turn = snapshot.turns.find(item => item.id === requestId);
+        // A running task's progress (a web task's step) is a status, not reply text: the caption shows it while the
+        // orb is thinking; it is never spoken and never fills the reply.
+        const step = turn?.progress?.line;
+        if (polling && turn?.status === 'pending' && typeof step === 'string' && step
+            && presenceState.state === 'thinking') caption.textContent = step;
         if (polling && turn?.status === 'pending' && turn.draft && turn.draft !== drafted) {
           if (!turn.draft.startsWith(drafted) && voiceOn()) voice.hush();   // the draft was rewritten
           speakText(turn.draft.startsWith(drafted) ? turn.draft.slice(drafted.length) : turn.draft, false);
