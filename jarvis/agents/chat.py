@@ -218,16 +218,26 @@ class ChatStore:
             db.execute('UPDATE turns SET draft=? WHERE conversation=? AND id=? AND status="pending"',
                        (redact(text)[:6000], identity, request_id))
 
+    PROGRESS_BYTES = 4096
+
     def task_progress(self, identity, request_id, value):
         """Save what a pending turn's task is doing now: a small object, not reply text (finish clears it)."""
         self.identifier(identity)
         self.identifier(request_id)
         if not isinstance(value, dict):
             raise ChatError('Progress must be an object.')
-        encoded = redact(json.dumps(value, ensure_ascii=False))
-        if len(encoded.encode()) > 4096:
+
+        def clean(item):                                 # redact each string, so the JSON itself stays valid
+            if isinstance(item, str):
+                return redact(item)
+            if isinstance(item, list):
+                return [clean(entry) for entry in item]
+            if isinstance(item, dict):
+                return {key: clean(entry) for key, entry in item.items()}
+            return item
+        encoded = json.dumps(clean(value), ensure_ascii=False)
+        if len(encoded.encode()) > self.PROGRESS_BYTES:
             raise ChatError('Progress exceeds storage limit.')
-        json.loads(encoded)                              # redaction must leave valid JSON
         with self.connection() as db:
             db.execute('UPDATE turns SET progress=? WHERE conversation=? AND id=? AND status="pending"',
                        (encoded, identity, request_id))

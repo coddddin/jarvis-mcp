@@ -111,6 +111,8 @@ class WebProgress:
     cap, pages read of the page cap, the current host, the hosts read so far and the last few lines."""
     RECENT = 6
     HOSTS = 10
+    LINE_CHARS = 120
+    BYTES = 3500                     # under ChatStore.PROGRESS_BYTES even after redaction markers
 
     def __init__(self):
         self.value = {'kind': 'web', 'phase': 'search', 'line': '', 'step': 0, 'step_limit': web_agent.MAX_CALLS,
@@ -119,6 +121,7 @@ class WebProgress:
     def update(self, event, line):
         """Apply one agent progress event; returns the new value, or None when nothing visible changed."""
         value, tool, trace = self.value, event.get('tool'), event.get('trace') or {}
+        before = value['step']
         if isinstance(event.get('step'), int):
             value['step'] = max(0, min(event['step'], value['step_limit']))
         if event.get('phase') == 'start':
@@ -132,11 +135,14 @@ class WebProgress:
             host = (urlsplit(trace['url']).hostname or '')[:100]
             if host and host not in value['hosts'] and len(value['hosts']) < self.HOSTS:
                 value['hosts'].append(host)
-        elif not line:
+        elif not line and value['step'] == before:
             return None
         if line:
-            value['line'] = redact(line)
+            value['line'] = redact(line)[:self.LINE_CHARS]
             value['recent'] = (value['recent'] + [value['line']])[-self.RECENT:]
+        # Korean text is 3 bytes a character: drop the oldest recent lines, then hosts, until it fits.
+        while len(json.dumps(value, ensure_ascii=False).encode()) > self.BYTES and (value['recent'] or value['hosts']):
+            (value['recent'] if value['recent'] else value['hosts']).pop(0)
         return {**value, 'hosts': list(value['hosts']), 'recent': list(value['recent'])}
 
 
@@ -676,9 +682,13 @@ class ChatService:
         tracker = WebProgress()
 
         def progress(event):
-            value = tracker.update(event, self._progress_line(event))
-            if value is not None:
-                self.store.task_progress(identity, request_id, value)
+            # Progress is a courtesy for the view: a failed write is dropped and never ends the task.
+            try:
+                value = tracker.update(event, self._progress_line(event))
+                if value is not None:
+                    self.store.task_progress(identity, request_id, value)
+            except (ChatError, ValueError, TypeError):
+                pass
 
         def decide(messages, schema, deadline):            # counted by the task's own 30-call cap
             return self._answer(messages, schema, deadline)

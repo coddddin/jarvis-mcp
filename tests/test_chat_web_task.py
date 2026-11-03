@@ -1,4 +1,5 @@
 """Chat wiring of the web task agent (M4a): routing, progress drafts, stop, setup message, stored traces."""
+import json
 from uuid import uuid4
 
 import pytest
@@ -6,6 +7,7 @@ from starlette.testclient import TestClient
 
 import jarvis.app.chat as chat_module
 from jarvis.agents.brain import external_allowed
+from jarvis.agents.chat import ChatError
 from jarvis.agents.store import TaskStore
 from jarvis.app.chat import ChatService
 from jarvis.app.events import create_event_app
@@ -185,3 +187,32 @@ def test_a_web_task_uses_one_budget_unit_and_the_daily_cap(service, monkeypatch)
     send(service, '부산 날씨 찾아줘')
     _, turn = send(service, '서울 날씨 찾아줘')
     assert '한도(2회)' in turn['assistant']
+
+def test_progress_stays_under_the_store_limit_with_long_korean_lines_and_many_hosts():
+    from jarvis.agents.chat import ChatStore
+    from jarvis.app.chat import WebProgress
+    tracker, value = WebProgress(), None
+    for index in range(12):
+        url = f'https://{"a" * 60}{index}.example.co.kr/page'
+        tracker.update({'phase': 'start', 'step': index, 'tool': 'open', 'url': url}, '페이지 여는 중: ' + '가' * 200)
+        value = tracker.update({'phase': 'done', 'step': index, 'tool': 'open', 'trace': {'status': 'ok', 'url': url}}, None)
+    for index in range(6):
+        value = tracker.update({'phase': 'done', 'step': 20 + index, 'tool': 'download',
+                                'trace': {'status': 'ok', 'files': []}}, '받은 파일: ' + '한글파일이름' * 30)
+    assert len(json.dumps(value, ensure_ascii=False).encode()) <= WebProgress.BYTES < ChatStore.PROGRESS_BYTES
+    assert value['pages_read'] == 10 and value['line'].startswith('받은 파일: ') and len(value['line']) <= 120
+
+
+def test_a_failed_progress_write_never_ends_the_web_task(service, monkeypatch):
+    configured(monkeypatch)
+
+    def refuse(identity, request, value):
+        raise ChatError('Progress exceeds storage limit.')
+    monkeypatch.setattr(service.store, 'task_progress', refuse)
+
+    def run_task(guard, request, decide, *, on_progress, should_stop):
+        on_progress({'phase': 'start', 'step': 1, 'tool': 'search', 'query': 'jwt Bearer token'})
+        return fake_result()
+    monkeypatch.setattr(web_agent, 'run_task', run_task)
+    _, turn = send(service, 'JWT 인증 헤더 형식 찾아줘')
+    assert turn['status'] == 'completed' and turn['assistant'].startswith('최고 21도')

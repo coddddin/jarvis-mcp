@@ -491,3 +491,13 @@ def test_an_older_chat_database_gains_the_progress_column(tmp_path):
     conversation, request = store.create()['id'], uuid4().hex
     store.begin(conversation, request, 'hi', time.time() + 60)
     assert store.get(conversation)['turns'][0]['progress'] == {}
+
+
+def test_store_progress_redacts_each_string_so_a_bearer_word_never_breaks_the_json(tmp_path):
+    store = ChatStore(Guardrails(tmp_path))
+    conversation, request = store.create()['id'], uuid4().hex
+    store.begin(conversation, request, 'hi', time.time() + 60)
+    for line in ('검색 중: jwt Bearer token', '검색 중: jwt Bearer [REDACTED]', 'Bearer'):
+        store.task_progress(conversation, request, {'line': line, 'recent': [line]})
+        saved = store.get(conversation)['turns'][0]['progress']
+        assert set(saved) == {'line', 'recent'} and 'token' not in saved['line']
