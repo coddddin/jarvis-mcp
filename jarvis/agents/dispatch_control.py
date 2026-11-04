@@ -70,15 +70,18 @@ def input_ids(value):
 
 
 def run_messages(guard, board, run_id):
-    """One-line headers of the messages that woke a run. None: no such run. recorded False: an older row."""
+    """One-line headers of the messages that woke a run. None: no such run. recorded False: an older row.
+
+    relation 'wake_message' names the only link shown: these messages (and their saved task IDs) were the
+    run's input. It never means the run claimed, started, finished or verified any task."""
     with DispatchLedger(guard).connection() as db:
         row = db.execute('SELECT input_ids FROM runs WHERE id=?', (run_id,)).fetchone()
     if row is None:
         return None
     ids = input_ids(row['input_ids'])
     if ids is None:
-        return {'run_id': run_id, 'recorded': False, 'messages': []}
-    return {'run_id': run_id, 'recorded': True, 'messages': board.message_headers(ids)}
+        return {'run_id': run_id, 'relation': 'wake_message', 'recorded': False, 'messages': []}
+    return {'run_id': run_id, 'relation': 'wake_message', 'recorded': True, 'messages': board.message_headers(ids)}
 
 
 def _model(value):

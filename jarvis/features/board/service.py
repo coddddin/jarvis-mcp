@@ -346,22 +346,30 @@ class BoardStore:
         """Read-only one-line headers for up to 20 message ids, in the given order; nothing is marked read.
 
         title is the linked task's title, else the first non-empty body line, redacted and cut to 60 characters.
-        The full body never leaves. A pruned or unknown id comes back as {'id', 'missing': True}."""
+        The full body never leaves. A pruned or unknown id comes back as {'id', 'missing': True}.
+        task_id is the message's own saved task ID when it is a well-formed one, else None; it is never guessed
+        from the body or anything else. task_available says only that a task row with that ID exists now: a
+        deleted task keeps its ID with False. No task status, owner or progress is read here."""
         ids = [i for i in ids if type(i) is int and i > 0][:20]
         if not ids:
             return []
         with self.connection() as db:
             rows = {row['id']: row for row in db.execute(
-                f'SELECT m.id, m.sender, m.body, t.title FROM messages m LEFT JOIN tasks t ON t.id = m.task_id '
-                f'WHERE m.id IN ({",".join("?" * len(ids))})', ids)}
+                f'SELECT m.id, m.sender, m.body, m.task_id, t.id AS linked, t.title FROM messages m '
+                f'LEFT JOIN tasks t ON t.id = m.task_id WHERE m.id IN ({",".join("?" * len(ids))})', ids)}
         headers = []
         for message_id in ids:
             row = rows.get(message_id)
             if row is None:
                 headers.append({'id': message_id, 'missing': True})
                 continue
-            line = row['title'] or next((part.strip() for part in row['body'].splitlines() if part.strip()), '')
-            headers.append({'id': message_id, 'sender': row['sender'], 'title': redact(line)[:60]})
+            # A legacy or corrupt row's task_id never leaves unless it is exactly a board task ID.
+            task_id = row['task_id'] if isinstance(row['task_id'], str) and TASK_ID.fullmatch(row['task_id']) else None
+            available = task_id is not None and row['linked'] == task_id
+            line = (row['title'] if available else None) or next(
+                (part.strip() for part in row['body'].splitlines() if part.strip()), '')
+            headers.append({'id': message_id, 'sender': row['sender'], 'title': redact(line)[:60],
+                            'task_id': task_id, 'task_available': available})
         return headers
 
     def activity_snapshot(self):
