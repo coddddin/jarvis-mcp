@@ -35,6 +35,7 @@ TASK_SECONDS = 600              # one task at most
 FINAL_SECONDS = 45              # time kept for the answer round
 MAX_SEARCHES = 4
 MAX_INVALID = 3                 # invalid model choices before the answer is forced
+MODEL_RETRIES = 3               # failed model calls retried per task, each decision at most once
 RESULTS = 8                     # search results shown
 PAGE_CHARS = 3000               # newest page text shown
 OLD_PAGE_CHARS = 300            # an earlier page without notes shrinks to this
@@ -63,12 +64,17 @@ PLAYWRIGHT_PINS = {
                          'blocked_args': ['filename']},
     'browser_click': {'family': 'public_web', 'effect': 'auto', 'timeout_s': 30, 'max_chars': 8000},
 }
+# Model failures worth one more try: Ollama aborted a looping generation, or a server error. The worker reports the
+# kind (BrainError.kind); timeouts and bad output are not retried.
+RETRY_MODEL = re.compile(r'repeat_limit|http_5[0-9][0-9]')
 # A request to fetch a file. The Downloads folder, its list or files already downloaded are local, not this.
 DOWNLOAD_REQUEST = re.compile(r'(?:내려\s*받|다운\s*받)(?!은|았던|았|은\s*파일)|다운로드(?!\s*(?:폴더|목록|한|된|받은|파일\s*정리))'
                               r'|\bdownload\b(?!s?\s*folder)', re.I)
 # A request to analyse or compare: one page is not enough, so JARVIS reads DEPTH_SITES sites before the answer.
-ANALYSIS_REQUEST = re.compile(r'분석|비교|장단점|차이점|동향|추세|트렌드|조사해|조사하|리서치|\bcompar|\banaly[sz]'
-                              r'|\bvs\.?(?=\s)|\bversus\b|pros and cons', re.I)
+# Not '비교적', '분석기', 'analyst' or 'VS Code'; 'vs' needs text on both sides. 트렌드/추세 alone are topics ('추세선',
+# a book title), so they count only with an analysis word next to them, which the other words already match.
+ANALYSIS_REQUEST = re.compile(r'분석(?!기)|비교(?!적)|장단점|차이점|동향|조사해|조사하|리서치|\bcompar|\banaly[sz](?!t)'
+                              r'|\S\s+(?:vs\.?|versus)\s+(?!code\b)\S|pros and cons', re.I)
 BLOCKED_PRESS = re.compile(r'로그인|로그아웃|회원\s*가입|가입|결제|구매|주문|장바구니|신청|삭제|등록|전송|보내기|제출|댓글|글쓰기|'
                            r'구독|좋아요|공유|log\s*in|log\s*out|sign\s*(in|up)|register|buy|pay|order|checkout|cart|'
                            r'submit|delete|send|post|comment|subscribe|share', re.I)
@@ -404,6 +410,7 @@ class TaskState:
     browser_page: int | None = None                  # the page whose buttons are valid
     note_page: int | None = None                     # the page whose notes the next decision writes
     nudged: bool = False                             # the one 'check an official source' reminder was given
+    model_retries: list = field(default_factory=list)  # kinds of the failed model calls that were tried again
     deep: bool = False                               # an analysis or comparison: read DEPTH_SITES sites first
     search_paused: bool = False                      # after a repeated search: open a result or answer first
     calls: int = 0
@@ -522,8 +529,7 @@ class WebAgent:
             note = (f'(남은 도구 호출 {max(0, self.limits["calls"] - state.calls)}회, 남은 시간 {int(max(left, 0))}초. '
                     f'고를 수 있는 도구: {", ".join(tools)})')
             try:
-                decision = self.decide(messages + [{'role': 'user', 'content': note}], schema,
-                                       time.monotonic() + max(20, min(left, 180)))
+                decision = self._decide(state, messages + [{'role': 'user', 'content': note}], schema, left)
             except GuardrailError:
                 raise
             except Exception as exc:          # a failed model call ends the task as failed, with what was read
@@ -611,6 +617,20 @@ class WebAgent:
             named = any(w in host or host.endswith(w) for w in words if '.' in w)
             return (0 if named else 1, 0 if PUBLIC_BODY.search(host) else 1, 1 if AGGREGATOR.search(host) else 0, number)
         return min(results, key=score)
+
+    def _decide(self, state, messages, schema, left):
+        """One model decision. A failure whose kind matches RETRY_MODEL is tried once more, while the task has
+        MODEL_RETRIES left; the kind is kept in state.model_retries (the result's model_retries)."""
+        try:
+            return self.decide(messages, schema, time.monotonic() + max(20, min(left, 180)))
+        except GuardrailError:
+            raise
+        except Exception as exc:
+            kind = getattr(exc, 'kind', None)
+            if not (isinstance(kind, str) and RETRY_MODEL.fullmatch(kind)) or len(state.model_retries) >= MODEL_RETRIES:
+                raise
+            state.model_retries.append(kind)
+            return self.decide(messages, schema, time.monotonic() + max(20, min(left, 180)))
 
     @staticmethod
     def _deeper_result(state, openable):
@@ -779,7 +799,7 @@ class WebAgent:
                 reply += f'\n검사하지 못한 파일은 격리 폴더에 있습니다: {self.browser.output}'
         return {'status': status, 'reason': reason, 'answer': reply.strip(), 'sources': list(dict.fromkeys(sources)),
                 'files': state.files, 'traces': state.traces, 'calls': state.calls, 'searches': state.searches,
-                'family': 'public_web'}
+                'model_retries': list(state.model_retries), 'family': 'public_web'}
 
 
 # --- one task from the approved configuration (chat entry point) --------------------------------------------------
