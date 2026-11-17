@@ -682,7 +682,7 @@ class McpSession:
         if entry is None:
             self._audit_refused(str(name)[:120], None, 'not_attached')
             raise McpError('This tool is not attached or not approved.')
-        server, pin, _ = entry
+        server, pin, schema = entry
         if pin.effect == 'confirm' and not confirmed:
             self._audit_refused(server.id, pin, 'confirm_required')
             raise ConfirmRequired('This action needs your confirmation first.')
@@ -701,9 +701,14 @@ class McpSession:
             raise McpError('The MCP session time limit was reached.')
         self.audit_calls += 1
         call_id = f'{self.audit_session}-{self.audit_calls}'
+        # Only names the tool's schema declares are logged: a key is chosen by the model and may carry text.
+        properties = schema.get('properties') if isinstance(schema, dict) else None
+        known = sorted(key for key in arguments if isinstance(properties, dict) and key in properties)
         attempt = {'ev': 'attempt', 'id': call_id, 'server': server.id, 'tool': pin.name, 'effect': pin.effect,
-                   'args': sorted(arguments), 'paths': relative_paths(self.guard.workspace, arguments,
-                                                                      [item.name for item in pin.path_args])}
+                   'args': known, 'paths': relative_paths(self.guard.workspace, arguments,
+                                                          [item.name for item in pin.path_args])}
+        if len(known) < len(arguments):
+            attempt['extra'] = len(arguments) - len(known)
         if not self.audit.write(attempt):
             self.audit_misses += 1
             if pin.effect != 'read' or any(item.mode == 'write' for item in pin.path_args):

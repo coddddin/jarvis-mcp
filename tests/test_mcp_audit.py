@@ -75,6 +75,15 @@ def test_a_call_writes_its_attempt_and_outcome_with_names_and_relative_paths_onl
     assert SECRET not in text and str(guard.workspace) not in text and 'open:' not in text
 
 
+def test_an_argument_name_the_schema_does_not_declare_is_counted_not_written(guard):
+    with McpSession(guard, approved(guard)) as session:
+        session._ask = lambda command, seconds: {'ok': True, 'is_error': False, 'text': 'x', 'truncated': False}
+        session.call('mcp:paths/look', {'query': 'x', SECRET: 'y'})
+    attempt = lines(guard)[0]
+    assert attempt['args'] == ['query'] and attempt['extra'] == 1
+    assert SECRET not in raw_log(guard)
+
+
 def test_refused_calls_write_one_line_with_a_reason_code(guard):
     with McpSession(guard, approved(guard)) as session:
         with pytest.raises(McpError):

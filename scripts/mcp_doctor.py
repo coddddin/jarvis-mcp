@@ -4,7 +4,9 @@
   .venv\\Scripts\\python.exe scripts\\mcp_doctor.py --no-start   configuration and audit log only
   .venv\\Scripts\\python.exe scripts\\mcp_doctor.py --days 30    audit summary over 30 days (kept at most 30)
 
-Reads JarvisWorkspace/.jarvis-settings/mcp_servers.json and JarvisWorkspace/.jarvis-mcp-audit/. Changes nothing.
+Reads JarvisWorkspace/.jarvis-settings/mcp_servers.json and JarvisWorkspace/.jarvis-mcp-audit/. It never changes the
+settings or calls a tool; it may create the empty log folder and, when starting servers, their .jarvis-mcp/<id>
+working folders, as any task session does.
 """
 import argparse
 import sys
