@@ -41,6 +41,7 @@ OLD_PAGE_CHARS = 300            # an earlier page without notes shrinks to this
 NOTE_CHARS = 400                # the model's notes on one page, kept instead of its text
 MAX_PAGES = 10                  # pages read per task (user decision 2026-10-29)
 MAX_DEPTH = 2                   # link hops from a search result or typed address
+DEPTH_SITES = 3                 # different sites an analysis or comparison reads before answering
 LINKED_PAGES = 2                # earlier pages whose numbered links stay in the prompt
 LINKS = 20                      # numbered links per page
 BUTTONS = 8                     # numbered buttons per browser page
@@ -65,6 +66,9 @@ PLAYWRIGHT_PINS = {
 # A request to fetch a file. The Downloads folder, its list or files already downloaded are local, not this.
 DOWNLOAD_REQUEST = re.compile(r'(?:내려\s*받|다운\s*받)(?!은|았던|았|은\s*파일)|다운로드(?!\s*(?:폴더|목록|한|된|받은|파일\s*정리))'
                               r'|\bdownload\b(?!s?\s*folder)', re.I)
+# A request to analyse or compare: one page is not enough, so JARVIS reads DEPTH_SITES sites before the answer.
+ANALYSIS_REQUEST = re.compile(r'분석|비교|장단점|차이점|동향|추세|트렌드|조사해|조사하|리서치|\bcompar|\banaly[sz]'
+                              r'|\bvs\.?(?=\s)|\bversus\b|pros and cons', re.I)
 BLOCKED_PRESS = re.compile(r'로그인|로그아웃|회원\s*가입|가입|결제|구매|주문|장바구니|신청|삭제|등록|전송|보내기|제출|댓글|글쓰기|'
                            r'구독|좋아요|공유|log\s*in|log\s*out|sign\s*(in|up)|register|buy|pay|order|checkout|cart|'
                            r'submit|delete|send|post|comment|subscribe|share', re.I)
@@ -400,6 +404,7 @@ class TaskState:
     browser_page: int | None = None                  # the page whose buttons are valid
     note_page: int | None = None                     # the page whose notes the next decision writes
     nudged: bool = False                             # the one 'check an official source' reminder was given
+    deep: bool = False                               # an analysis or comparison: read DEPTH_SITES sites first
     search_paused: bool = False                      # after a repeated search: open a result or answer first
     calls: int = 0
     next_number: int = 1
@@ -495,6 +500,10 @@ class WebAgent:
         messages = [{'role': 'system', 'content': SYSTEM}, {'role': 'user', 'content': request}]
         if state.items:
             messages[1]['content'] += '\n\n요청에 있는 주소: ' + '; '.join(f'[{n}] {i["url"]}' for n, i in state.items.items())
+        state.deep = bool(ANALYSIS_REQUEST.search(request)) and not state.items     # a typed address is the page wanted
+        if state.deep:
+            messages[1]['content'] += (f'\n\n(자비스 안내: 분석·비교 요청이다. 검색 결과 중 서로 다른 사이트 {DEPTH_SITES}곳 이상을 '
+                                       '열어 읽고, 출처마다 내용을 비교해서 answer 하라.)')
         page_messages, invalid, forced_answer = [], 0, 0
         while True:
             self.guard.check_running()
@@ -536,6 +545,11 @@ class WebAgent:
                 state.note_page = None
                 self._compact(messages, state, page_messages)
             messages.append({'role': 'assistant', 'content': json.dumps(decision, ensure_ascii=False)})
+            pick = self._deeper_result(state, tools.get('open') or []) if tool == 'answer' and not final else None
+            if pick is not None:                             # an analysis answered from too few sites
+                messages.append({'role': 'user', 'content': f'분석·비교 요청인데 읽은 사이트가 {DEPTH_SITES}곳보다 적다. '
+                                 f'자비스가 다른 사이트의 결과 [{pick}]을 열었다. 읽은 뒤 출처를 비교해서 answer 하라.'})
+                tool, decision = 'open', {**decision, 'tool': 'open', 'number': pick}
             if tool == 'answer':
                 text = str(decision.get('answer') or '').strip()
                 if not text:
@@ -597,6 +611,19 @@ class WebAgent:
             named = any(w in host or host.endswith(w) for w in words if '.' in w)
             return (0 if named else 1, 0 if PUBLIC_BODY.search(host) else 1, 1 if AGGREGATOR.search(host) else 0, number)
         return min(results, key=score)
+
+    @staticmethod
+    def _deeper_result(state, openable):
+        """For an analysis that has read fewer than DEPTH_SITES sites: the best unopened search result on a site not
+        read yet. None when it is not an analysis, enough sites were read, or no such result is left."""
+        if not state.deep:
+            return None
+        hosts = {(urlsplit(page['url']).hostname or '').casefold() for page in state.pages.values()
+                 if page['status'] == 'ok'}
+        if len(hosts) >= DEPTH_SITES:
+            return None
+        fresh = [n for n in openable if (urlsplit(state.items[n]['url']).hostname or '').casefold() not in hosts]
+        return WebAgent._best_result(state, fresh)
 
     @staticmethod
     def _named_hosts(request):

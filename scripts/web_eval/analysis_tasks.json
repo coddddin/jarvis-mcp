@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "as_of": "2026-11-17",
+  "note": "Analysis and comparison requests: the answer must name both sides and the agent must read pages on min_sites different hosts. Scored apart from tasks.json.",
+  "tasks": [
+    {"id": "a01", "prompt": "파이썬 3.13과 3.14의 주요 차이점을 비교해 주세요.",
+     "answer_all": ["3\\.13", "3\\.14"], "source_hosts": ["python.org"], "min_sites": 3},
+    {"id": "a02", "prompt": "Node.js와 Deno의 장단점을 비교해 주세요.",
+     "answer_all": ["Node", "Deno"], "source_hosts": ["nodejs.org", "deno.com", "deno.land"], "min_sites": 3}
+  ]
+}

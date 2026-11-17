@@ -1,4 +1,5 @@
 """Re-runnable web-task benchmark: 10 tasks (tasks.json), pinned external MCP servers, scratch-only outputs.
+A separate small analysis set (analysis_tasks.json, --set analysis) checks that comparisons read several sites.
 
 Drivers:
   claude    Claude Code CLI (subscription) with --mcp-config, no built-in tools, dontAsk. Quality baseline.
@@ -254,16 +255,18 @@ def main():
     parser.add_argument('--driver', choices=['claude', 'qwen-raw', 'jarvis'])
     parser.add_argument('--rescore', type=Path)
     parser.add_argument('--repeat', type=int, default=1, help='run the task set N times; the summary reports the median')
+    parser.add_argument('--set', choices=['main', 'analysis'], default='main', help='tasks.json or analysis_tasks.json')
     parser.add_argument('tasks', nargs='*')
     args = parser.parse_args()
     if args.setup:
         return setup()
-    spec = json.loads((HERE / 'tasks.json').read_text(encoding='utf-8'))
+    analysis = args.set == 'analysis'
+    spec = json.loads((HERE / ('analysis_tasks.json' if analysis else 'tasks.json')).read_text(encoding='utf-8'))
     tasks = [task for task in spec['tasks'] if not args.tasks or task['id'] in args.tasks]
     if args.rescore:
         folder = args.rescore
     elif args.driver:
-        folder = SANDBOX / 'results' / f"{args.driver}-{datetime.now():%Y%m%d-%H%M%S}"
+        folder = SANDBOX / 'results' / f"{args.driver}{'-analysis' if analysis else ''}-{datetime.now():%Y%m%d-%H%M%S}"
     else:
         parser.error('choose --setup, --driver or --rescore')
     rounds = [folder] if args.rescore or args.repeat <= 1 else [folder / f'r{index + 1}' for index in range(args.repeat)]

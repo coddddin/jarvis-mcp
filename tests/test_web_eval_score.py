@@ -52,3 +52,13 @@ def test_download_needs_an_allowed_small_file_that_scanned_clean():
     for files in ([], [{'name': 'data.csv', 'bytes': 9_000_000, 'clean': True}],
                   [{'name': 'data.csv', 'bytes': 1000, 'clean': None}], [{'name': 'tool.exe', 'bytes': 10, 'clean': True}]):
         assert not score(task, '받았습니다', ['https://www.data.go.kr/'], files)['pass']
+
+
+def test_an_analysis_task_needs_pages_on_min_sites_different_hosts():
+    tasks = json.loads((ROOT / 'analysis_tasks.json').read_text(encoding='utf-8'))['tasks']
+    assert tasks and all(task['min_sites'] >= 3 and task['source_hosts'] for task in tasks)
+    task = {**tasks[0], 'answer_all': [], 'source_hosts': ['python.org']}
+    two = ['https://www.bing.com/search?q=x', 'https://docs.python.org/3/whatsnew/3.14.html',
+           'https://docs.python.org/3/whatsnew/3.13.html', 'https://peps.python.org/pep-0745/']
+    assert not score(task, '비교', two, [])['checks']['read_sites']           # search page and same host do not count
+    assert score(task, '비교', two + ['https://realpython.com/python314-new-features/'], [])['pass']

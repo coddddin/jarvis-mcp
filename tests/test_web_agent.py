@@ -456,3 +456,53 @@ def test_a_click_label_never_looks_like_a_path(tmp_path):
     b.press('e8', r'C:\Windows\..\x file:///etc \\server\share')
     label = [args for tool, args in b.session.calls if tool == 'browser_click'][0]['element']
     assert '\\' not in label and 'file:' not in label.lower()
+
+# --- analysis depth -------------------------------------------------------------------------------------------
+
+def results_page(*urls):
+    items = ''.join(f'''
+    - listitem [ref=e{3 * i + 3}]:
+      - heading "결과 {i}" [level=2] [ref=e{3 * i + 4}]:
+        - link "결과 {i}" [ref=e{3 * i + 5}] [cursor=pointer]:
+          - /url: {ck(url)}''' for i, url in enumerate(urls))
+    return snapshot('https://www.bing.com/search?q=x', 'x - Search', '- main [ref=e1]:\n  - list [ref=e2]:' + items)
+
+
+@pytest.mark.parametrize('request_text, deep', [
+    ('제주 날씨 예보 사이트별로 비교해줘', True), ('최근 AI 반도체 시장 동향 분석해줘', True),
+    ('Compare Python and Node.js release cycles', True), ('React vs Vue for a small app', True),
+    ('제주 날씨 찾아줘', False), ('2026년 최저임금 시간급은 얼마인가요?', False), ('What is the latest Node.js LTS?', False)])
+def test_analysis_and_comparison_requests_are_recognised(request_text, deep):
+    assert bool(agent.ANALYSIS_REQUEST.search(request_text)) is deep
+
+
+def test_an_analysis_reads_three_different_sites_before_the_answer(guard, tmp_path):
+    urls = ['https://www.weather.go.kr/w/index.do', 'https://www.weather.go.kr/w/other.do',
+            'https://example.org/a', 'https://files.example.org/b']
+    text = '제주 내일 최고기온 21도, 최저 15도. ' * 30
+    decide = scripted({'tool': 'search', 'query': '제주 날씨'}, {'tool': 'open', 'number': 1},
+                      {'tool': 'answer', 'answer': '세 곳 모두 최고 21도'})
+    result = make(guard, tmp_path, decide, {agent.bing_url('제주 날씨'): results_page(*urls)},
+                  Collector({url: text for url in urls})).run('제주 날씨 예보 사이트별로 비교해줘')
+    assert result['status'] == 'completed' and result['answer'].startswith('세 곳 모두')
+    opened = [t['url'] for t in result['traces'] if t['tool'] == 'open']
+    assert opened == [urls[0], urls[2], urls[3]]                 # the same-site result [2] is skipped
+    assert '서로 다른 사이트 3곳' in decide.seen[0][0][1]['content']
+    assert any('자비스가 다른 사이트의 결과 [3]을 열었다' in item['content'] for item in decide.seen[3][0])
+
+
+def test_an_analysis_answers_when_no_other_site_is_left(guard, tmp_path):
+    text = '제주 오늘 최고기온 21도. ' * 40
+    decide = scripted({'tool': 'search', 'query': '제주 날씨'}, {'tool': 'open', 'number': 1},
+                      {'tool': 'answer', 'answer': '최고 21도'})
+    result = make(guard, tmp_path, decide, {agent.bing_url('제주 날씨'): BING},
+                  Collector({'https://www.weather.go.kr/w/index.do': text})).run('제주 날씨 분석해줘')
+    assert result['status'] == 'completed' and len(decide.seen) == 3
+    assert [t['tool'] for t in result['traces']] == ['search', 'open']
+
+
+def test_a_typed_address_is_not_widened_into_other_sites(guard, tmp_path):
+    decide = scripted({'tool': 'open', 'number': 1}, {'tool': 'answer', 'answer': '42'})
+    result = make(guard, tmp_path, decide, {'https://example.org/a': PAGE}).run('https://example.org/a 이 보고서 분석해줘')
+    assert result['status'] == 'completed' and len(decide.seen) == 2
+    assert '자비스 안내' not in decide.seen[0][0][1]['content']

@@ -6,6 +6,7 @@ A task passes when every check below holds:
 - a host in `source_hosts` was cited in the answer or visited by a tool call (JARVIS adds sources from its traces,
   so a visited official page counts even when the model did not list it);
 - `min_visited_pages` distinct pages were visited, when set (link-following tasks);
+- pages on `min_sites` different hosts were visited, when set (analysis and comparison tasks);
 - for `download` tasks: at least one new file with an allowed extension, no larger than `max_bytes`, and every
   such file was scanned clean.
 """
@@ -37,6 +38,8 @@ def score(task, answer, visited_urls, files):
     if task.get('min_visited_pages'):
         pages = {url.split('#', 1)[0] for url in visited_urls if not host_matches(urlsplit(url).hostname, SEARCH_HOSTS)}
         checks['followed_links'] = len(pages) >= task['min_visited_pages']
+    if task.get('min_sites'):
+        checks['read_sites'] = len({host.lower().rstrip('.') for host in visited if host}) >= task['min_sites']
     rule = task.get('download')
     if rule:
         wanted = [item for item in files if item['name'].lower().endswith(tuple(rule['extensions']))]
