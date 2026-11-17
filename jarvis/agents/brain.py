@@ -25,14 +25,16 @@ from jarvis.core.paths import WORKERS_ROOT
 
 class BrainError(ChatError):
     """A provider could not answer or a model cannot be selected. code is one of CODES; the text is shown to the
-    user and never holds secrets or raw provider output."""
+    user and never holds secrets or raw provider output. kind: what the local worker reported, when it knew
+    (WORKER_ERROR: repeat_limit, http_<status>, stream_error, timeout), so a caller may retry."""
     CODES = frozenset({'unavailable', 'auth', 'timeout', 'invalid_response', 'too_large', 'max_turns', 'rate_limited'})
 
-    def __init__(self, code, message):
+    def __init__(self, code, message, kind=None):
         if code not in self.CODES:
             raise ValueError('Unknown brain error code.')
         super().__init__(message)
         self.code = code
+        self.kind = kind
 
 
 class ConfirmRequired(BrainError):
@@ -192,6 +194,20 @@ TOO_LARGE = '대화가 너무 길어 로컬 모델에 보낼 수 없습니다. �
 TIMED_OUT = '로컬 모델이 제한 시간 안에 답하지 못했습니다.'
 INVALID = '로컬 모델이 응답하지 않았거나 올바르지 않은 응답을 보냈습니다. Ollama 상태를 확인해 주십시오.'
 FAILED = '로컬 모델이 답을 만들지 못했습니다. Ollama와 모델 설치 상태를 확인해 주십시오.'
+WORKER_ERROR = re.compile(r'repeat_limit|stream_error|timeout|http_[1-5][0-9][0-9]')
+
+
+def worker_error_kind(value):
+    """The error kind on a failed worker line ({"ok": false, "kind": ...}), or None. Anything else is dropped."""
+    kind = value.get('kind') if isinstance(value, dict) and value.get('ok') is False else None
+    return kind if isinstance(kind, str) and WORKER_ERROR.fullmatch(kind) else None
+
+
+def last_line(output):
+    try:
+        return json.loads(output.strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        return None
 
 
 def spawn_chat_worker():
@@ -316,8 +332,10 @@ class OllamaProvider:
                     break
                 except subprocess.TimeoutExpired:
                     pending = None
-            if len(output) > MAX_OUTPUT or process.returncode:
+            if len(output) > MAX_OUTPUT:
                 raise BrainError('invalid_response', INVALID)
+            if process.returncode:
+                raise BrainError('invalid_response', INVALID, worker_error_kind(last_line(output)))
             value = json.loads(output)
             if value.get('ok') is not True:
                 raise BrainError('unavailable', FAILED)
@@ -382,7 +400,7 @@ class OllamaProvider:
             except subprocess.TimeoutExpired:
                 raise BrainError('invalid_response', INVALID) from None
             if process.returncode or not isinstance(final, dict):
-                raise BrainError('invalid_response', INVALID)
+                raise BrainError('invalid_response', INVALID, worker_error_kind(final))
             if final.get('ok') is not True:
                 raise BrainError('unavailable', FAILED)
             return final['result']

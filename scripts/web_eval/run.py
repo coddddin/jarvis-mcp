@@ -241,6 +241,8 @@ def jarvis_task(task, folder):
                       'status': trace.get('status'), 'source': trace.get('source'),
                       'from': str(trace.get('from') or '')[:120], 'reason': trace.get('reason', '')})
     notes = [result['status']] + ([result['reason']] if result['reason'] else [])
+    if result.get('model_retries'):
+        notes.append('model retries: ' + ', '.join(result['model_retries']))
     return {'answer': result['answer'], 'calls': calls, 'turns': result['calls'], 'notes': notes,
             'searches': result['searches'], 'agent_files': result['files'], 'decisions': decisions}
 

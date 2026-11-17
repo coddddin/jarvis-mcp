@@ -6,6 +6,9 @@ non-streaming path. The guards are the same: named local model only, 256 KB resp
 
 With "warm": true it only asks Ollama to load the model (empty messages, same options so the later chat does not
 reload it) and prints {"ok": true, "result": {}}. Nothing is generated.
+
+A failed call prints {"ok": false, "error": <exception name>} and, when known, "kind": repeat_limit (Ollama aborted a
+generation that repeated one token), http_<status>, stream_error or timeout. Ollama's own error text never leaves.
 """
 import http.client
 import json
@@ -24,6 +27,7 @@ spec.loader.exec_module(support)
 OPTIONS = {'temperature': 0.2, 'num_predict': 1024, 'num_ctx': 8192}
 KEEP_ALIVE = '5m'                                       # ADR 0001: free the GPU after 5 idle minutes
 REPLY_START = re.compile(r'\s*\{\s*"reply"\s*:\s*"')
+REPEAT_LIMIT = re.compile(r'repeat limit', re.I)
 ESCAPES = {'"': '"', '\\': '\\', '/': '/', 'b': '\b', 'f': '\f', 'n': '\n', 'r': '\r', 't': '\t'}
 
 
@@ -70,6 +74,43 @@ def reply_prefix(content):
     return ''.join(out)
 
 
+class OllamaError(ValueError):
+    """Ollama answered with an error; kind is repeat_limit, http_<status> or stream_error."""
+
+    def __init__(self, kind):
+        super().__init__(kind)
+        self.kind = kind
+
+
+def error_kind(status, data):
+    """repeat_limit when Ollama's error says so, otherwise http_<status>. Only the kind is kept."""
+    try:
+        message = json.loads(data).get('error')
+    except (ValueError, AttributeError):
+        message = None
+    return 'repeat_limit' if isinstance(message, str) and REPEAT_LIMIT.search(message) else f'http_{status}'
+
+
+def chat(body):
+    """POST /api/chat without streaming: the same endpoint, host and size cap as support.request, but a non-success
+    answer raises OllamaError with its kind."""
+    connection = http.client.HTTPConnection('127.0.0.1', 11434, timeout=120)
+    try:
+        connection.request('POST', '/api/chat', json.dumps(body).encode('utf-8'),
+                           {'Content-Type': 'application/json', 'Accept-Encoding': 'identity'})
+        response = connection.getresponse()
+        if response.getheader('Content-Encoding', 'identity') != 'identity':
+            raise ValueError('Local Ollama returned an encoded response.')
+        data = response.read(support.MAX_BYTES + 1)
+        if response.status != 200:
+            raise OllamaError(error_kind(response.status, data[:4096]))
+        if len(data) > support.MAX_BYTES:
+            raise ValueError('Local response exceeds size limit.')
+        return json.loads(data)
+    finally:
+        connection.close()
+
+
 def emit(value):
     sys.stdout.write(json.dumps(value, ensure_ascii=True) + '\n')
     sys.stdout.flush()
@@ -82,8 +123,10 @@ def stream_chat(body):
         connection.request('POST', '/api/chat', json.dumps(body).encode('utf-8'),
                            {'Content-Type': 'application/json', 'Accept-Encoding': 'identity'})
         response = connection.getresponse()
-        if response.status != 200 or response.getheader('Content-Encoding', 'identity') != 'identity':
-            raise ValueError('Local Ollama unavailable or returned a non-success response.')
+        if response.getheader('Content-Encoding', 'identity') != 'identity':
+            raise ValueError('Local Ollama returned an encoded response.')
+        if response.status != 200:
+            raise OllamaError(error_kind(response.status, response.read(4096)))
         total = 0
         while True:
             line = response.readline(support.MAX_BYTES + 1)
@@ -93,7 +136,10 @@ def stream_chat(body):
             if total > support.MAX_BYTES:
                 raise ValueError('Local response exceeds size limit.')
             if line.strip():
-                yield json.loads(line)
+                chunk = json.loads(line)
+                if isinstance(chunk, dict) and 'error' in chunk:      # Ollama reports a mid-stream failure in-band
+                    raise OllamaError('repeat_limit' if REPEAT_LIMIT.search(str(chunk['error'])) else 'stream_error')
+                yield chunk
     finally:
         connection.close()
 
@@ -124,7 +170,7 @@ def main():
                 'think': False, 'format': payload['schema'], 'messages': payload['messages'],
                 'options': OPTIONS, 'keep_alive': KEEP_ALIVE}
         if not body['stream']:
-            data = support.request('/api/chat', body)
+            data = chat(body)
             message = data['message']
             if message.get('role') != 'assistant':
                 raise ValueError('Incomplete or unexpected model response.')
@@ -149,7 +195,8 @@ def main():
         emit({'ok': True, 'result': result})
         return 0
     except Exception as exc:
-        emit({'ok': False, 'error': type(exc).__name__})
+        kind = exc.kind if isinstance(exc, OllamaError) else 'timeout' if isinstance(exc, TimeoutError) else None
+        emit({'ok': False, 'error': type(exc).__name__, **({'kind': kind} if kind else {})})
         return 1
 
 

@@ -510,3 +510,46 @@ def test_a_typed_address_is_not_widened_into_other_sites(guard, tmp_path):
     result = make(guard, tmp_path, decide, {'https://example.org/a': PAGE}).run('https://example.org/a 이 보고서 분석해줘')
     assert result['status'] == 'completed' and len(decide.seen) == 2
     assert '자비스 안내' not in decide.seen[0][0][1]['content']
+
+# --- model call retry ---------------------------------------------------------------------------------------------
+
+def failing(decide, *kinds):
+    """decide, but the first calls raise BrainError with these kinds (None: no kind), in order."""
+    from jarvis.agents.brain import INVALID, BrainError
+    pending = list(kinds)
+
+    def wrapped(messages, schema, deadline):
+        if pending:
+            raise BrainError('invalid_response', INVALID, pending.pop(0))
+        return decide(messages, schema, deadline)
+    wrapped.seen = decide.seen
+    return wrapped
+
+
+def test_a_looping_generation_is_tried_once_more_and_noted(guard, tmp_path):
+    decide = failing(scripted({'tool': 'open', 'number': 1}, {'tool': 'answer', 'answer': '42'}), 'repeat_limit')
+    result = make(guard, tmp_path, decide, {'https://example.org/a': PAGE}).run('https://example.org/a 값은?')
+    assert result['status'] == 'completed' and result['answer'].startswith('42')
+    assert result['model_retries'] == ['repeat_limit'] and len(decide.seen) == 2
+
+
+@pytest.mark.parametrize('kinds', [('timeout',), (None,), ('http_404',), ('repeat_limit', 'repeat_limit')])
+def test_other_failures_and_a_second_failure_of_the_same_decision_end_the_task(guard, tmp_path, kinds):
+    decide = failing(scripted({'tool': 'answer', 'answer': '42'}), *kinds)
+    result = make(guard, tmp_path, decide).run('제주 날씨 찾아줘')
+    assert result['status'] == 'failed' and '모델 호출이 실패했습니다' in result['answer']
+    assert decide.seen == [] and result['model_retries'] == list(kinds[:1]) * (kinds[0] == 'repeat_limit')
+
+
+def test_model_retries_are_capped_per_task(guard, tmp_path):
+    from jarvis.agents.brain import INVALID, BrainError
+    calls = []
+
+    def decide(messages, schema, deadline):            # every decision fails once, then works
+        calls.append(1)
+        if len(calls) % 2:
+            raise BrainError('invalid_response', INVALID, 'http_500')
+        return {'tool': 'search', 'query': f'q{len(calls)}', 'number': 0, 'answer': '', 'sources': []}
+    result = make(guard, tmp_path, decide, {agent.bing_url(f'q{n}'): BING for n in range(2, 12, 2)}).run('제주 날씨 찾아줘')
+    assert result['status'] == 'failed' and result['model_retries'] == ['http_500'] * agent.MODEL_RETRIES
+    assert len(calls) == 2 * agent.MODEL_RETRIES + 1          # the fourth failure is not retried

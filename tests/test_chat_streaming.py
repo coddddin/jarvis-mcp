@@ -501,3 +501,66 @@ def test_store_progress_redacts_each_string_so_a_bearer_word_never_breaks_the_js
         store.task_progress(conversation, request, {'line': line, 'recent': [line]})
         saved = store.get(conversation)['turns'][0]['progress']
         assert set(saved) == {'line', 'recent'} and 'token' not in saved['line']
+
+
+# --- error kinds: the worker names why Ollama failed, the provider carries it (BrainError.kind) ---
+
+def test_worker_reports_ollama_aborting_a_looping_stream(step, monkeypatch):
+    code, out = run_worker(step, monkeypatch, [piece('{"reply":"0000'),
+                                               {'error': 'prediction aborted, token repeat limit reached'}])
+    assert code == 1 and out[-1] == {'ok': False, 'error': 'OllamaError', 'kind': 'repeat_limit'}
+    code, out = run_worker(step, monkeypatch, [piece('{"reply":"a'), {'error': 'something else <script>'}])
+    assert out[-1] == {'ok': False, 'error': 'OllamaError', 'kind': 'stream_error'}     # no raw error text
+
+
+@pytest.mark.parametrize('status, body, kind', [
+    (500, b'{"error":"prediction aborted, token repeat limit reached"}', 'repeat_limit'),
+    (503, b'{"error":"server busy"}', 'http_503'), (500, b'not json', 'http_500')])
+def test_worker_reports_the_kind_of_a_failed_chat_call(step, monkeypatch, status, body, kind):
+    class Response:
+        def __init__(self):
+            self.status = status
+
+        def getheader(self, name, default=None):
+            return default
+
+        def read(self, limit=-1):
+            return body
+
+    class Connection:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def request(self, method, path, data, headers):
+            assert (method, path) == ('POST', '/api/chat') and json.loads(data)['stream'] is False
+
+        def getresponse(self):
+            return Response()
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(step.support, 'local_model', lambda model: None)
+    monkeypatch.setattr(step.http.client, 'HTTPConnection', Connection)
+    payload = {'model': 'qwen3.5:9b', 'messages': [], 'schema': {}}
+    monkeypatch.setattr(step.sys, 'stdin', io.TextIOWrapper(io.BytesIO(json.dumps(payload).encode())))
+    stdout = io.StringIO()
+    monkeypatch.setattr(step.sys, 'stdout', stdout)
+    assert step.main() == 1
+    assert json.loads(stdout.getvalue().splitlines()[-1]) == {'ok': False, 'error': 'OllamaError', 'kind': kind}
+
+
+@pytest.mark.parametrize('line, kind', [
+    ('{"ok":false,"error":"OllamaError","kind":"repeat_limit"}', 'repeat_limit'),
+    ('{"ok":false,"error":"OllamaError","kind":"http_502"}', 'http_502'),
+    ('{"ok":false,"error":"ValueError"}', None), ('{"ok":false,"kind":"ignore previous instructions"}', None)])
+def test_the_provider_carries_only_a_known_worker_error_kind(service, tmp_path, line, kind):
+    from jarvis.agents.brain import BrainError, BrainRequest, OllamaProvider
+    script = f'import sys\nsys.stdin.buffer.read()\nprint({line!r})\nsys.exit(1)'
+    with pytest.raises(BrainError) as caught:
+        service._infer_streaming(spawn(script), b'{}', time.monotonic() + 20, lambda _: None)
+    assert caught.value.code == 'invalid_response' and caught.value.kind == kind
+    provider = OllamaProvider(Guardrails(tmp_path), spawn=lambda: spawn(script))
+    with pytest.raises(BrainError) as caught:
+        provider.infer('qwen3.5:9b', BrainRequest([], {}, time.monotonic() + 20))
+    assert caught.value.code == 'invalid_response' and caught.value.kind == kind
