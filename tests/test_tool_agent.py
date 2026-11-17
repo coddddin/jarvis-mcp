@@ -121,6 +121,14 @@ def test_fitting_arguments_pass_the_check():
     assert argument_problem({'type': 'object', 'properties': {'n': {'type': ['number', 'null']}}}, {'n': None}) is None
 
 
+def test_earlier_choices_keep_only_tool_and_arguments(guard):
+    script = Script(step('mcp:demo/search', {'query': 'a'}, answer='x' * 3000, notes='n' * 300), step('answer', answer='끝'))
+    task, _ = agent(guard, script)
+    task.run('찾아줘')
+    choice = [m for m in script.prompts[1] if m['role'] == 'assistant'][0]['content']
+    assert json.loads(choice) == {'tool': 'mcp:demo/search', 'arguments': {'query': 'a'}}
+
+
 def test_the_same_call_is_not_made_twice(guard):
     script = Script(step('mcp:demo/search', {'query': 'a', 'limit': 2}), step('mcp:demo/search', {'limit': 2, 'query': 'a'}),
                     step('answer', answer='끝'))
@@ -232,6 +240,9 @@ def test_an_external_brain_is_offered_only_public_web_tools_of_a_real_server(gua
     result = tool_agent.run_task(guard, 'Paths', script, config.servers, external=True)
     assert script.enums()[0] == ['mcp:paths/look', 'answer'] and result['traces'] == []
     assert 'open_binary' not in script.prompts[0][0]['content']
+    assert '로컬 도구를 보여 주지 않아 쓰지 않았습니다: mcp:paths/open_binary' in result['answer']
+    local = tool_agent.run_task(guard, 'Paths', Script(step('answer', answer='끝')), config.servers, external=False)
+    assert '보여 주지 않아' not in local['answer']
 
 
 def test_without_an_offerable_tool_the_task_says_why(guard):
@@ -253,6 +264,15 @@ def server(server_id='rea', label='REA', effect='read', family='local', args=())
 def test_only_an_explicitly_named_server_starts_a_tool_task(message, names):
     config = McpConfig(servers=(server(), server('ghidra', 'Ghidra Tools')))
     assert [item.id for item in named_servers(config, message)] == names
+
+
+@pytest.mark.parametrize('server_id, label, message', [
+    ('web', 'Web', 'web에서 날씨 찾아줘'), ('time', 'Time', 'what time is it'), ('fetch', 'Fetch', 'fetch 이 페이지'),
+    ('git', 'Git', 'git log 보여줘'), ('ab', 'AB', 'ab 테스트 결과')])
+def test_generic_or_short_names_never_start_a_tool_task(server_id, label, message):
+    assert named_servers(McpConfig(servers=(server(server_id, label),)), message) == []
+    distinct = server(server_id, 'Ghidra Tools')            # a distinctive label still works
+    assert named_servers(McpConfig(servers=(distinct,)), 'Ghidra Tools로 열어줘') == [distinct]
 
 
 def test_playwright_confirm_only_and_pending_servers_are_not_tool_task_servers():

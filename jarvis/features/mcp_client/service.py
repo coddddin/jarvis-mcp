@@ -65,7 +65,7 @@ PATH_WORDS = frozenset({'path', 'paths', 'pathname', 'file', 'files', 'filename'
                         'binaries'})
 LOOKS_LIKE_PATH = re.compile(r'^\s*(?:[A-Za-z]:[\\/]|\\\\|//?|file:|\.\./)|\.\.\\', re.IGNORECASE)
 # A '..' segment after a separator ('a/../b', 'docs/..'); an http(s) URL may contain one, a path may not.
-PARENT_SEGMENT = re.compile(r'[\\/]\.\.(?:[\\/]|$)')
+PARENT_SEGMENT = re.compile(r'(?:^\s*|[\\/])\.\.(?:[\\/]|\s*$)')
 WEB_URL = re.compile(r'^\s*https?://', re.IGNORECASE)
 MAX_PATH_VALUES = 16
 MAX_ROOTS = 8

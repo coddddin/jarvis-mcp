@@ -26,6 +26,7 @@ RESULT_CHARS = 4000             # newest tool result shown
 OLD_RESULT_CHARS = 300          # an earlier result without notes shrinks to this
 NOTE_CHARS = 400                # the model's notes on one result, kept instead of its text
 SCHEMA_CHARS = 1500             # one tool's input schema in the prompt
+ASSISTANT_CHARS = 600           # one earlier model choice (tool and arguments) kept in the prompt
 MESSAGE_CHARS = 12000           # prompt budget: the local brain runs with an 8192-token context
 OFFERED_EFFECTS = ('read', 'auto')
 JSON_TYPES = {'string': str, 'integer': int, 'number': (int, float), 'boolean': bool, 'array': list, 'object': dict,
@@ -57,16 +58,25 @@ def usable_servers(config):
             and any(pin.effect in OFFERED_EFFECTS for pin in server.tools)]
 
 
+# Everyday words that are also common MCP server names: such a name alone would take ordinary requests ('what time
+# is it', 'git log 보여줘'), so it never starts a tool task; give the server a distinctive label instead.
+GENERIC_NAMES = frozenset({'web', 'time', 'fetch', 'git', 'github', 'file', 'files', 'filesystem', 'fs', 'search',
+                           'browser', 'memory', 'shell', 'http', 'api', 'docs', 'data', 'mail', 'email', 'calendar',
+                           'notes', 'note', 'tools', 'tool', 'server', 'mcp', 'everything', 'sqlite', 'db', 'database',
+                           'python', 'node', 'weather', 'news', 'maps', 'map', 'slack', 'drive', 'test', 'demo'})
+
+
 def _mentions(message, word):
     word = word.strip()
-    if len(word) < 2:
+    if len(word) < 3 or word.casefold() in GENERIC_NAMES:
         return False
     # Korean particles may follow directly ('REA로'), so only Latin letters and digits end a name.
     return re.search(r'(?<![A-Za-z0-9])' + re.escape(word) + r'(?![A-Za-z0-9])', message, re.I) is not None
 
 
 def named_servers(config, message):
-    """usable_servers the request names by id or label. Only an explicit name starts a tool task."""
+    """usable_servers the request names by id or label (3+ characters, not a GENERIC_NAMES word). Only an explicit
+    name starts a tool task."""
     if not isinstance(message, str):
         return []
     return [server for server in usable_servers(config) if _mentions(message, server.id) or _mentions(message, server.label)]
@@ -129,11 +139,13 @@ class ToolAgent:
 
     @staticmethod
     def _budget(messages):
-        """Keep the prompt under MESSAGE_CHARS: the oldest tool results go first, the request and system stay."""
+        """Keep the prompt under MESSAGE_CHARS: the oldest tool results and choices go first, the request and system
+        stay."""
         while sum(len(item['content']) for item in messages) > MESSAGE_CHARS and len(messages) > 4:
             for index in range(2, len(messages) - 2):
-                if messages[index]['role'] == 'user' and not messages[index]['content'].endswith('(생략)'):
-                    messages[index] = {'role': 'user', 'content': messages[index]['content'][:120] + ' … (생략)'}
+                item = messages[index]
+                if len(item['content']) > 130 and not item['content'].endswith('(생략)'):
+                    messages[index] = {'role': item['role'], 'content': item['content'][:120] + ' … (생략)'}
                     break
             else:
                 break
@@ -176,7 +188,10 @@ class ToolAgent:
                 messages[index] = {'role': 'user', 'content': head + ('메모: ' + notes if notes else
                                    messages[index]['content'][len(head):][:OLD_RESULT_CHARS])}
                 last_result = None
-            messages.append({'role': 'assistant', 'content': json.dumps(decision, ensure_ascii=False)[:2000]})
+            # Only the choice stays in the prompt: its notes now live in the result message above, and an answer ends
+            # the loop or is asked for again. Twenty steps of full decisions would crowd out the system prompt.
+            messages.append({'role': 'assistant', 'content': json.dumps(
+                {'tool': tool, 'arguments': decision.get('arguments')}, ensure_ascii=False)[:ASSISTANT_CHARS]})
             if tool == 'answer':
                 text = str(decision.get('answer') or '').strip()
                 if not text:
@@ -246,5 +261,11 @@ def run_task(guard, request, decide, servers, *, external, on_progress=None, sho
             if failed:
                 raise ToolSetupRequired(f'{", ".join(failed)} 도구 서버를 시작하지 못했습니다.')
             raise ToolSetupRequired(f'{labels}에서 이 작업에 쓸 수 있는 승인된 도구가 없습니다.')
-        return ToolAgent(session, tools, decide, should_stop=should_stop, guard=guard).run(request,
-                                                                                       on_progress=on_progress)
+        result = ToolAgent(session, tools, decide, should_stop=should_stop, guard=guard).run(request,
+                                                                                         on_progress=on_progress)
+        withheld = [tool['name'] for tool in session.offered() if tool['effect'] in OFFERED_EFFECTS
+                    and tool['name'] not in {item['name'] for item in tools}]
+        if withheld:
+            result['answer'] += ('\n\n외부 모델에는 로컬 도구를 보여 주지 않아 쓰지 않았습니다: ' + ', '.join(withheld[:8])
+                                 + '. 로컬 모델로 바꾸면 이 도구도 씁니다.')
+        return result

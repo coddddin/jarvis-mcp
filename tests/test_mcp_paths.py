@@ -62,7 +62,7 @@ def test_path_like_names_are_found_at_the_top_and_nested():
 @pytest.mark.parametrize('value', ['C:\\Windows\\win.ini', 'c:/Users/x', '  D:\\x', '\\\\server\\share\\f',
                                    '\\\\?\\C:\\x', 'file:///C:/x', 'FILE:x', 'projects\\..\\..\\x', '..\\secret', '../x',
                                    ' ../../documents/private.txt', '/etc/passwd', ' /x', '//server/share/f',
-                                   'a/../b', 'docs/..', 'projects\\demo/../../x'])
+                                   'a/../b', 'docs/..', 'projects\\demo/../../x', '..', ' .. '])
 def test_path_looking_strings(value):
     assert looks_like_path(value)
 
