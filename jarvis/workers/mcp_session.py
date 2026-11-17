@@ -1,10 +1,13 @@
 """Isolated MCP client session for one JARVIS task. No project imports.
 
 Reads one JSON command per stdin line and writes one JSON reply per stdout line:
-  {"op": "start", "servers": [{"id", "command", "args", "env", "cwd", "timeout"}]}
+  {"op": "start", "servers": [{"id", "command", "args", "env", "fixed_env"?, "only"?, "cwd", "timeout"}]}
+      env: names read from this process's environment; fixed_env: {name: value} set as given (the parent checked
+      them); only: tool names to report (a task session asks for its pins only, an approval asks for all).
       -> {"ok": true, "servers": {id: {"ok": true, "server_name": "...", "tools": [{"name", "description", "input_schema"}]}
                                     | {"ok": false, "error": "..."}}}
-  {"op": "call", "server", "tool", "arguments", "timeout", "max_chars"}
+  {"op": "call", "server", "tool", "arguments", "timeout", "max_chars", "keep"?}
+      keep: for a result that is one JSON object, only these top-level keys are kept (before max_chars cuts it)
       -> {"ok": true, "is_error": bool, "text": "...", "truncated": bool, "omitted": [kinds]}
   {"op": "close"} -> {"ok": true}, then exit
 Servers run over stdio through the MCP SDK, which puts each one in a kill-on-close job object on Windows. Server
@@ -20,8 +23,8 @@ import sys
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
-MAX_REPLY = 1_000_000           # bytes per reply line
-MAX_TOOLS = 128                 # tools listed per server
+MAX_REPLY = 4_000_000           # bytes per reply line: a full approval listing of a large server (REA: ~800 KB)
+MAX_TOOLS = 512                 # tools listed per server
 MAX_DESCRIPTION = 2000
 
 
@@ -33,7 +36,19 @@ def reply(value):
     sys.stdout.buffer.flush()
 
 
-def tool_text(result, max_chars):
+def kept(text, keys):
+    """text reduced to the given top-level keys when it is one JSON object that has at least one of them."""
+    if not keys or not text.lstrip().startswith('{'):
+        return text
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return text
+    found = {key: data[key] for key in keys if isinstance(data, dict) and key in data}
+    return json.dumps(found, ensure_ascii=False) if found else text
+
+
+def tool_text(result, max_chars, keep=()):
     """Text parts of a CallToolResult; images, audio and embedded binaries are named, not passed on."""
     parts, omitted = [], []
     for item in result.content or []:
@@ -47,14 +62,15 @@ def tool_text(result, max_chars):
     structured = getattr(result, 'structuredContent', None)
     if not parts and structured is not None:
         parts.append(json.dumps(structured, ensure_ascii=False))
-    text = '\n'.join(parts)
+    text = kept('\n'.join(parts), keep)
     return {'ok': True, 'is_error': bool(result.isError), 'text': text[:max_chars],
             'truncated': len(text) > max_chars, 'omitted': sorted(set(omitted))}
 
 
 async def start_server(stack, spec, devnull):
-    params = StdioServerParameters(command=spec['command'], args=list(spec.get('args') or []),
-                                   env={name: os.environ[name] for name in spec.get('env') or [] if name in os.environ},
+    env = {name: os.environ[name] for name in spec.get('env') or [] if name in os.environ}
+    env.update({str(name): str(value) for name, value in (spec.get('fixed_env') or {}).items()})
+    params = StdioServerParameters(command=spec['command'], args=list(spec.get('args') or []), env=env,
                                    cwd=spec.get('cwd'))
     read, write = await stack.enter_async_context(stdio_client(params, errlog=devnull))
     session = await stack.enter_async_context(ClientSession(read, write))
@@ -62,8 +78,10 @@ async def start_server(stack, spec, devnull):
     info = getattr(initialized, 'serverInfo', None)
     name = str(getattr(info, 'name', '') or '')[:100]
     listed = await asyncio.wait_for(session.list_tools(), spec.get('timeout', 30))
+    only = set(spec['only']) if isinstance(spec.get('only'), list) else None
     tools = [{'name': tool.name, 'description': (tool.description or '')[:MAX_DESCRIPTION],
-              'input_schema': tool.inputSchema} for tool in listed.tools[:MAX_TOOLS]]
+              'input_schema': tool.inputSchema} for tool in listed.tools
+             if only is None or tool.name in only][:MAX_TOOLS]
     return session, tools, name
 
 
@@ -111,7 +129,7 @@ async def main_async():
                         result = await asyncio.wait_for(session.call_tool(
                             command['tool'], command.get('arguments') or {},
                             read_timeout_seconds=timedelta(seconds=timeout)), timeout)
-                        reply(tool_text(result, int(command.get('max_chars', 8000))))
+                        reply(tool_text(result, int(command.get('max_chars', 8000)), command.get('keep') or ()))
                     except asyncio.TimeoutError:
                         reply({'ok': False, 'timeout': True, 'error': 'Tool call timed out.'})
                     except Exception as exc:
