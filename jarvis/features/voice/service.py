@@ -40,6 +40,7 @@ FRAME_HZ = 30                      # level/spectrum frames per second while list
 BINS = 32
 MAX_TEXT = 300                     # characters per speak() call
 MAX_PENDING_TEXT = 4000            # characters waiting to be spoken
+SENTENCE_TEXT = 500                # characters of a sentence reported with its audio timing
 SENTENCE_LIMIT = 160               # a run-on sentence is cut at a comma or space after this many characters
 
 GPU_MODEL, CPU_MODEL = 'large-v3-turbo', 'small'
@@ -487,26 +488,37 @@ class _Playback:
 
     def __init__(self, service, rate):
         self.service, self.rate = service, rate
-        self.chunks, self.offset = [], 0
+        self.chunks, self.texts, self.offset = [], [], 0
+        self.spoken = 0                                    # sentences whose audio has started
         self.lock = threading.Lock()
 
-    def add(self, samples, rate):
+    def add(self, samples, rate, text=''):
         with self.lock:
             self.chunks.append(resample(samples, rate, self.rate))
+            self.texts.append(text)
 
     def pull(self, frames):
         out = np.zeros(frames, dtype=np.float32)
-        filled = 0
+        filled, started = 0, []
         with self.lock:
             while filled < frames and self.chunks:
                 chunk = self.chunks[0]
+                if self.offset == 0:
+                    # This sentence's audio starts now: a view can reveal its text over duration_ms.
+                    started.append({'type': 'sentence', 'index': self.spoken, 'text': self.texts[0][:SENTENCE_TEXT],
+                                    'duration_ms': round(chunk.size * 1000 / self.rate)})
+                    self.spoken += 1
                 take = min(frames - filled, chunk.size - self.offset)
                 out[filled:filled + take] = chunk[self.offset:self.offset + take]
                 filled += take
                 self.offset += take
                 if self.offset >= chunk.size:
                     self.chunks.pop(0)
+                    self.texts.pop(0)
                     self.offset = 0
+        if started and self.service.playback is self:      # a hushed reply reports nothing more
+            for event in started:
+                self.service._emit(event)
         if filled:
             self.service._frame(out[:filled], self.rate)
         return out
@@ -526,7 +538,9 @@ class _Playback:
 class VoiceService:
     """One local voice session. Thread-safe. Listeners receive plain dicts:
     {'type': 'state', 'state', 'error'?}, {'type': 'transcript', 'text'}, {'type': 'frame', 'level', 'bins'},
-    {'type': 'error', 'code'}."""
+    {'type': 'error', 'code'}, and {'type': 'sentence', 'index', 'text', 'duration_ms'} when a sentence's audio
+    starts playing (index counts from 0 in each reply; text is the sentence as spoken), so a view can reveal the
+    reply text in step with the voice."""
 
     def __init__(self, *, transcriber, synthesizer, audio=None, clock=None, fallback=None):
         import time
@@ -797,10 +811,10 @@ class VoiceService:
                     self._silence_locked()
                     self._emit({'type': 'error', 'code': failed})
                 elif self.playback is not None:
-                    self.playback.add(samples, rate)
+                    self.playback.add(samples, rate, sentence)
                 else:
                     self.playback = _Playback(self, rate)
-                    self.playback.add(samples, rate)
+                    self.playback.add(samples, rate, sentence)
                     try:
                         self.speaker = self.audio.open_output(self.playback, rate, max(64, rate // FRAME_HZ))
                     except Exception:
