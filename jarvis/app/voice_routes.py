@@ -11,7 +11,7 @@ Client -> server, one JSON object each (the server caps messages at 1 KB):
   {"op": "speak", "text": str (<= 300 chars), "final": bool}   reply text, sentence by sentence
   {"op": "hush"}              stop speaking, keep listening state as is
 Server -> client: {"type": "hello", state, device, model, voice}, then the service's own events
-(state, transcript, frame, error). Frames are dropped, never queued, when the client is slow.
+(state, transcript, frame, error, sentence). Frames are dropped, never queued, when the client is slow.
 """
 import asyncio
 import json
