@@ -5,7 +5,7 @@
             "checked_sha256": "23240ef9f8b0a9a324110b1c2331de31dc1b0e08f5359cb707e51a939af56cd3"},
  "tasks": [
   {"id": "r01", "prompt": "REA로 projects/demo/whoami.exe를 열고 파일 형식과 CPU 아키텍처를 알려줘.",
-   "answer_all": ["\\bPE\\b", "x86[-_ ]?64|x64|amd64"], "tools_ok": ["open_binary"]},
+   "answer_all": ["\\bPE(?:32\\+?)?(?![A-Za-z0-9])","x86[-_ ]?64|x64|amd64"], "tools_ok": ["open_binary"]},
   {"id": "r02", "prompt": "REA로 projects/demo/whoami.exe의 섹션(세그먼트) 이름을 모두 알려줘.",
    "answer_all": ["\\.text", "\\.rdata", "\\.rsrc"], "tools_ok": ["open_binary"]},
   {"id": "r03", "prompt": "REA로 projects/demo/whoami.exe의 문자열을 검색해서, 사용자 이름을 얻는 Windows API 이름이 들어 있는지 찾아줘.",

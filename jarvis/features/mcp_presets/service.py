@@ -27,8 +27,12 @@ _ONE = {**_READ, 'blocked_args': ['document']}
 REA_PINS = {
     # Open and close one binary. REA detects PE/ELF/Mach-O itself; format, architecture, entry_point and provider
     # are for raw blobs and a small model fills them wrongly. snapshot_path would save or load an analysis file.
+    # REA's own description explains those raw-blob options, so the approved description says only what applies.
     'open_binary': {**_LONG, 'path_args': [{'name': 'path', 'mode': 'read'}],
-                    'blocked_args': ['format', 'architecture', 'entry_point', 'provider_id', 'snapshot_path']},
+                    'blocked_args': ['format', 'architecture', 'entry_point', 'provider_id', 'snapshot_path'],
+                    'description': 'Open one local program or app file (PE/EXE/DLL, ELF, Mach-O, archive, JavaScript) '
+                                   'for static analysis. Give only its path; the format is detected from the file. '
+                                   'Call this first: the other REA tools work on the opened file.'},
     'close_binary': {**_READ, 'blocked_args': ['snapshot_path', 'overwrite']},
     'binary_overview': _LONG,
     'list_documents': _READ,

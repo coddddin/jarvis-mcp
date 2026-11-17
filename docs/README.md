@@ -36,6 +36,7 @@
 - [공개 웹 정보 수집](guides/web-information.md): 등록된 Python/BBC/서울 날씨·문서 수집, 출처·발췌·시간·로컬 보고서.
 - [웹 작업 에이전트](guides/web-agent.md): 어떤 두뇌든 쓰는 번호 선택식 웹 도구, 주소 관문, 한도, 격리·검사 내려받기.
 - [도구 작업 에이전트](guides/tool-agent.md): 이름을 부른 MCP 서버의 고정 도구를 여러 번 쓰는 고리, 인자 검사, 한도·멈추기, 외부 모델 규칙.
+- [REA 도구 프리셋](guides/rea-preset.md): REA 6.7.0 정적 분석 도구 고정 29개, 설치 스크립트, 막은 도구, 4과제 평가(N/4).
 - [웹 작업 벤치마크](guides/web-eval.md): 10과제·채점 규칙·고정한 MCP 서버, Claude/qwen/jarvis 드라이버로 N/10 보고.
 - [시스템 도구](guides/system-tools.md): 서버 실행, 명령·시스템 상태·화면 캡처, 공통 제한.
 - [문서 검색·Google 연결](guides/knowledge-and-google.md): 로컬 인덱싱과 OAuth 준비 절차.

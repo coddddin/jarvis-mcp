@@ -210,6 +210,8 @@ def test_setup_approves_exactly_the_preset_with_its_launch_and_roots(guard, outs
         'GHIDRA_INSTALL_DIR': str(outside / 'ghidra'), 'JAVA_HOME': str(outside / 'jdk'), 'GHIDRA_HEADLESS_MAXMEM': '1G'}
     pins = {pin.name: pin for pin in server.tools}
     assert [item.name for item in pins['open_binary'].path_args] == ['path'] and pins['open_binary'].timeout_s == 120
+    assert 'raw-binary' not in pins['open_binary'].description and 'first' in pins['open_binary'].description
+    assert pins['binary_overview'].result_keys == ('result', 'normalized_result')
     assert all(pin.family == 'local' and pin.effect == 'read' for pin in pins.values())
 
 
