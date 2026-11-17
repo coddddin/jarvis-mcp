@@ -61,14 +61,16 @@ def test_path_like_names_are_found_at_the_top_and_nested():
 
 @pytest.mark.parametrize('value', ['C:\\Windows\\win.ini', 'c:/Users/x', '  D:\\x', '\\\\server\\share\\f',
                                    '\\\\?\\C:\\x', 'file:///C:/x', 'FILE:x', 'projects\\..\\..\\x', '..\\secret', '../x',
-                                   ' ../../documents/private.txt'])
+                                   ' ../../documents/private.txt', '/etc/passwd', ' /x', '//server/share/f',
+                                   'a/../b', 'docs/..', 'projects\\demo/../../x', '..', ' .. '])
 def test_path_looking_strings(value):
     assert looks_like_path(value)
 
 
 @pytest.mark.parametrize('value', ['hello world', '오늘 서울 날씨', 'https://example.com/a/../b?q=C:\\x',
                                    'http://localhost:8080/', 'ratio 3:4', 'a/b/c', 'C: drive is full', 'see ../notes',
-                                   'Click "Save as..." then C:\\ later', ''])
+                                   'Click "Save as..." then C:\\ later', '', 'and/or', 'https://example.com/a/../b',
+                                   'version 1.2..3', 'wait...'])
 def test_ordinary_text_and_web_urls_are_not_paths(value):
     assert not looks_like_path(value)
 

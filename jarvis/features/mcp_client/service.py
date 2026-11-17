@@ -58,12 +58,15 @@ def is_playwright(command, args):
 # A pinned tool declares which top-level arguments are file paths (path_args). At call time each such value must be
 # a path inside JarvisWorkspace that the guard accepts (no UNC/device, ADS, '..', links or junctions) AND inside one
 # of the server's user-approved roots or its own sandbox; the checked absolute path replaces the value. Any other
-# string argument that looks like a Windows path (drive or UNC, \\?\, file: URL, ..\ segment) is refused, so an
-# undeclared path argument cannot reach the server. Ordinary text and http(s) URLs pass.
+# string argument that looks like a path (drive, UNC, \\?\, rooted /x or //server, file: URL, a '..' segment) is
+# refused, so an undeclared path argument cannot reach the server. Ordinary text and http(s) URLs pass.
 PATH_WORDS = frozenset({'path', 'paths', 'pathname', 'file', 'files', 'filename', 'filenames', 'filepath',
                         'filepaths', 'dir', 'dirs', 'directory', 'directories', 'folder', 'folders', 'binary',
                         'binaries'})
-LOOKS_LIKE_PATH = re.compile(r'^\s*(?:[A-Za-z]:[\\/]|\\\\|file:|\.\./)|\.\.\\', re.IGNORECASE)
+LOOKS_LIKE_PATH = re.compile(r'^\s*(?:[A-Za-z]:[\\/]|\\\\|//?|file:|\.\./)|\.\.\\', re.IGNORECASE)
+# A '..' segment after a separator ('a/../b', 'docs/..'); an http(s) URL may contain one, a path may not.
+PARENT_SEGMENT = re.compile(r'(?:^\s*|[\\/])\.\.(?:[\\/]|\s*$)')
+WEB_URL = re.compile(r'^\s*https?://', re.IGNORECASE)
 MAX_PATH_VALUES = 16
 MAX_ROOTS = 8
 
@@ -121,7 +124,11 @@ def valid_root(root):
 
 
 def looks_like_path(value):
-    return isinstance(value, str) and LOOKS_LIKE_PATH.search(value) is not None
+    """Drive, UNC or rooted ('/x', '//server/share') path, file: URL, or a '..' segment outside an http(s) URL."""
+    if not isinstance(value, str):
+        return False
+    return (LOOKS_LIKE_PATH.search(value) is not None
+            or (WEB_URL.match(value) is None and PARENT_SEGMENT.search(value) is not None))
 
 
 BASE_ENV = ('SYSTEMROOT', 'WINDIR', 'TEMP', 'TMP', 'PATH', 'PATHEXT', 'APPDATA', 'LOCALAPPDATA', 'USERPROFILE',
