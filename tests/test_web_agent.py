@@ -471,7 +471,11 @@ def results_page(*urls):
 @pytest.mark.parametrize('request_text, deep', [
     ('제주 날씨 예보 사이트별로 비교해줘', True), ('최근 AI 반도체 시장 동향 분석해줘', True),
     ('Compare Python and Node.js release cycles', True), ('React vs Vue for a small app', True),
-    ('제주 날씨 찾아줘', False), ('2026년 최저임금 시간급은 얼마인가요?', False), ('What is the latest Node.js LTS?', False)])
+    ('Python vs. Node.js 성능', True), ('트렌드 분석해줘', True), ('analysis of EV sales', True),
+    ('제주 날씨 찾아줘', False), ('2026년 최저임금 시간급은 얼마인가요?', False), ('What is the latest Node.js LTS?', False),
+    ('VS Code 단축키', False), ('vs code 최신 버전', False), ('설치할 때 VS Code vs code 차이', False),
+    ('비교적 싼 항공권', False), ('analyst 연봉', False), ('분석기 다운로드', False), ('추세선 그리는 법', False),
+    ('트렌드 코리아 2027 책 정보', False)])
 def test_analysis_and_comparison_requests_are_recognised(request_text, deep):
     assert bool(agent.ANALYSIS_REQUEST.search(request_text)) is deep
 

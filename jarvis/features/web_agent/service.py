@@ -67,8 +67,10 @@ PLAYWRIGHT_PINS = {
 DOWNLOAD_REQUEST = re.compile(r'(?:내려\s*받|다운\s*받)(?!은|았던|았|은\s*파일)|다운로드(?!\s*(?:폴더|목록|한|된|받은|파일\s*정리))'
                               r'|\bdownload\b(?!s?\s*folder)', re.I)
 # A request to analyse or compare: one page is not enough, so JARVIS reads DEPTH_SITES sites before the answer.
-ANALYSIS_REQUEST = re.compile(r'분석|비교|장단점|차이점|동향|추세|트렌드|조사해|조사하|리서치|\bcompar|\banaly[sz]'
-                              r'|\bvs\.?(?=\s)|\bversus\b|pros and cons', re.I)
+# Not '비교적', '분석기', 'analyst' or 'VS Code'; 'vs' needs text on both sides. 트렌드/추세 alone are topics ('추세선',
+# a book title), so they count only with an analysis word next to them, which the other words already match.
+ANALYSIS_REQUEST = re.compile(r'분석(?!기)|비교(?!적)|장단점|차이점|동향|조사해|조사하|리서치|\bcompar|\banaly[sz](?!t)'
+                              r'|\S\s+(?:vs\.?|versus)\s+(?!code\b)\S|pros and cons', re.I)
 BLOCKED_PRESS = re.compile(r'로그인|로그아웃|회원\s*가입|가입|결제|구매|주문|장바구니|신청|삭제|등록|전송|보내기|제출|댓글|글쓰기|'
                            r'구독|좋아요|공유|log\s*in|log\s*out|sign\s*(in|up)|register|buy|pay|order|checkout|cart|'
                            r'submit|delete|send|post|comment|subscribe|share', re.I)
