@@ -28,7 +28,9 @@ def test_wrong_value_empty_answer_or_unofficial_source_fails():
     task = TASKS['t06']
     assert not score(task, '52,300원 https://www.korail.com/', [], [])['pass']
     assert not score(task, '', ['https://www.korail.com/'], [])['checks']['answered']
-    assert not score(task, '59,800원 https://blog.example.com/ktx', [], [])['checks']['sourced']
+    assert not score(task, '54,400원 https://blog.example.com/ktx', [], [])['checks']['sourced']
+    assert not score(task, '59,800원 https://www.korail.com/', [], [])['pass']          # the fare before 2026-09-01
+    assert score(task, '54,400원 https://www.korea.kr/news/policyNewsView.do?newsId=148970889', [], [])['pass']
 
 
 def test_search_pages_are_neither_sources_nor_followed_pages():
