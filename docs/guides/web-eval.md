@@ -4,12 +4,14 @@
 
 ## 과제
 - 한국어 정보 질의 8개(그중 하나는 링크를 2번 이상 따라가야 함), 영어 1개, 작은 공개 파일 내려받기 1개.
+- 따로 분석 과제 2개(`scripts/web_eval/analysis_tasks.json`, `--set analysis`): 비교 요청이 서로 다른 사이트를 충분히 읽는지 봅니다. 10과제 점수와 합치지 않습니다.
 - 기대값은 2026-10-29에 확인했습니다. 운임·금리·버전처럼 바뀌는 값은 모든 드라이버가 같은 과제에서 실패하기 시작하면 다시 확인해 고칩니다. `version`을 올리면 이전 점수와 비교하지 않습니다.
 
 ## 채점 (과제당 통과/실패)
 - 답이 비어 있지 않고, `answer_all`의 정규식이 모두 답에 맞아야 합니다.
 - `source_hosts`의 공식 출처가 답에 인용되었거나 도구 호출로 실제 방문되어야 합니다. 검색 결과 페이지는 출처로 치지 않습니다.
 - 링크 따라가기 과제는 검색 페이지가 아닌 페이지를 `min_visited_pages`개 이상 방문해야 합니다.
+- 분석 과제는 검색 페이지가 아닌 서로 다른 호스트 `min_sites`곳 이상의 페이지를 방문해야 합니다.
 - 내려받기 과제는 허용 확장자(.csv, .pdf)이고 5MB 이하인 새 파일이 있어야 하며, Microsoft Defender 검사(`MpCmdRun -Scan -ScanType 3 -File ... -DisableRemediation`)에서 깨끗해야 합니다. 내려받은 파일은 열거나 실행하지 않습니다.
 
 ## 드라이버
@@ -29,7 +31,8 @@ python scripts/web_eval/run.py --setup
 %LOCALAPPDATA%\JarvisWorktrees\web-eval\fetch-venv\Scripts\python.exe scripts/web_eval/run.py --driver qwen-raw
 python scripts/web_eval/run.py --driver claude t01 t05
 <저장소>\.venv\Scripts\python.exe scripts/web_eval/run.py --driver jarvis --repeat 3
-python scripts/web_eval/run.py --rescore <결과 폴더>
+<저장소>\.venv\Scripts\python.exe scripts/web_eval/run.py --driver jarvis --set analysis --repeat 3
+python scripts/web_eval/run.py --rescore <결과 폴더>   (분석 과제 결과는 --set analysis 도 함께)
 ```
 결과 폴더마다 과제별 `record.json`(답, 도구 호출, 턴, 시간, 메모, 점수)과 `summary.json`(N/총수)이 남습니다. 과제당 상한은 10분과 25턴입니다.
 
