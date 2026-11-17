@@ -8,7 +8,7 @@
 
 - `rea-agents` **6.7.0**만 받습니다. 저장소의 잠금 파일로 설치한 `.integrations/rea`(경로는 `config/integrations.json`)의 `package.json` 이름과 버전이 정확히 맞아야 합니다. 다르면 `.integrations/rea`에서 `npm ci`로 다시 설치하라고 알리고 멈춥니다. 아무것도 내려받지 않습니다.
 - 실행: `node rea.mjs --mcp`. node, `rea.mjs`, Ghidra, Java 위치는 `IntegrationHub.program_paths`로 읽습니다. 정적 분석 도구(`analyze_program_static`)와 같은 검사입니다: 링크·`..`가 없고, 작업공간 밖이며, 파일은 하드 링크 없는 일반 파일이고 폴더는 실제로 있어야 합니다.
-- Ghidra·Java는 고정 설정 `fixed_env`(`GHIDRA_INSTALL_DIR`, `JAVA_HOME`, `GHIDRA_HEADLESS_MAXMEM=1G`)로 넘깁니다. 검사 규칙은 [MCP 서버 연결](mcp-client.md)에 있습니다. 이 값은 모델 프롬프트·결과 기록·상태에 들어가지 않습니다.
+- Ghidra·Java는 고정 설정 `fixed_env`(`GHIDRA_INSTALL_DIR`, `JAVA_HOME`, `GHIDRA_HEADLESS_MAXMEM=1G`)로 넘깁니다. 검사 규칙은 [MCP 서버 연결](mcp-client.md)에 있습니다. 이 값은 모델 프롬프트·결과 기록·상태에 들어가지 않습니다. 검사는 링크와 작업공간만 막으므로, 그 밖에서는 사용자가 `integrations.json`에 적은 어느 폴더든 쓸 수 있습니다(설치 위치를 고르는 것은 사용자입니다).
 
 ## 고정하는 도구 (29개, 모두 `family=local`, `effect=read`)
 

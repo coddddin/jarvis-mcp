@@ -17,6 +17,7 @@ import sys
 import threading
 import time
 from typing import Literal
+import uuid
 
 import psutil
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
@@ -24,6 +25,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_valida
 from jarvis.core.guardrails import GuardrailError
 from jarvis.core.paths import WORKERS_ROOT
 from jarvis.core.redaction import redact
+from jarvis.features.mcp_audit.service import AuditLog, relative_paths
 
 # Session limits (defaults the user may change).
 START_SECONDS = 60              # starting every server of a session, npm/Python start-up included
@@ -440,10 +442,12 @@ class McpSession:
     WORKER = WORKERS_ROOT / 'mcp_session.py'
     SANDBOX = '.jarvis-mcp'
 
-    def __init__(self, guard, config, *, only=None, clock=time.monotonic, session_seconds=SESSION_SECONDS):
+    def __init__(self, guard, config, *, only=None, clock=time.monotonic, session_seconds=SESSION_SECONDS, audit=None):
         """only: one server id, started for the approval view with its full tool listing (discover). Without it
-        every approved server starts and reports only its pinned tools."""
+        every approved server starts and reports only its pinned tools. audit: the call log (AuditLog)."""
         self.guard, self.clock = guard, clock
+        self.audit = audit or AuditLog(guard)
+        self.audit_session, self.audit_calls, self.audit_misses = uuid.uuid4().hex[:8], 0, 0
         self.list_pins_only = only is None
         self.servers = [server for server in config.servers
                         if (server.state == 'approved' if only is None else server.id == only)]
@@ -670,29 +674,66 @@ class McpSession:
         return result
 
     def call(self, name, arguments, *, confirmed=False):
+        """Call one pinned tool. Every call is audited (jarvis.features.mcp_audit): a refused one in one line, an
+        executed one as 'attempt' before the worker is asked and 'outcome' after. When the attempt cannot be
+        written, a read pin still runs (counted in audit_misses); an auto or confirm pin, or one with a write path,
+        is refused."""
         entry = self.tools.get(name)
         if entry is None:
+            self._audit_refused(str(name)[:120], None, 'not_attached')
             raise McpError('This tool is not attached or not approved.')
         server, pin, _ = entry
         if pin.effect == 'confirm' and not confirmed:
+            self._audit_refused(server.id, pin, 'confirm_required')
             raise ConfirmRequired('This action needs your confirmation first.')
         if not isinstance(arguments, dict) or len(json.dumps(arguments, ensure_ascii=False)) > 20000:
+            self._audit_refused(server.id, pin, 'arguments_too_large')
             raise McpError('Tool arguments must be a small JSON object.')
-        arguments = self.checked_arguments(server, pin, arguments)
+        try:
+            arguments = self.checked_arguments(server, pin, arguments)
+        except McpError:
+            self._audit_refused(server.id, pin, 'arguments_refused')
+            raise
         left = self.session_seconds - (self.clock() - self.started_at)
         if left <= 0:
+            self._audit_refused(server.id, pin, 'session_limit')
             self.close()
             raise McpError('The MCP session time limit was reached.')
+        self.audit_calls += 1
+        call_id = f'{self.audit_session}-{self.audit_calls}'
+        attempt = {'ev': 'attempt', 'id': call_id, 'server': server.id, 'tool': pin.name, 'effect': pin.effect,
+                   'args': sorted(arguments), 'paths': relative_paths(self.guard.workspace, arguments,
+                                                                      [item.name for item in pin.path_args])}
+        if not self.audit.write(attempt):
+            self.audit_misses += 1
+            if pin.effect != 'read' or any(item.mode == 'write' for item in pin.path_args):
+                raise McpError('호출 기록을 남길 수 없어 이 도구를 실행하지 않았습니다. 디스크 공간과 '
+                               'JarvisWorkspace 쓰기 권한을 확인해 주십시오.')
         timeout = min(pin.timeout_s, left)
-        answer = self._ask({'op': 'call', 'server': server.id, 'tool': pin.name, 'arguments': arguments,
-                            'timeout': timeout, 'max_chars': pin.max_chars,
-                            'keep': list(pin.result_keys)}, timeout + CALL_GRACE_SECONDS)
-        if answer.get('timeout'):
-            self.close()                    # a stuck call may still be running in the server: end the session
-            raise McpError('The MCP server did not answer in time; the session was stopped.')
-        if not answer.get('ok'):
-            raise McpError('The MCP tool failed: ' + str(answer.get('error', 'unknown'))[:200])
-        return answer
+        started, outcome, sizes = time.monotonic(), 'failed', {}
+        try:
+            answer = self._ask({'op': 'call', 'server': server.id, 'tool': pin.name, 'arguments': arguments,
+                                'timeout': timeout, 'max_chars': pin.max_chars,
+                                'keep': list(pin.result_keys)}, timeout + CALL_GRACE_SECONDS)
+            if answer.get('timeout'):
+                outcome = 'timeout'
+                self.close()                # a stuck call may still be running in the server: end the session
+                raise McpError('The MCP server did not answer in time; the session was stopped.')
+            if not answer.get('ok'):
+                raise McpError('The MCP tool failed: ' + str(answer.get('error', 'unknown'))[:200])
+            outcome = 'error' if answer.get('is_error') else 'ok'
+            sizes = {'chars': len(answer.get('text') or ''), 'truncated': bool(answer.get('truncated'))}
+            return answer
+        finally:
+            if not self.audit.write({'ev': 'outcome', 'id': call_id, 'server': server.id, 'tool': pin.name,
+                                     'outcome': outcome, 'seconds': round(time.monotonic() - started, 2), **sizes}):
+                self.audit_misses += 1
+
+    def _audit_refused(self, server_id, pin, reason):
+        """One line for a call refused before it reached the worker. A failed write only counts: nothing ran."""
+        if not self.audit.write({'ev': 'refused', 'server': server_id, 'tool': pin.name if pin else None,
+                                 'effect': pin.effect if pin else None, 'reason': reason}):
+            self.audit_misses += 1
 
     def trace(self, name, answer, evidence_id):
         """A chat/agent trace for a call result. Text is untrusted data, redacted and bounded."""
