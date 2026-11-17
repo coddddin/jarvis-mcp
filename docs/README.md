@@ -10,7 +10,8 @@
 - [ADR 0001 하드웨어 자원 사용 원칙](adr/0001-hardware-resource-policy.md): 다른 프로그램 우선 자동 양보, GPU·CPU·RAM 역할, 모델 활성·절전·꺼짐 단계와 임시 수치.
 
 ## 사용 안내
-- [Obsidian 로컬 검색](guides/obsidian.md): 승인된 Markdown 메타데이터 검증·별도 로컬 인덱스·개인자료 비전송.
+- [사용자 결정: 자동 준비와 승인 정책](guides/user-consent.md): 2026-10-27 사용자가 확정한 최초 위임·작업 단위 승인·범위 확대 재승인·외부 전송·백업 정책. 실행 승인 토큰이 아니다.
+- [Obsidian 사용법](guides/obsidian.md): Vault 열기·노트 작성·승인 후 색인/검색·수정과 철회, 승인된 Markdown 메타데이터 검증·별도 로컬 인덱스·개인자료 비전송.
 - [GitHub 우편함](guides/github-inbox.md) · [로그인 수신](guides/github-inbox-logon.md): 수동 미리보기·승인 Issue 수신·선택 설치.
 - [원격 인계](handoffs/work-2026-10-22.md) · [보안 검토·검증 기록](handoffs/work-review-2026-10-22.md): PR 의존성과 실제 검증 범위.
 - [로컬 리드·외부 작업자 협업](guides/hybrid-team.md): OpenRig 배정 소스 이식, 로컬/Codex 제안 협업과 운영자 CLI.
@@ -47,7 +48,7 @@
 
 당시 기록입니다. 현재 상태는 PLAN.md가 우선합니다. 에이전트는 필요한 절만 grep으로 찾습니다.
 
-- 단계 보고서: [계획 이력](archive/reports/plan-history.md) · [협업 엔진](archive/reports/hybrid-team.md) · [Phase 1](archive/reports/phase-01.md) · [Phase 2](archive/reports/phase-02.md) · [Phase 2.5](archive/reports/phase-02-5.md) · [Phase 3](archive/reports/phase-03.md) · [REA · Agent Reach](archive/reports/rea-agent-reach.md)
+- 단계 보고서: [계획 이력](archive/reports/plan-history.md) · [협업 엔진](archive/reports/hybrid-team.md) · [Phase 1](archive/reports/phase-01.md) · [Phase 2](archive/reports/phase-02.md) · [Phase 2.5](archive/reports/phase-02-5.md) · [Phase 3](archive/reports/phase-03.md) · [REA · Agent Reach](archive/reports/rea-agent-reach.md) · [LLM Wiki 조사](archive/reports/llm-wiki-research-2026-10-27.md)
 - 옛 계획 원문: [V2](archive/MASTER_BLUEPRINT_V2.md) · [V3](archive/MASTER_BLUEPRINT_V3.md) · [V4](archive/MASTER_BLUEPRINT_V4.md) · [이전 개발 지침](archive/DEVELOPMENT_GUIDELINES_ORIGINAL.md) · [V5 원안](master_blueprint_v5.md)(사용자 지정 위치의 보관본)
 
 ## 변경 후 확인
