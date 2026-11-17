@@ -23,6 +23,7 @@ MODELS = {
                                              'and documents that answer it\nQuery: '},
     'bge-m3:latest': {'query_prefix': ''},
 }
+DEFAULT_EMBED_MODEL = 'qwen3-embedding:0.6b'    # picked by scripts/rag_eval (ADR 0002)
 BATCH = 16                      # texts per worker call
 MAX_CHARS = 2000                # characters of one text sent to the model (the worker cuts there too)
 KEEP_ALIVE = '2m'               # short: the 16 GB GPU is shared with the chat model, TTS and STT (ADR 0001)
@@ -110,12 +111,12 @@ def from_blobs(blobs, dim):
         np.zeros((0, dim), dtype=np.float32)
 
 
-def rrf(rankings, k=RRF_K):
-    """Reciprocal rank fusion: {key: sum 1/(k + rank)} over rankings (lists of keys, best first)."""
+def rrf(rankings, k=RRF_K, weights=None):
+    """Weighted reciprocal rank fusion: {key: sum w/(k + rank)} over rankings (lists of keys, best first)."""
     scores = {}
-    for ranking in rankings:
+    for ranking, weight in zip(rankings, weights or [1.0] * len(rankings)):
         for rank, key in enumerate(ranking, 1):
-            scores[key] = scores.get(key, 0.0) + 1.0 / (k + rank)
+            scores[key] = scores.get(key, 0.0) + weight / (k + rank)
     return scores
 
 

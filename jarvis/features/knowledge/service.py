@@ -43,6 +43,7 @@ def vectorize(text: str) -> dict[str, float]:
 
 COLLECTION = re.compile(r'^[a-z_]{1,40}$')
 FUSION_DEPTH = 50               # candidates taken from each ranking before RRF
+LEXICAL_WEIGHT = 0.1            # RRF weight of the lexical ranking vs 1.0 for embeddings (ADR 0002, rag_eval)
 
 
 class WorkspaceFolderSource:
@@ -316,7 +317,7 @@ class KnowledgeStore:
             scored = sorted(((float(semantic[i]), i) for i in order), key=lambda item: -item[0])
         else:
             semantic_rank = sorted(order, key=lambda i: -semantic[i])[:FUSION_DEPTH]
-            fused = rrf([lexical_rank[:FUSION_DEPTH], semantic_rank])
+            fused = rrf([lexical_rank[:FUSION_DEPTH], semantic_rank], weights=[LEXICAL_WEIGHT, 1.0])
             scored = [(score, i) for i, score in fused.items()]
         results = []
         for score, i in scored:

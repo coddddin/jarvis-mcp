@@ -8,6 +8,7 @@
 - [패키지 구조와 이전 계획](architecture.md): 기능별 코드 배치·의존 방향·진입점 보존·구조 검사.
 - [프로젝트 지도](../AGENTS_CONTEXT.md): 에이전트가 처음 읽는 50줄 이내의 요약.
 - [ADR 0001 하드웨어 자원 사용 원칙](adr/0001-hardware-resource-policy.md): 다른 프로그램 우선 자동 양보, GPU·CPU·RAM 역할, 모델 활성·절전·꺼짐 단계와 임시 수치.
+- [ADR 0002 로컬 임베딩 모델과 하이브리드 가중치](adr/0002-local-embedding-model.md): rag_eval 측정, qwen3-embedding:0.6b 기본, 어휘 가중치 0.1, 어휘 검색 대체.
 
 ## 사용 안내
 - [사용자 결정: 자동 준비와 승인 정책](guides/user-consent.md): 2026-10-27 사용자가 확정한 최초 위임·작업 단위 승인·범위 확대 재승인·외부 전송·백업 정책. 실행 승인 토큰이 아니다.

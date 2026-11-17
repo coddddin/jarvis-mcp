@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "note": "Paraphrased Korean questions: few share the target's exact words, so meaning matters. 'relevant' is collection:path; any chunk of that file counts.",
+  "queries": [
+    {"id": "d01", "query": "GPU 메모리를 여러 모델이 어떻게 나눠 쓰나요", "relevant": ["project_docs:adr/0001-hardware-resource-policy.md"]},
+    {"id": "d02", "query": "휴대폰으로 자비스 상태를 확인하고 싶어", "relevant": ["project_docs:guides/telegram.md"]},
+    {"id": "d03", "query": "말로 자비스에게 명령하는 기능", "relevant": ["project_docs:guides/voice.md"]},
+    {"id": "d04", "query": "다운로드 폴더를 정리한 걸 되돌리는 방법", "relevant": ["project_docs:guides/file-organization.md"]},
+    {"id": "d05", "query": "코드를 예전 상태로 되살리기", "relevant": ["project_docs:guides/snapshots.md"]},
+    {"id": "d06", "query": "개인 데이터를 암호화해서 클라우드에 보관하기", "relevant": ["project_docs:guides/backup.md"]},
+    {"id": "d07", "query": "오류 기록을 보고 고칠 방법을 제안받기", "relevant": ["project_docs:guides/debug-assistant.md"]},
+    {"id": "d08", "query": "윈도우 프로그램으로 자비스를 띄우는 법", "relevant": ["project_docs:guides/desktop-app.md"]},
+    {"id": "d09", "query": "새 도구를 만들 때 지켜야 하는 실행 경계", "relevant": ["project_docs:guides/plugins.md"]},
+    {"id": "d10", "query": "웹 작업 에이전트 성능을 점수로 재는 방법", "relevant": ["project_docs:guides/web-eval.md"]},
+    {"id": "d11", "query": "깃허브 이슈를 로컬 작업판으로 가져오기", "relevant": ["project_docs:guides/github-inbox.md"]},
+    {"id": "d12", "query": "에이전트 작업이 실패하면 몇 번까지 다시 하나", "relevant": ["project_docs:guides/agent-tasks.md"]},
+    {"id": "d13", "query": "노트가 승인되어야만 검색에 나오는 이유", "relevant": ["project_docs:guides/obsidian.md"]},
+    {"id": "d14", "query": "사용자에게 묻지 않고 자동으로 해도 되는 일", "relevant": ["project_docs:guides/user-consent.md"]},
+    {"id": "v01", "query": "저녁에 끓일 찌개 만드는 순서", "relevant": ["vault:recipe-kimchi-stew.md"]},
+    {"id": "v02", "query": "다음 제품 배포 날짜가 언제로 정해졌지", "relevant": ["vault:meeting-weekly.md"]},
+    {"id": "v03", "query": "반려묘 예방접종은 언제 맞혀야 해", "relevant": ["vault:cat-vet.md"]},
+    {"id": "v04", "query": "차 엔진오일 마지막으로 간 게 언제야", "relevant": ["vault:car-maintenance.md"]},
+    {"id": "v05", "query": "제주도 가서 묵을 곳", "relevant": ["vault:trip-jeju.md"]},
+    {"id": "v06", "query": "이번 달 생활비를 얼마까지 써도 돼", "relevant": ["vault:budget-monthly.md"]}
+  ]
+}
