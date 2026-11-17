@@ -48,6 +48,11 @@ PLAYWRIGHT_ALLOWED = PLAYWRIGHT_REQUIRED | {
     '--snapshot-mode', '--proxy-server', '--proxy-bypass', '--allowed-origins', '--blocked-origins', '--idle-timeout'}
 # Option values arrive through the environment too (PLAYWRIGHT_MCP_EXTENSION, ...), so those names are refused.
 FORBIDDEN_ENV_PREFIXES = ('PLAYWRIGHT_MCP_',)
+# Non-secret program settings a server may get as fixed values (env_names stays names-only, for secrets). Folder
+# values must be absolute local folders outside the workspace, checked again when a session starts; any other name
+# (NODE_OPTIONS, PATH...) can never be set. Values are not shown to a model and are not written into traces.
+FIXED_ENV_FOLDERS = frozenset({'GHIDRA_INSTALL_DIR', 'JAVA_HOME'})
+FIXED_ENV_PATTERNS = {'GHIDRA_HEADLESS_MAXMEM': re.compile(r'^[1-9][0-9]?G$')}
 
 
 def is_playwright(command, args):
@@ -147,6 +152,30 @@ class Strict(BaseModel):
     model_config = ConfigDict(extra='forbid', frozen=True)
 
 
+class EnvValue(Strict):
+    name: str
+    value: str = Field(min_length=1, max_length=260)
+
+    @model_validator(mode='after')
+    def allowed(self):
+        if self.name in FIXED_ENV_FOLDERS:
+            if not plain_local_folder(self.value):
+                raise ValueError(f'{self.name} must be an absolute local folder path.')
+        elif self.name in FIXED_ENV_PATTERNS:
+            if not FIXED_ENV_PATTERNS[self.name].fullmatch(self.value):
+                raise ValueError(f'Invalid value for {self.name}.')
+        else:
+            raise ValueError('Only these settings may have fixed values: '
+                             + ', '.join(sorted(FIXED_ENV_FOLDERS | set(FIXED_ENV_PATTERNS))))
+        return self
+
+
+def plain_local_folder(value):
+    """An absolute drive path without UNC/device prefixes, '..', environment variables, globs or stream names."""
+    return (isinstance(value, str) and re.fullmatch(r'[A-Za-z]:[\\/][^<>"|?*%$\x00-\x1f]*', value) is not None
+            and ':' not in value[2:] and not any(part == '..' for part in re.split(r'[\\/]', value)))
+
+
 class PathArg(Strict):
     name: str = Field(pattern=r'^[A-Za-z0-9_.-]{1,64}$')
     mode: Literal['read', 'write'] = 'read'       # read: must exist; write: the tool may create or change it
@@ -163,6 +192,9 @@ class ToolPin(Strict):
     path_args: tuple[PathArg, ...] = Field(default=(), max_length=8)
     not_paths: tuple[str, ...] = Field(default=(), max_length=16)  # path-like names the user said are plain text
     blocked_args: tuple[str, ...] = Field(default=(), max_length=16)  # arguments a model may never set (e.g. filename)
+    # For a result that is one JSON object: the worker keeps only these top-level keys before max_chars cuts it (a
+    # server that wraps its payload in long metadata, such as REA's evidence records). Other results stay as they are.
+    result_keys: tuple[str, ...] = Field(default=(), max_length=8)
 
     @model_validator(mode='after')
     def deny_unsafe(self):
@@ -182,6 +214,7 @@ class ServerConfig(Strict):
     command: str = Field(min_length=3, max_length=500)
     args: tuple[str, ...] = Field(default=(), max_length=32)
     env_names: tuple[str, ...] = Field(default=(), max_length=16)
+    fixed_env: tuple[EnvValue, ...] = Field(default=(), max_length=4)     # non-secret settings, see FIXED_ENV_*
     state: Literal['pending', 'approved'] = 'pending'
     tools: tuple[ToolPin, ...] = Field(default=(), max_length=64)
     roots: tuple[str, ...] = Field(default=(), max_length=MAX_ROOTS)   # workspace folders path arguments may use
@@ -205,6 +238,9 @@ class ServerConfig(Strict):
             raise ValueError('Environment names only, never values.')
         if any(name.startswith(FORBIDDEN_ENV_PREFIXES) for name in self.env_names):
             raise ValueError('Server options may not be passed through the environment.')
+        fixed = [item.name for item in self.fixed_env]
+        if len(set(fixed)) != len(fixed) or set(fixed) & set(self.env_names):
+            raise ValueError('An environment setting is listed twice.')
         if len({tool.name for tool in self.tools}) != len(self.tools):
             raise ValueError('Duplicate tool pin.')
         if not all(valid_root(root) for root in self.roots) or len(set(self.roots)) != len(self.roots):
@@ -273,12 +309,15 @@ class McpSettings:
                 pass
             raise
 
-    def add_server(self, server_id, label, command, args=(), env_names=()):
-        """A new server waits as 'pending' with no pinned tools until the user approves it."""
+    def add_server(self, server_id, label, command, args=(), env_names=(), fixed_env=None):
+        """A new server waits as 'pending' with no pinned tools until the user approves it. fixed_env: {name: value}
+        for the non-secret settings in FIXED_ENV_FOLDERS / FIXED_ENV_PATTERNS only."""
         config = self.load()
         if any(server.id == server_id for server in config.servers):
             raise McpError('A server with this id already exists.')
-        server = ServerConfig(id=server_id, label=label, command=command, args=tuple(args), env_names=tuple(env_names))
+        server = ServerConfig(id=server_id, label=label, command=command, args=tuple(args), env_names=tuple(env_names),
+                              fixed_env=tuple(EnvValue(name=name, value=value)
+                                              for name, value in (fixed_env or {}).items()))
         self.save(McpConfig(servers=(*config.servers, server)))
         return server
 
@@ -313,6 +352,7 @@ class McpSettings:
             declared = [dict(item) if isinstance(item, dict) else {'name': item} for item in choice.pop('path_args', ())]
             not_paths = tuple(choice.pop('not_paths', ()))
             blocked = tuple(choice.pop('blocked_args', ()))
+            choice['result_keys'] = tuple(choice.get('result_keys', ()))
             properties = schema.get('properties') if isinstance(schema.get('properties'), dict) else {}
             if (any(item.get('name') not in properties for item in declared)
                     or (set(not_paths) | set(blocked)) - set(properties)):
@@ -401,7 +441,10 @@ class McpSession:
     SANDBOX = '.jarvis-mcp'
 
     def __init__(self, guard, config, *, only=None, clock=time.monotonic, session_seconds=SESSION_SECONDS):
+        """only: one server id, started for the approval view with its full tool listing (discover). Without it
+        every approved server starts and reports only its pinned tools."""
         self.guard, self.clock = guard, clock
+        self.list_pins_only = only is None
         self.servers = [server for server in config.servers
                         if (server.state == 'approved' if only is None else server.id == only)]
         self.process, self.lines = None, queue.Queue()
@@ -458,6 +501,25 @@ class McpSession:
                 self.close()
                 raise McpError('Invalid reply from the MCP worker.') from None
 
+    def _fixed_env(self, server):
+        """The server's fixed settings as {name: value}, or None when a folder value no longer is an existing,
+        link-free folder outside the workspace (a folder the guarded tools could write into must not hold a program)."""
+        result = {}
+        for item in server.fixed_env:
+            if item.name in FIXED_ENV_FOLDERS:
+                folder = Path(item.value)
+                try:
+                    resolved = folder.resolve(strict=True)
+                except OSError:
+                    return None
+                workspace = self.guard.workspace.resolve()
+                if (not resolved.is_dir() or os.path.normcase(str(resolved)) != os.path.normcase(str(folder.absolute()))
+                        or resolved == workspace or resolved.is_relative_to(workspace)
+                        or workspace.is_relative_to(resolved)):
+                    return None
+            result[item.name] = item.value
+        return result
+
     # --- lifecycle --------------------------------------------------------------------------------------------
     def start(self):
         self.guard.check_running()
@@ -469,9 +531,18 @@ class McpSession:
                 continue
             sandbox = self.guard.validate_path(f'{self.SANDBOX}/{server.id}', must_exist=False)
             sandbox.mkdir(parents=True, exist_ok=True)
+            fixed = self._fixed_env(server)
+            if fixed is None:
+                # The reason never names the folder: values stay out of prompts and traces.
+                self.status[server.id] = {'state': 'failed', 'reason': 'A configured program folder is missing or '
+                                                                         'not allowed. Run the setup script again.'}
+                continue
             names.update(server.env_names)
-            specs.append({'id': server.id, 'command': str(command), 'args': list(server.args),
-                          'env': list(server.env_names), 'cwd': str(sandbox), 'timeout': START_SECONDS})
+            spec = {'id': server.id, 'command': str(command), 'args': list(server.args), 'env': list(server.env_names),
+                    'fixed_env': fixed, 'cwd': str(sandbox), 'timeout': START_SECONDS}
+            if self.list_pins_only:
+                spec['only'] = [pin.name for pin in server.tools]     # a task gets its pins, not the full listing
+            specs.append(spec)
         if not specs:
             return self.status
         env = {key: value for key, value in os.environ.items() if key.upper() in BASE_ENV or key in names}
@@ -534,9 +605,10 @@ class McpSession:
 
     # --- calls ------------------------------------------------------------------------------------------------
     def offered(self):
-        """Tools a model may be shown: qualified name, the user-approved description, input schema and family."""
-        return [{'name': name, 'description': pin.description, 'input_schema': schema, 'family': pin.family,
-                 'effect': pin.effect} for name, (_, pin, schema) in self.tools.items()]
+        """Tools a model may be shown: qualified name, the user-approved description, input schema and family.
+        Blocked arguments are left out of the schema, so a model is not invited to set them."""
+        return [{'name': name, 'description': pin.description, 'input_schema': without(schema, pin.blocked_args),
+                 'family': pin.family, 'effect': pin.effect} for name, (_, pin, schema) in self.tools.items()]
 
     def offered_for(self, external):
         """offered(), without local-family tools when the answering model is external (jarvis.agents.brain)."""
@@ -613,7 +685,8 @@ class McpSession:
             raise McpError('The MCP session time limit was reached.')
         timeout = min(pin.timeout_s, left)
         answer = self._ask({'op': 'call', 'server': server.id, 'tool': pin.name, 'arguments': arguments,
-                            'timeout': timeout, 'max_chars': pin.max_chars}, timeout + CALL_GRACE_SECONDS)
+                            'timeout': timeout, 'max_chars': pin.max_chars,
+                            'keep': list(pin.result_keys)}, timeout + CALL_GRACE_SECONDS)
         if answer.get('timeout'):
             self.close()                    # a stuck call may still be running in the server: end the session
             raise McpError('The MCP server did not answer in time; the session was stopped.')
@@ -629,6 +702,14 @@ class McpSession:
                 'detail': text[:DETAIL_CHARS], 'truncated': bool(answer.get('truncated')) or len(text) > DETAIL_CHARS,
                 'family': pin.family, 'server': name.split('/', 1)[0][4:],
                 'retrieved_at': datetime.now(timezone.utc).isoformat(), 'untrusted_content': True}
+
+
+def without(schema, names):
+    """A copy of a tool input schema without the given top-level properties (they are never required)."""
+    properties = schema.get('properties') if isinstance(schema, dict) else None
+    if not names or not isinstance(properties, dict):
+        return schema
+    return {**schema, 'properties': {key: value for key, value in properties.items() if key not in names}}
 
 
 def discover(guard, config, server_id):

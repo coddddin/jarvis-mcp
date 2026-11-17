@@ -78,6 +78,11 @@ class IntegrationHub:
         return {key: self._trusted(value, directory=key in {'ghidra', 'java_home'})
                 for key, value in settings.model_dump().items() if key != 'version' and (names is None or key in names)}
 
+    def program_paths(self, names):
+        """The checked program paths of config/integrations.json (regular files or folders outside the workspace,
+        reached without links), for callers that launch the same programs another way (the REA MCP preset)."""
+        return self._settings(tuple(names))
+
     def _run(self, command, *, payload=b'', timeout=30, environment=None):
         self.guard.check_running()
         if len(payload) > 524288:
