@@ -386,13 +386,63 @@ def test_run_messages_api_is_gated_read_only_and_bounded(guard, config):
     assert client.get(path + '?x=1', headers=AUTH).status_code == 403
     assert client.post(path, headers={**AUTH, 'Origin': ORIGIN}).status_code == 405
     body = client.get(path, headers=AUTH).json()
-    assert body == {'run_id': run_id, 'recorded': True, 'messages': [
-        {'id': sent[0], 'sender': 'user:heejun', 'title': 'please do 0'},
-        {'id': sent[1], 'sender': 'user:heejun', 'title': 'please do 1'},
+    assert body == {'run_id': run_id, 'relation': 'wake_message', 'recorded': True, 'messages': [
+        {'id': sent[0], 'sender': 'user:heejun', 'title': 'please do 0', 'task_id': None, 'task_available': False},
+        {'id': sent[1], 'sender': 'user:heejun', 'title': 'please do 1', 'task_id': None, 'task_available': False},
         {'id': 987654, 'missing': True}]}
     assert 'full body' not in json.dumps(body)
     assert board.pending_ids('codex') == sent  # reading headers never marks anything read
     assert client.get(f'/api/dispatcher/runs/{old}/messages', headers=AUTH).json() == {
-        'run_id': old, 'recorded': False, 'messages': []}
+        'run_id': old, 'relation': 'wake_message', 'recorded': False, 'messages': []}
     for bad in ('0', '-1', 'abc', '1.5', str(2 ** 63), '99999'):
         assert client.get(f'/api/dispatcher/runs/{bad}/messages', headers=AUTH).status_code == 404, bad
+
+
+def _board_state(board):
+    with board.connection() as db:
+        return ([tuple(row) for row in db.execute('SELECT * FROM tasks ORDER BY id')],
+                [tuple(row) for row in db.execute('SELECT * FROM reads ORDER BY message_id, reader')],
+                [tuple(row) for row in db.execute('SELECT * FROM status_events ORDER BY id')])
+
+
+def test_run_messages_link_only_saved_task_ids_as_wake_input(guard, config):
+    board = _board(guard)
+    task = board.create('user:heejun', 'Fix chat routing', 'details', ['jarvis/app/chat.py'])['id']
+    board.claim('codex:main', task)
+    similar = board.create('user:heejun', 'Fix chat routing again', 'details', ['jarvis/app/hud.py'])['id']
+    gone = board.create('user:heejun', 'Old task', 'details', ['jarvis/app/old.py'])['id']
+    first = board.send('user:heejun', 'codex', 'Fix chat routing\nfull body', task_id=task)['id']
+    second = board.send('user:heejun', 'codex', 'more on it', task_id=task)['id']
+    # Same words and an ID in the text, but no saved task ID: never linked to either task.
+    lookalike = board.send('user:heejun', 'codex', f'Fix chat routing again\nsee {similar}')['id']
+    stale = board.send('user:heejun', 'codex', 'about the old one', task_id=gone)['id']
+    with board.connection() as db:
+        db.execute('DELETE FROM tasks WHERE id=?', (gone,))  # a pruned task record
+        corrupt = db.execute('INSERT INTO messages(sender,recipient,task_id,body,created) VALUES(?,?,?,?,?)',
+                             ('user:heejun', 'codex', 'token=sk-abcdef1234567890abcdef', 'legacy row', 1.0)).lastrowid
+    ledger = DispatchLedger(guard)
+    run_id = ledger.start('codex', pid=None)
+    ledger.set_inputs(run_id, [first, second, lookalike, stale, corrupt])
+    old = ledger.start('codex', pid=None)                   # an older ledger row: inputs never recorded
+    routes = dispatcher_routes(guard, config, valid=lambda value: value == TOKEN, origins=frozenset({ORIGIN}),
+                               headers={'Cache-Control': 'no-store'}, board=board)
+    client = TestClient(Starlette(routes=routes), base_url=ORIGIN)
+    path = f'/api/dispatcher/runs/{run_id}/messages'
+    assert client.get(path).status_code == 401
+    before, pending = _board_state(board), board.pending_ids('codex')
+    body = client.get(path, headers=AUTH).json()
+    assert body['run_id'] == run_id and body['relation'] == 'wake_message' and body['recorded'] is True
+    assert [(m['id'], m['task_id'], m['task_available']) for m in body['messages']] == [
+        (first, task, True), (second, task, True), (lookalike, None, False), (stale, gone, False),
+        (corrupt, None, False)]
+    dumped = json.dumps(body)
+    assert similar not in dumped and 'sk-' not in dumped and 'full body' not in dumped
+    # The envelope is input lineage only: no Board state and no claim of start, completion or verification.
+    assert set(body) == {'run_id', 'relation', 'recorded', 'messages'}
+    for message in body['messages']:
+        assert set(message) == {'id', 'sender', 'title', 'task_id', 'task_available'}
+    for word in ('claimed', 'status', 'owner', 'started', 'completed', 'verified', 'done'):
+        assert word not in dumped, word
+    assert _board_state(board) == before and board.pending_ids('codex') == pending
+    assert client.get(f'/api/dispatcher/runs/{old}/messages', headers=AUTH).json() == {
+        'run_id': old, 'relation': 'wake_message', 'recorded': False, 'messages': []}
