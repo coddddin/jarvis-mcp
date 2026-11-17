@@ -26,6 +26,7 @@ from jarvis.features.knowledge.service import KnowledgeError
 from jarvis.features.mcp_client.service import McpSettings, families as mcp_families
 from jarvis.features.obsidian.service import ObsidianStore
 from jarvis.features.web.service import FOLLOW_DEPTH, PAGES_PER_REQUEST, REQUEST_BYTES
+from jarvis.features.tool_agent import service as tool_agent
 from jarvis.features.web_agent import service as web_agent
 
 
@@ -144,6 +145,37 @@ class WebProgress:
         while len(json.dumps(value, ensure_ascii=False).encode()) > self.BYTES and (value['recent'] or value['hosts']):
             (value['recent'] if value['recent'] else value['hosts']).pop(0)
         return {**value, 'hosts': list(value['hosts']), 'recent': list(value['recent'])}
+
+
+class ToolProgress:
+    """What a running tool task is doing, for the turn's progress field (a status, never reply text): phase
+    call/failed, the current Korean line, step of the call cap, the tool being called and the last few lines."""
+    RECENT = 6
+    LINE_CHARS = 120
+    BYTES = 3500                     # under ChatStore.PROGRESS_BYTES even after redaction markers
+
+    def __init__(self):
+        self.value = {'kind': 'tool', 'phase': 'call', 'line': '', 'step': 0, 'step_limit': tool_agent.MAX_CALLS,
+                      'tool': '', 'recent': []}
+
+    def update(self, event, line):
+        """Apply one agent progress event; returns the new value, or None when nothing visible changed."""
+        value, trace = self.value, event.get('trace') or {}
+        before = value['step']
+        if isinstance(event.get('step'), int):
+            value['step'] = max(0, min(event['step'], value['step_limit']))
+        if event.get('phase') == 'start':
+            value['phase'], value['tool'] = 'call', str(event.get('tool') or '')[:120]
+        elif trace.get('status') == 'failed':
+            value['phase'] = 'failed'
+        elif not line and value['step'] == before:
+            return None
+        if line:
+            value['line'] = redact(line)[:self.LINE_CHARS]
+            value['recent'] = (value['recent'] + [value['line']])[-self.RECENT:]
+        while len(json.dumps(value, ensure_ascii=False).encode()) > self.BYTES and value['recent']:
+            value['recent'].pop(0)
+        return {**value, 'recent': list(value['recent'])}
 
 
 class ChatService:
@@ -671,39 +703,54 @@ class ChatService:
         if (web_agent.configured_server(McpSettings(self.guard).load()) is None
                 and not web_agent.DOWNLOAD_REQUEST.search(message)):
             return None
+        return self._agent_task(
+            identity, request_id, self._choose(choice, message, plan), WebProgress(), self._progress_line,
+            lambda decide, progress, stop: web_agent.run_task(self.guard, message, decide, on_progress=progress,
+                                                              should_stop=stop),
+            web_agent.WebSetupRequired, self._web_traces)
+
+    def _agent_task(self, identity, request_id, chosen, tracker, line, run, setup_error, stored_traces):
+        """What web and tool tasks share: the longer deadline, the daily task cap, one conversation budget unit,
+        progress in the turn's progress field (a failed write never ends the task), the chat stop button and the
+        finished turn. chosen: (choice, local_reason). run(decide, progress, should_stop) returns the agent result;
+        setup_error is answered as a reply, not a failure. stored_traces(result) gives the turn's tool records."""
         self.store.extend(identity, request_id, self.WEB_TASK_SECONDS)
-        self._turn_choice, local_reason = self._choose(choice, message, plan)
-        if not self._take_web_task():
-            self.store.finish(identity, request_id, model=self._turn_choice.record(local_reason),
-                              reply=f'오늘 웹 작업 한도({self.WEB_TASKS_PER_DAY}회)에 닿았습니다. 내일 다시 요청해 주십시오.')
-            return self.store.get(identity)
-        self.store.reserve(identity)                         # one conversation budget unit per web task
+        self._turn_choice, local_reason = chosen
         answered_by = self._turn_choice.record(local_reason)
-        tracker = WebProgress()
+        if not self._take_web_task():
+            self.store.finish(identity, request_id, model=answered_by,
+                              reply=f'오늘 웹·도구 작업 한도({self.WEB_TASKS_PER_DAY}회)에 닿았습니다. 내일 다시 요청해 주십시오.')
+            return self.store.get(identity)
+        self.store.reserve(identity)                         # one conversation budget unit per task
 
         def progress(event):
             # Progress is a courtesy for the view: a failed write is dropped and never ends the task.
             try:
-                value = tracker.update(event, self._progress_line(event))
+                value = tracker.update(event, line(event))
                 if value is not None:
                     self.store.task_progress(identity, request_id, value)
             except (ChatError, ValueError, TypeError):
                 pass
 
-        def decide(messages, schema, deadline):            # counted by the task's own 30-call cap
+        def decide(messages, schema, deadline):            # counted by the task's own call cap
             return self._answer(messages, schema, deadline)
 
         self._web_stop.clear()
         self._web_running = True
         try:
-            result = web_agent.run_task(self.guard, message, decide, on_progress=progress,
-                                        should_stop=self._web_stop.is_set)
-        except web_agent.WebSetupRequired as exc:
+            result = run(decide, progress, self._web_stop.is_set)
+        except setup_error as exc:
             self.store.finish(identity, request_id, reply=str(exc), model=answered_by)
             return self.store.get(identity)
         finally:
             self._web_running = False
             self._web_stop.clear()
+        status = 'completed' if result['status'] == 'completed' else 'failed'
+        self.store.finish(identity, request_id, reply=result['answer'], status=status, tools=stored_traces(result),
+                          model=answered_by)
+        return self.store.get(identity)
+
+    def _web_traces(self, result):
         traces = []
         for index, trace in enumerate(result['traces'], 1):
             name = self.WEB_TRACE.get(trace.get('tool'), 'web_download')
@@ -714,9 +761,31 @@ class ChatService:
                            'detail': redact(str(detail))[:300], 'evidence_id': f'w{index}',
                            'retrieved_at': datetime.now(timezone.utc).isoformat(), 'untrusted_content': True,
                            **({'url': trace['url']} if trace.get('url') else {})})
-        status = 'completed' if result['status'] == 'completed' else 'failed'
-        self.store.finish(identity, request_id, reply=result['answer'], status=status, tools=traces, model=answered_by)
-        return self.store.get(identity)
+        return traces
+
+    @staticmethod
+    def _tool_progress_line(event):
+        tool = str(event.get('tool') or '')
+        if event.get('phase') == 'start':
+            return '도구 실행 중: ' + tool.removeprefix('mcp:').replace('/', ' ')[:80]
+        trace = event.get('trace') or {}
+        if trace.get('status') == 'failed':
+            return '실패: ' + str(trace.get('reason', ''))[:80]
+        return None
+
+    def _tool_task(self, identity, request_id, message, choice, plan, servers):
+        """One tool task over the MCP servers the request names (jarvis.features.tool_agent). An external brain gets
+        only their public_web tools; when they have none, the local model answers and the reply says why. Traces
+        keep the family they were produced under, so local results never reach an external model later."""
+        chosen = self._choose(choice, message, plan)
+        if chosen[0].external and not tool_agent.has_external_tools(servers):
+            chosen = (self.brain.default_choice(), LOCAL_REASON.format(source='로컬 도구'))
+        external = chosen[0].external
+        return self._agent_task(
+            identity, request_id, chosen, ToolProgress(), self._tool_progress_line,
+            lambda decide, progress, stop: tool_agent.run_task(self.guard, message, decide, servers, external=external,
+                                                               on_progress=progress, should_stop=stop),
+            tool_agent.ToolSetupRequired, lambda result: result['traces'])
 
     def send(self, identity, request_id, message, mode='chat'):
         if not self.lock.acquire(blocking=False):
@@ -804,6 +873,9 @@ class ChatService:
                 answer, traces = self.team.run(identity, request_id, message, external=mode == 'team')
                 self.store.finish(identity, request_id, reply=answer, tools=traces)
                 return self.store.get(identity)
+            servers = tool_agent.named_servers(McpSettings(self.guard).load(), message) if mode == 'chat' else []
+            if servers:
+                return self._tool_task(identity, request_id, message, choice, plan, servers)
             if mode == 'chat' and self._wants_web_task(message, plan):
                 done = self._web_task(identity, request_id, message, choice, plan)
                 if done is not None:
